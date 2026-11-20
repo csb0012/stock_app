@@ -24,29 +24,34 @@ git pull origin claude/dazzling-darwin-et76zj
 ```powershell
 # 백엔드 (가상환경 활성화 후 — 회사 PC는 루트 C:\claude\stock_app\.venv 에 있음)
 cd C:\claude\stock_app\backend
-..\.venv\Scripts\Activate   # backend\.venv 에 만들었다면 .venv\Scripts\Activate
+..\.venv\Scripts\Activate   # 가상환경은 루트 .venv (예전에 backend\.venv 에 만들었다면 .venv\Scripts\Activate)
 python -m uvicorn app.main:app --reload --port 8000
 
 # 프론트엔드 (별도 터미널)
-cd frontend
+cd C:\claude\stock_app\frontend
 npm run dev
 ```
 
 ## 최초 설치
 
-```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\Activate
-pip install -r requirements.txt
-pip install "sqlalchemy[asyncio]" "bcrypt==4.0.1"   # Python 3.13 필수
-cp .env.example .env   # KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO 입력
+새 PC 전체 절차(필요 프로그램, 파일 복사 위치 포함)는 `PROGRESS.md` 의 "새 PC 설치 (처음부터)" 참고. 요약:
 
-python create_admin.py <아이디> <비밀번호>   # 첫 계정 생성
+```powershell
+# 필요: Git, Python 3.13 (PATH 추가), Node.js LTS
+cd C:\claude
+git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git
+
+cd C:\claude\stock_app
+python -m venv .venv            # 가상환경은 루트에 (start.bat 이 자동으로 찾음)
+.venv\Scripts\Activate
+cd backend
+pip install -r requirements.txt   # bcrypt==4.0.1, sqlalchemy[asyncio] 포함
+# backend\.env 는 다른 PC에서 복사하거나 .env.example 을 복사해 KIS 키 입력
+python create_admin.py <아이디> <비밀번호>   # DB(stock_app.db)를 안 옮겼을 때만
 ```
 
 ```powershell
-cd frontend
+cd C:\claude\stock_app\frontend
 npm install
 ```
 

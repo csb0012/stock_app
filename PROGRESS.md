@@ -24,38 +24,84 @@ pip install -r requirements.txt
 
 ### 서버 실행
 ```powershell
-# 백엔드
-cd C:\claude\stock_app\backend
+# 백엔드 (가상환경은 루트 C:\claude\stock_app\.venv)
+cd C:\claude\stock_app
 .venv\Scripts\Activate
+cd backend
 python -m uvicorn app.main:app --reload --port 8000
 
-# 프론트엔드 (frontend/ 에서, 별도 터미널)
+# 프론트엔드 (별도 터미널)
+cd C:\claude\stock_app\frontend
 npm run dev
 ```
 또는 루트의 `start.bat` 더블클릭 — 가상환경(루트 `.venv` 또는 `backend\.venv`)을 자동으로 켜고, 백엔드는 `127.0.0.1` 로만 열림.
 
-### 최초 설치
+### 새 PC 설치 (처음부터) — 회사 PC와 같은 구조로 맞춤
+**0) 프로그램 설치** (Visual Studio 는 실행에 필요 없음). PowerShell 에서:
 ```powershell
-cd backend
-python -m venv .venv
-.venv\Scripts\Activate
-pip install -r requirements.txt
-pip install "sqlalchemy[asyncio]" "bcrypt==4.0.1"
-cp .env.example .env
-python create_admin.py <아이디> <비밀번호>   # 이미 계정이 있으면 UNIQUE 에러 → 재실행 불필요
+winget install --id Git.Git -e
+winget install --id Python.Python.3.13 -e
+winget install --id OpenJS.NodeJS.LTS -e
+```
+winget 이 안 되면 직접 설치: Git for Windows / Python 3.13 (설치 첫 화면 **"Add python.exe to PATH" 체크**) / Node.js LTS.
+설치 후 **PowerShell 을 새로 열고** 확인:
+```powershell
+git --version
+python --version
+node --version
+```
+PowerShell 에서 `.venv\Scripts\Activate` 가 "스크립트를 실행할 수 없습니다" 로 막히면 (한 번만):
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-### 다른 PC로 옮기기
-git으로 안 넘어가는 파일(.gitignore 대상)은 직접 복사해야 한다:
-- `backend\.env` — KIS 키·계좌번호·SECRET_KEY. **절대 커밋 금지**
-- `backend\stock_app.db` — 로그인 계정, 관심종목, 투자종목, 예측 검증 기록 (안 옮기면 `create_admin.py`로 계정 새로 생성)
-- `backend\.secret_key` — 로그인 토큰 서명 키 (있으면 복사, 없으면 새 PC에서 자동 생성되고 한 번 재로그인)
-- `backend\.kis_token.json` — 복사하지 않아도 됨 (자동 재발급)
-- `.venv`, `node_modules` — 복사하지 말고 새 PC에서 "최초 설치" 절차로 재설치
+**1) 코드 받기** (저장소가 비공개면 GitHub 로그인 창이 뜸)
 ```powershell
+mkdir C:\claude
 cd C:\claude
 git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git
-# 이후 .env, stock_app.db 를 backend\ 에 복사 → 최초 설치 절차 진행
+```
+
+**2) git 으로 안 넘어오는 파일 복사** — 회사 PC에서 USB/메신저로 가져와 **`C:\claude\stock_app\backend\`** 에 넣기
+- `backend\.env` — KIS 키·계좌번호·SECRET_KEY (필수, **절대 커밋 금지**)
+- `backend\stock_app.db` — 로그인 계정, 관심종목, 투자종목, 예측 검증 기록 (안 옮기면 4번에서 계정 새로 생성)
+- `backend\.secret_key` — 회사 PC에 이 파일이 있으면 같이 복사 (없으면 자동 생성되고 한 번 재로그인)
+- 복사하지 않는 것: `.venv`, `node_modules` (새로 설치), `.kis_token.json`·`master_cache.json` (자동 생성)
+
+**3) 백엔드 패키지** — 가상환경은 회사 PC와 같이 루트(`C:\claude\stock_app\.venv`)에 만든다
+```powershell
+cd C:\claude\stock_app
+python -m venv .venv
+.venv\Scripts\Activate
+cd backend
+pip install -r requirements.txt
+```
+
+**4) (DB 를 안 옮겼을 때만) 계정 만들기**
+```powershell
+python create_admin.py <아이디> <비밀번호>
+```
+
+**5) 프론트엔드 패키지** (새 PowerShell 창)
+```powershell
+cd C:\claude\stock_app\frontend
+npm install
+```
+
+**6) 실행** — `C:\claude\stock_app\start.bat` 더블클릭 → 브라우저에서 `http://localhost:5173`
+
+최종 폴더 구조:
+```
+C:\claude\stock_app\
+├─ .venv\                 ← 3번에서 생성
+├─ start.bat
+├─ backend\
+│  ├─ .env                ← 회사 PC에서 복사
+│  ├─ stock_app.db        ← 회사 PC에서 복사
+│  ├─ .secret_key         ← 있으면 복사
+│  └─ app\ ...
+└─ frontend\
+   └─ node_modules\       ← 5번에서 생성
 ```
 
 ### 점검용
@@ -150,6 +196,10 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 - AI 추천 카드에서 바로 관심종목 추가
 - 예측 검증: 지표별 적중률 (각 지표가 상승/하락 신호를 냈을 때 실제로 맞은 비율)
 - 종목검색: 종목명 자동완성 (코드 몰라도 검색)
+
+### 2026-11-20 — 새 PC 설치 안내 정리
+- PROGRESS.md "최초 설치"·"다른 PC로 옮기기" 를 "새 PC 설치 (처음부터)" 하나로 통합: 필요한 프로그램(Git·Python 3.13·Node.js LTS), 실행 정책, clone 위치, `.env`/`stock_app.db`/`.secret_key` 복사 위치, 가상환경 위치(루트 `.venv` 로 통일), npm install, 폴더 구조
+- 기존 "최초 설치" 에 프론트엔드 `npm install` 이 빠져 있던 것 보완, 가상환경 위치가 문서마다 달랐던 것(backend\.venv vs 루트 .venv) 통일
 
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
