@@ -51,7 +51,9 @@ npm run dev
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
-| `FINNHUB_API_KEY` | 선택 | 실제 경제 캘린더 (없으면 목업 사용) |
+| `FINNHUB_API_KEY` | 선택 | 경제 캘린더 + 미국 종목 애널리스트 의견·실적 요인 |
+| `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
+| `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) |
 
 ## 아키텍처
 
@@ -72,24 +74,27 @@ services/
                    국내 현재가·일봉(get_kr_chart, 오름차순)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
   stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
   quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치(60초 캐시), 실시간 현재가 패치, USD/KRW 환율
-  news.py        — 종목 뉴스(네이버 금융 / yfinance) + 호재·악재 키워드 분위기 (10분 캐시)
+  news.py        — 종목 뉴스(국내: 네이버 증권 모바일 API → 실패 시 Google 뉴스 RSS / 미국: yfinance)
+                   + 문구·키워드 기반 호재/악재 분위기 (10분 캐시)
+  extras.py      — 외부 데이터 요인: FRED 거시환경 / Finnhub 애널리스트·실적(미국) / DART 공시(국내).
+                   호출 제한 때문에 백그라운드 큐(worker)로 수집, get_extra() 는 기다리지 않고 캐시값 또는 pending 반환
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨
   prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점 · 적중률/틀린 이유 집계
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
-  market_data.py — yfinance: 지수/매크로/빅테크; BeautifulSoup: 네이버 뉴스; Finnhub: 캘린더
+  market_data.py — yfinance: 지수/매크로/빅테크; Finnhub: 경제 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
   stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /screener/{kr,us}/{mode}
-  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /calendar
+  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   predictions.py — /review (채점 후 적중률·기록 반환)
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 30분마다 prediction_log.evaluate_pending 백그라운드 실행.
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, extras.worker (추천 후보 종목 미리 수집 예약).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -103,7 +108,7 @@ api/routes/
 
 1. `quote.py` 에서 캔들 조회 — 국내는 KIS 일봉(최대 100개씩 기간을 나눠 받아 날짜 오름차순 정렬), 미국은 yfinance.
 2. `analysis.calc_technical_indicators()` — RSI, MACD, 볼린저밴드, MA20/60 계산.
-3. `analysis.predict_next_day()` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15) → 확률(15~85% 클램프), ATR 기반 목표가·손절가, 지표별 근거(`factors`)와 요약(`summary`). `quote.analyze_candles()` 가 대상일(`target_date`, `target_label`)을 붙인다.
+3. `analysis.predict_next_day(candles, indicators, news, extra)` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15 + 키가 있을 때 거시환경 10·애널리스트 15·실적 10·공시 10) → 확률(15~85% 클램프), 지표별 근거(`factors`)·요약(`summary`)·경고(`warnings`). 가격: `_buy_zone()` 이 지지선·ATR 로 추천 매입가(`buy_price`, `buy_low/high`, `buy_gap_pct`, `buy_comment`), 목표가 = 현재가+2ATR, 손절가 = 매입가 아래. `quote.analyze_candles()` 가 대상일(`target_date`, `target_label`)과 `extras.get_extra()` 를 붙인다.
 4. 분석한 예측은 `prediction_log.record()` 로 저장 → 대상일 장 마감 후 채점.
 5. `analysis.classify_investment_style()` — `long_term_score`, `short_term_score` 반환.
 
@@ -114,7 +119,7 @@ api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → 
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
 components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,
-                     PredictionReasons (전망 근거), StockSearchBox (자동완성), StockQuoteCard, format.ts
+                     PredictionReasons (전망 근거), BuyPrice (추천 매입가), StockSearchBox (자동완성), StockQuoteCard, format.ts
 index.css          — CSS 변수: --bg-primary, --bg-secondary, --bg-card,
                      --accent (#4f8ef7), --green (#34d399), --red (#f87171), --text-muted
 ```
