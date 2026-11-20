@@ -61,6 +61,9 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 - 종목 검색 테스트: `http://localhost:8000/api/stocks/search?q=삼성전자`
 - 백엔드가 `KIS_APP_KEY 가 backend/.env 에 설정되지 않았습니다` 로 안 뜨면 → `backend\.env` 확인
 - 종목마스터 캐시: `backend\app\data\master_cache.json` (하루 1회 KIS에서 자동 갱신, 지우면 다음 실행 때 다시 받음)
+- KIS 토큰 저장 파일: `backend\.kis_token.json` (재시작해도 23시간 재사용. 키를 바꾸면 자동으로 새로 받음)
+- 예측 검증 API: `http://localhost:8000/api/predictions/review?days=30` (호출 시 장 끝난 예측 채점)
+- 백엔드 시작 로그 `[repair] 종목코드 복구 ...` = 잘못 저장된 종목코드를 자동으로 고친 것
 - 헬스체크: `http://localhost:8000/api/health`
 - API 문서: `http://localhost:8000/docs`
 
@@ -111,11 +114,23 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 - `stock_list.json` 삭제로 `backend/app/data/` 폴더가 git에서 사라져 종목마스터 캐시 저장 시 `FileNotFoundError` → 백엔드 시작 실패. 저장 전에 폴더 생성하도록 수정
 - 확인됨: 회사 PC에서 KIS 종목마스터 다운로드·파싱은 정상 (저장 단계까지 도달)
 
+### 2026-11-20 — 기능 추가 4차 (commit `80a4aa5`)
+- **잘못 저장된 종목코드 자동 복구** (`services/repair.py`): 시작 시 투자종목·관심종목의 코드와 종목마스터 이름을 대조, 저장된 이름과 정확히 같은 종목이 하나뿐이면 코드 교체 (SOL AI반도체TOP2플러스 441800 → 0167A0)
+- **다음 거래일 라벨** (`services/market_calendar.py`, `holidays` 패키지 XKRX/NYSE): 예측에 `target_date`, `target_label`("오늘"/"내일"/"월요일(11/23)") 추가 → 금요일엔 "월요일(11/23) 상승 확률"
+- **AI 추천 실시간 갱신**: `/stocks/recommendations/{kind}` 가 호출마다 현재가(국내 KIS 현재가, 미국 yfinance 1분봉)로 오늘 봉을 갱신해 확률 재계산(10초 캐시). 일봉·종목 목록은 15분 캐시. 화면은 15초마다 자동 갱신, 확률 변화량(▲▼%p) 표시
+- **뉴스 요인** (`services/news.py`): 국내 네이버 금융 종목뉴스, 미국 yfinance 뉴스 → 호재/악재 키워드 수로 15점 요인 추가 (종목별 10분 캐시)
+- **예측 검증 메뉴** (`/predictions`, `models/prediction.py`, `services/prediction_log.py`): 추천·투자종목·관심종목·검색에서 낸 예측을 (종목, 대상일)별로 저장(대상일 전까지 최신 값으로 갱신) → 대상일 장 마감 후 채점(30분 주기 + 화면 열 때). 상승 예측(≥55%)/하락 예측(≤45%) 적중률, 확률 구간별 실제 상승 비율, 틀린 이유(시장 동반 등락·시가 갭·거래량 급증·뉴스·근거 지표 실패) 표시
+- **단기/스윙 분류**: 국내 주식 / 미국 / 스팩 / ETF·ETN 탭 (`stock_master.category()`), 거래량 급증 후보 20 → 30종목
+- **속도 개선**: KIS 연결 재사용(keep-alive), 토큰 파일 저장(재시작 시 재발급 생략), 일봉 60초 캐시, 투자종목·관심종목 국내 일봉 1회 호출(100개), 대시보드 지수 배치 조회 + 60초 캐시, 환율 5분 캐시
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
 - [ ] 미국 스크리너는 `yf.screen` 필요 → yfinance 0.2.54 이상 (`pip install -r requirements.txt` 가 버전 맞춰 설치)
-- [ ] 국내 AI 추천은 KIS를 종목마다 호출해서 첫 로딩 10초 내외 (15분 캐시)
+- [ ] 국내 AI 추천은 KIS를 종목마다 호출해서 첫 로딩 10~20초 (이후 15초 갱신은 현재가만 받아 빠름)
+- [ ] 예측은 화면을 열었을 때만 기록됨 — 장 마감 후 앱을 안 열면 장중 마지막으로 본 확률이 채점 대상
+- [ ] 뉴스 분위기는 키워드 개수 기반이라 정확도 한계 있음 (예: "하락 우려 해소" 를 악재로 셀 수 있음)
+- [ ] 네이버 금융 뉴스 페이지 구조가 바뀌면 뉴스 요인이 "뉴스 조회 실패 — 중립"으로 표시됨
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능), PER/PBR 0 표시
 - [x] ~~투자종목 합계 KR(₩)+US($) 환율 없이 합산~~ → 통화별 분리 + 원화 환산 총합
 - [x] ~~단기 추천 KOSDAQ fallback 동기 호출~~ → 국내는 KIS로 조회해서 해당 없음
@@ -123,6 +138,7 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 - [x] ~~국내 PER/PBR 0 고정~~ → KIS 값 사용
 
 ## 다음 할 일 후보
-- KIS 토큰을 파일에 저장 (uvicorn --reload 재시작마다 재발급 → 1분 1회 발급 제한에 걸릴 수 있음)
+- 예측 검증 결과로 지표 가중치 조정 (적중률 낮은 요인 비중 축소)
+- KIS 실시간 웹소켓으로 현재가 수신 (지금은 15초 폴링)
 - 미국 시세도 KIS 해외시세로 전환 검토
 - Electron 데스크탑 래퍼
