@@ -5,7 +5,7 @@ from app.core.database import init_db
 from app.core.config import settings
 from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions
 import asyncio
-from app.services import stock_master, prediction_log
+from app.services import stock_master, prediction_log, extras
 from app.services.repair import repair_symbols
 
 
@@ -18,8 +18,18 @@ async def lifespan(app: FastAPI):
     await repair_symbols()
     # 장이 끝난 예측을 30분마다 채점 (예측 검증 화면을 안 열어도 결과가 쌓이도록)
     task = asyncio.create_task(_evaluate_loop())
+    # FRED·Finnhub·DART 추가 데이터는 호출 제한 때문에 백그라운드 큐로 수집 (.env 에 키가 있을 때만)
+    extras_task = asyncio.create_task(extras.worker())
+    asyncio.get_event_loop().call_later(1.0, _warm_extras)
     yield
     task.cancel()
+    extras_task.cancel()
+
+
+def _warm_extras():
+    """추천 후보 종목의 추가 데이터를 미리 수집 예약"""
+    from app.api.routes.stocks import KR_LONGTERM, US_LONGTERM, US_SHORTTERM_EXTRA
+    extras.warm([(c["market"], c["symbol"]) for c in KR_LONGTERM + US_LONGTERM + US_SHORTTERM_EXTRA])
 
 
 async def _evaluate_loop():

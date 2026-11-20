@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { stockApi, watchlistApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
+import BuyPrice from "../components/common/BuyPrice";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice } from "../components/common/format";
 
@@ -88,9 +89,11 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
         )}
       </div>
 
-      {/* 목표가 / 손절가 / 진입 추천가 */}
+      {/* 추천 매입가 / 목표가 / 손절가 */}
       {pred.target_price && (
+        <>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          <BuyPrice pred={pred} market={item.market} />
           <div style={{ background: "rgba(52, 211, 153, 0.07)", borderRadius: 7, padding: "8px 10px" }}>
             <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>목표가 (익절)</p>
             <p style={{ fontWeight: 700, color: "var(--green)", fontSize: 13 }}>
@@ -103,18 +106,13 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
               {isKR ? `₩${Math.round(pred.stop_loss || 0).toLocaleString()}` : `$${(pred.stop_loss || 0).toFixed(2)}`}
             </p>
           </div>
-          {pred.entry_price && (
-            <div style={{ background: "rgba(79,142,247,0.07)", borderRadius: 7, padding: "8px 10px" }}>
-              <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>진입 추천가</p>
-              <p style={{ fontWeight: 700, color: "var(--accent)", fontSize: 13 }}>
-                {isKR ? `₩${Math.round(pred.entry_price).toLocaleString()}` : `$${pred.entry_price.toFixed(2)}`}
-              </p>
-              {pred.entry_comment && (
-                <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>{pred.entry_comment}</p>
-              )}
-            </div>
-          )}
         </div>
+        {(pred.buy_comment || pred.entry_comment) && (
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: -6 }}>
+            💡 {pred.buy_comment || pred.entry_comment}
+          </p>
+        )}
+        </>
       )}
 
       {/* 근거 */}

@@ -4,6 +4,7 @@ import { watchlistApi, stockApi, errMsg } from "../api/client";
 import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw } from "lucide-react";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
+import BuyPrice from "../components/common/BuyPrice";
 import { fmtPrice, fmtSigned, probColor, probLabel, sessionLabel } from "../components/common/format";
 
 type Sort = "added" | "change" | "prob" | "target";
@@ -285,6 +286,7 @@ export default function Watchlist() {
                           <p style={{ fontWeight: 700, fontSize: 13, color: probColor(pred.probability) }}>
                             상승 확률 {pred.probability}% · {probLabel(pred.probability)}
                           </p>
+                          <BuyPrice pred={pred} market={item.market} compact label="AI 추천 매입가" />
                           <PredictionReasons pred={pred} />
                         </>
                       )}

@@ -2,6 +2,8 @@ import { useState } from "react";
 import { stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import StockSearchBox from "../components/common/StockSearchBox";
+import BuyPrice from "../components/common/BuyPrice";
+import PredictionReasons from "../components/common/PredictionReasons";
 
 export default function Search() {
   const [picked, setPicked] = useState<any>(null);
@@ -120,7 +122,8 @@ export default function Search() {
                     <p style={{ fontSize: 13, fontWeight: 600, marginTop: 6 }}>{pred.signal}</p>
                   </div>
                   {pred.target_price && (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                      <BuyPrice pred={pred} market={market} />
                       <div style={{ background: "rgba(52,211,153,0.07)", borderRadius: 7, padding: 10 }}>
                         <p style={{ fontSize: 11, color: "var(--text-muted)" }}>목표가</p>
                         <p style={{ color: "var(--green)", fontWeight: 700 }}>
@@ -135,13 +138,10 @@ export default function Search() {
                       </div>
                     </div>
                   )}
-                  <ul style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    {pred.reasons?.map((r: string, i: number) => (
-                      <li key={i} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 6 }}>
-                        <span style={{ color: "var(--accent)", flexShrink: 0 }}>•</span>{r}
-                      </li>
-                    ))}
-                  </ul>
+                  {(pred.buy_comment || pred.entry_comment) && (
+                    <p style={{ fontSize: 12, color: "var(--text-secondary)" }}>💡 {pred.buy_comment || pred.entry_comment}</p>
+                  )}
+                  <PredictionReasons pred={pred} defaultOpen />
                   <p style={{ fontSize: 11, color: "var(--text-muted)", borderTop: "1px solid var(--border)", paddingTop: 8 }}>
                     {pred.disclaimer}
                   </p>
@@ -153,7 +153,10 @@ export default function Search() {
           {/* 뉴스 */}
           {data.news && data.news.length > 0 && (
             <div className="card">
-              <h3 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>관련 뉴스</h3>
+              <h3 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>
+                관련 뉴스
+                {data.news_source && <span style={{ fontWeight: 400, fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>출처: {data.news_source}</span>}
+              </h3>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {data.news.filter((n: any) => n.title).map((n: any, i: number) => (
                   <a key={i} href={n.url} target="_blank" rel="noopener noreferrer"

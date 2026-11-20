@@ -73,7 +73,7 @@ def calc_technical_indicators(candles: list) -> dict:
     }
 
 
-def predict_next_day(candles: list, indicators: dict, news: dict | None = None) -> dict:
+def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None) -> dict:
     """
     내일 상승 확률 예측 (규칙 기반 + 기술적 분석 종합)
     - 완벽한 예측은 없으며, 참고용 확률입니다
@@ -186,6 +186,23 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None) 
         score += got
         add("뉴스", short, detail, got, 15)
 
+    # 6~9. 추가 데이터 요인 (FRED·Finnhub·DART — extras.py, 키가 있는 것만)
+    warnings: list = []
+    for name, full, fn in _EXTRA_FACTORS:
+        if not extra or name not in extra:
+            continue
+        d = extra[name]
+        max_score += full
+        half = full // 2
+        if d.get("pending"):
+            got, short, detail = half, f"{_EXTRA_LABEL[name]} 수집 중", "데이터 수집 중 — 잠시 후 반영 (중립 처리)"
+        elif d.get("error"):
+            got, short, detail = half, f"{_EXTRA_LABEL[name]} 조회 실패", f"조회 실패 — 중립 처리 ({d['error'][:120]})"
+        else:
+            got, short, detail = fn(d, full, warnings)
+        score += got
+        add(_EXTRA_LABEL[name], short, detail, got, full)
+
     reasons = [f["detail"] for f in factors]
 
     # 확률 계산
@@ -208,33 +225,20 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None) 
         signal = "매도 고려"
         signal_color = "red"
 
-    # 목표가·손절가 (ATR 기반 단순 계산)
+    # 목표가·손절가·추천 매입가 (ATR + 지지선)
+    target_price = stop_loss = None
+    buy = {"price": None, "low": None, "high": None, "gap_pct": None, "comment": None, "basis": None}
     if candles and curr:
         highs = [c["high"] for c in candles[-14:]]
         lows = [c["low"] for c in candles[-14:]]
-        atr = np.mean([h - l for h, l in zip(highs, lows)])
+        atr = float(np.mean([h - l for h, l in zip(highs, lows)])) or curr * 0.01
+        buy = _buy_zone(candles, indicators, probability, curr, atr)
         target_price = round(curr + atr * 2, 2)
-        stop_loss = round(curr - atr * 1.5, 2)
-    else:
-        target_price = None
-        stop_loss = None
+        # 손절가는 추천 매입가보다 아래 (매입가 지지선이 깨지면 손절)
+        stop_loss = round(min(curr - atr * 1.5, buy["price"] - atr * 1.0), 2)
 
-    # 진입 추천가
-    entry_price = None
-    entry_comment = None
-    if curr:
-        ma20 = indicators.get("ma20")
-        bb_lower_v = indicators.get("bb_lower")
-        if probability >= 65:
-            if bb_lower_v and curr > bb_lower_v * 1.03:
-                entry_price = round(bb_lower_v * 1.01, 2)
-                entry_comment = "볼린저 하단 근처 분할 매수"
-            else:
-                entry_price = round(curr * 0.985, 2)
-                entry_comment = "1~2% 하락 시 분할 매수"
-        elif probability >= 55:
-            entry_price = round(curr, 2)
-            entry_comment = "현재가 소규모 진입"
+    # 예전 필드명 유지 (entry_*)
+    entry_price, entry_comment = buy["price"], buy["comment"]
 
     confidence = "높음" if max_score >= 80 and len(reasons) >= 3 else "중간" if max_score >= 50 else "낮음"
 
@@ -253,6 +257,8 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None) 
         summary = "방향성 약함 — 상승·하락 신호가 섞여 있음"
         if ups or downs:
             summary += f" (긍정: {up_txt or '없음'} / 부정: {down_txt or '없음'})"
+    for w in warnings:
+        summary += f" · ⚠ {w}"
 
     return {
         "probability": probability,
@@ -263,11 +269,138 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None) 
         "stop_loss": stop_loss,
         "entry_price": entry_price,
         "entry_comment": entry_comment,
+        "buy_price": buy["price"],
+        "buy_low": buy["low"],
+        "buy_high": buy["high"],
+        "buy_gap_pct": buy["gap_pct"],
+        "buy_comment": buy["comment"],
+        "buy_basis": buy["basis"],
+        "warnings": warnings,
         "reasons": reasons,
         "factors": factors,
         "summary": summary,
         "disclaimer": "이 분석은 참고용이며 투자 손실에 대한 책임을 지지 않습니다.",
     }
+
+
+def _buy_zone(candles: list, ind: dict, prob: int, curr: float, atr: float) -> dict:
+    """추천 매입가: 현재가 아래 지지선(20일선·60일선·볼린저·최근 저점)과 ATR(하루 평균 변동폭)로 계산
+
+    - 상승 우세(65%↑): 지금 가격대 분할 매수
+    - 약상승(55~64%): 가까운 지지선(1.5 ATR 이내)까지 눌리면 매수
+    - 중립(45~54%): 1 ATR 이상 아래 지지선까지 기다림
+    - 하락 우세(45% 미만): 더 깊은 지지선(볼린저 하단·최근 저점)에서 하락이 멈추는지 확인 후
+    """
+    low20 = min(c["low"] for c in candles[-20:])
+    cands = [("20일선", ind.get("ma20")), ("60일선", ind.get("ma60")), ("볼린저 중심선", ind.get("bb_mid")),
+             ("볼린저 하단", ind.get("bb_lower")), ("최근 20일 저점", low20)]
+    supports = sorted([(n, float(v)) for n, v in cands if v and v < curr], key=lambda x: -x[1])
+
+    def pick(min_gap: float, max_gap: float | None):
+        for n, v in supports:
+            gap = curr - v
+            if gap >= min_gap and (max_gap is None or gap <= max_gap):
+                return n, v
+        return None
+
+    if prob >= 65:
+        price, basis = curr - atr * 0.3, "현재가 부근"
+        comment = "상승 우세 — 지금 가격대에서 2~3번 나눠 분할 매수"
+    elif prob >= 55:
+        s = pick(atr * 0.2, atr * 1.5)
+        if s:
+            basis, price = s
+            comment = f"약상승 — {basis} 부근까지 눌리면 매수"
+        else:
+            price, basis = curr - atr * 0.5, "소폭 조정"
+            comment = "약상승 — 하루 변동폭 절반 정도 조정 시 매수"
+    elif prob >= 45:
+        s = pick(atr * 1.0, atr * 3.0)
+        if s:
+            basis, price = s
+            comment = f"방향성 약함 — {basis}까지 내려오면 매수, 그 전엔 관망"
+        else:
+            price, basis = curr - atr * 1.2, "조정 대기"
+            comment = "방향성 약함 — 하루 변동폭 이상 조정 시 매수, 그 전엔 관망"
+    else:
+        # 볼린저 하단·최근 저점 중, 현재가보다 0.5 ATR 이상 아래인 가장 가까운 것 (없으면 가장 깊은 것)
+        deep = [(n, v) for n, v in supports if n in ("볼린저 하단", "최근 20일 저점")]
+        far_enough = [x for x in deep if curr - x[1] >= atr * 0.5]
+        if far_enough:
+            basis, price = max(far_enough, key=lambda x: x[1])
+        elif deep:
+            basis, price = min(deep, key=lambda x: x[1])
+        else:
+            price, basis = curr - atr * 2.0, "추가 하락 대기"
+        comment = f"하락 우세 — {basis}에서 하락이 멈추는지(양봉·거래량 감소) 확인 후 매수"
+
+    price = min(price, curr)
+    return {
+        "price": round(price, 2),
+        "low": round(price - atr * 0.3, 2),
+        "high": round(min(curr, price + atr * 0.3), 2),
+        "gap_pct": round((price / curr - 1) * 100, 2),
+        "comment": comment,
+        "basis": basis,
+    }
+
+
+# ---------------- 추가 데이터 요인 (extras.py) ----------------
+
+def _f_macro(d: dict, full: int, warnings: list):
+    got = round(full * d["score"] / 10)
+    note = ", ".join(d.get("notes", [])[:3])
+    if d["score"] >= 6:
+        return got, "시장 위험선호", f"거시 환경 양호 — {note}"
+    if d["score"] <= 3:
+        return got, "시장 위험회피", f"거시 환경 불안 — {note}"
+    return got, "시장 환경 보통", f"거시 환경 보통 — {note}"
+
+
+def _f_analyst(d: dict, full: int, warnings: list):
+    if not d.get("total"):
+        return full // 2, "애널리스트 의견 없음", "애널리스트 의견 데이터 없음 (중립)"
+    bull, bear = d["bull_ratio"], d["bear_ratio"]
+    got = round(full * max(0.0, min(1.0, 0.5 + (bull - bear) / 2)))
+    txt = (f"{d['period']} 기준 {d['total']}명 중 매수 {d['strong_buy'] + d['buy']} · 보유 {d['hold']} · "
+           f"매도 {d['sell'] + d['strong_sell']}")
+    short = "애널리스트 매수 우위" if bull >= 0.6 else "애널리스트 매도 우위" if bear >= 0.3 else "애널리스트 중립"
+    return got, short, txt
+
+
+def _f_earnings(d: dict, full: int, warnings: list):
+    if d.get("upcoming"):
+        warnings.append(f"실적발표 {d['upcoming'][5:].replace('-', '/')} 예정 — 변동성 확대")
+    if not d.get("quarters"):
+        return full // 2, "실적 데이터 없음", "최근 실적 데이터 없음 (중립)"
+    ratio = d["beats"] / d["quarters"]
+    got = round(full * ratio)
+    txt = f"최근 {d['quarters']}분기 중 예상치 상회 {d['beats']}회 · 하회 {d['misses']}회"
+    if d.get("last_surprise_pct") is not None:
+        txt += f" (직전 {d['last_period']} 서프라이즈 {d['last_surprise_pct']:+.1f}%)"
+    if d.get("upcoming"):
+        txt += f" · 실적발표 {d['upcoming']} 예정"
+    short = "실적 꾸준히 상회" if ratio >= 0.75 else "실적 하회 잦음" if ratio <= 0.25 else "실적 혼조"
+    return got, short, txt
+
+
+def _f_disclosure(d: dict, full: int, warnings: list):
+    if d.get("na"):
+        return full // 2, "공시 대상 아님", "DART 공시 대상 아님 (중립)"
+    pos, neg = d.get("pos", 0), d.get("neg", 0)
+    if pos + neg == 0:
+        return full // 2, "특이 공시 없음", f"최근 14일 공시 {d.get('total', 0)}건, 호재·악재성 공시 없음"
+    got = round(full * pos / (pos + neg))
+    sample = next((i["title"] for i in d.get("items", []) if i["tone"] == ("neg" if neg >= pos else "pos")), "")
+    if neg > pos:
+        warnings.append(f"악재성 공시: {sample[:30]}")
+    short = "호재성 공시" if pos > neg else "악재성 공시" if neg > pos else "공시 혼재"
+    return got, short, f"최근 14일 호재성 {pos} · 악재성 {neg}" + (f" — 예: {sample[:50]}" if sample else "")
+
+
+_EXTRA_FACTORS = [("macro", 10, _f_macro), ("analyst", 15, _f_analyst),
+                  ("earnings", 10, _f_earnings), ("disclosure", 10, _f_disclosure)]
+_EXTRA_LABEL = {"macro": "거시환경", "analyst": "애널리스트", "earnings": "실적", "disclosure": "공시"}
 
 
 def classify_investment_style(candles: list, indicators: dict, per: float = 0, pbr: float = 0) -> dict:

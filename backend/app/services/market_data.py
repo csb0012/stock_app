@@ -146,57 +146,6 @@ async def get_us_stock_history(symbol: str, period: str = "6mo") -> list:
     return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
 
-async def get_news_naver(symbol: str, name: str = "", market: str = "KR") -> list:
-    """네이버 금융 뉴스 스크래핑"""
-    from bs4 import BeautifulSoup
-
-    async def _fetch():
-        results = []
-        try:
-            if market == "KR":
-                url = f"https://finance.naver.com/item/news_news.naver?code={symbol}&page=1"
-            else:
-                query = name or symbol
-                url = f"https://finance.naver.com/search/searchList.naver?query={query}&page=1"
-
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
-                resp = await client.get(url, timeout=10)
-                soup = BeautifulSoup(resp.text, "lxml")
-
-                if market == "KR":
-                    rows = soup.select("table.type5 tbody tr")
-                    for row in rows[:10]:
-                        a_tag = row.select_one("td.title a")
-                        date_td = row.select_one("td.date")
-                        if a_tag and date_td:
-                            results.append({
-                                "title": a_tag.get_text(strip=True),
-                                "url": "https://finance.naver.com" + a_tag.get("href", ""),
-                                "date": date_td.get_text(strip=True),
-                                "source": "네이버 금융",
-                            })
-                else:
-                    items = soup.select("dl.newsList dd.articleSubject")
-                    dates = soup.select("dl.newsList dd.articleDate")
-                    for i, item in enumerate(items[:10]):
-                        a_tag = item.select_one("a")
-                        if a_tag:
-                            results.append({
-                                "title": a_tag.get_text(strip=True),
-                                "url": "https://finance.naver.com" + a_tag.get("href", ""),
-                                "date": dates[i].get_text(strip=True) if i < len(dates) else "",
-                                "source": "네이버 금융",
-                            })
-        except Exception as e:
-            results = [{"error": str(e)}]
-        return results
-
-    return await _fetch()
-
-
 async def get_economic_calendar() -> list:
     """Finnhub 경제 캘린더"""
     if not settings.finnhub_api_key:

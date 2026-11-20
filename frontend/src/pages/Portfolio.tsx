@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { portfolioApi, stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
+import BuyPrice from "../components/common/BuyPrice";
 import { probLabel, sessionLabel } from "../components/common/format";
 import { Briefcase, Plus, Trash2, X, Search, Edit2, Check, AlertTriangle } from "lucide-react";
 
@@ -425,6 +426,7 @@ export default function Portfolio() {
                             {pred.signal} · {pred.confidence} 신뢰도
                           </p>
                         )}
+                        <BuyPrice pred={pred} market={item.market} compact label="추가 매수 추천가" />
                         <PredictionReasons pred={pred} />
                       </div>
                     ) : (

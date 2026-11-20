@@ -22,3 +22,4 @@ backend/app/data/master_cache.json
 backend/.kis_token.json
 backend/.secret_key
 *.log
+backend/app/data/dart_corp.json

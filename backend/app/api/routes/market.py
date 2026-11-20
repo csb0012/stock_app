@@ -32,6 +32,13 @@ async def get_market_status(current_user: User = Depends(get_current_user)):
     return {"KR": market_status("KR"), "US": market_status("US")}
 
 
+@router.get("/extras-status")
+async def get_extras_status(current_user: User = Depends(get_current_user)):
+    """점검용: FRED·Finnhub·DART 키 설정 여부와 수집 현황"""
+    from app.services import extras
+    return extras.status()
+
+
 @router.get("/indices")
 async def get_indices(current_user: User = Depends(get_current_user)):
     return await get_index_data()
