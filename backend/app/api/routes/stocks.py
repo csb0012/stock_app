@@ -24,7 +24,7 @@ _CACHE_TTL = 900.0
 
 # --- 스크리너 캐시 (1분 TTL) — 1분마다 화면이 갱신되므로 KIS 호출 수 절약 ---
 _screener_cache: dict = {}
-_SCREENER_TTL = 60.0
+_SCREENER_TTL = {"kr": 8.0, "us": 30.0}  # 화면은 10초마다 갱신 — 미국(Yahoo 스크리너)은 무거워서 30초
 
 # --- 추천 후보 종목 목록 ---
 KR_LONGTERM = [
@@ -216,7 +216,7 @@ async def _live_locked(kind: str) -> dict:
                       "news": n and {k: n.get(k) for k in ("total", "pos", "neg", "error", "source")} | {"headlines": n.get("headlines", [])[:5]},
                       "live_error": lp.get("error"),
                       **analyze_candles(r["market"], candles, r.get("per", 0), r.get("pbr", 0), n,
-                                        get_extra(r["market"], s))}
+                                        get_extra(r["market"], s), s)}
         return out
 
     raw = await asyncio.get_event_loop().run_in_executor(None, recompute)
@@ -278,7 +278,7 @@ _MODES = ("volume_surge", "trading_value", "gainers", "losers")
 
 async def _cached_screener(key: str, fn):
     hit = _screener_cache.get(key)
-    if hit and time.time() - hit["ts"] < _SCREENER_TTL:
+    if hit and time.time() - hit["ts"] < _SCREENER_TTL[key.split(":")[0]]:
         return hit["data"]
     try:
         data = await fn()
@@ -330,6 +330,19 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
         raise
     except Exception as e:
         _fail(e)
+    # 일봉은 60초 캐시라 현재가만 실시간으로 덮어써서 다시 계산 (화면이 15초마다 갱신)
+    lp, news = await asyncio.gather(live_prices([{"market": market, "symbol": symbol}]),
+                                    get_news_many([(market, symbol)]))
+    lp = lp.get((market, symbol), {})
+    if "price" in lp:
+        candles = patch_candles(market, r["candles"], lp)
+        prev = candles[-2]["close"] if len(candles) >= 2 else candles[-1]["close"]
+        change = lp.get("change_rate")
+        if change is None:
+            change = round((lp["price"] / prev - 1) * 100, 2) if prev else 0.0
+        r = {**r, "price": lp["price"], "change_rate": change, "candles": candles,
+             **analyze_candles(market, candles, r.get("per", 0), r.get("pbr", 0), news.get((market, symbol)),
+                               get_extra(market, symbol), symbol)}
     await prediction_log.record([r], "검색")
     return strip_candles(r)
 

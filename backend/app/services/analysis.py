@@ -73,7 +73,35 @@ def calc_technical_indicators(candles: list) -> dict:
     }
 
 
-def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None) -> dict:
+# 학습 모델을 쓸 때 뉴스·외부 데이터는 과거 기록이 없어 학습에 못 넣음 → 확률을 소폭만 움직임 (최대 ±%p)
+_SHIFT = {"뉴스": 3, "거시환경": 2, "애널리스트": 3, "실적": 2, "공시": 3}
+
+
+def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
+    """학습 모델 확률 + 뉴스·외부데이터 소폭 보정 → (최종 확률, 요약 문장)"""
+    p = model["prob"] * 100
+    shift = 0.0
+    for f in factors:
+        if f["name"] in _SHIFT and f.get("max"):
+            shift += (f["score"] / f["max"] - 0.5) * 2 * _SHIFT[f["name"]]
+    prob = int(round(max(15, min(85, p + shift))))
+    drivers = ", ".join(f"{d['label']} {d['value']}({'↑' if d['effect'] > 0 else '↓'})" for d in model.get("drivers", []))
+    wf = model.get("walk_forward") or {}
+    when = {"KR": " · 간밤 미국장 반영", "KR_base": " · 미국장 결과 반영 전"}.get(model.get("variant"), "")
+    detail = (f"과거 {model.get('n') or 0:,}건으로 학습한 모델 → 상승 {p:.0f}%{when}"
+              f"{f' · 뉴스·외부데이터 보정 {shift:+.1f}%p' if abs(shift) >= 0.5 else ''}"
+              f" · 주요 근거: {drivers or '-'}"
+              f" · 백테스트 적중률 {wf.get('accuracy')}% (규칙 {(model.get('rules') or {}).get('accuracy')}%)")
+    impact = "up" if p >= 55 else "down" if p <= 45 else "neutral"
+    factors.insert(0, {"name": "학습 모델", "short": f"학습 모델 {p:.0f}%", "detail": detail,
+                       "impact": impact, "score": round(p), "max": 100})
+    head = "상승 우세" if prob >= 55 else "하락 우세" if prob <= 45 else "방향성 약함"
+    summary = f"학습 모델 {head} ({prob}%) — 주요 근거: {drivers or '-'} · 지표 점수 기준 {rule_prob}%"
+    return prob, summary
+
+
+def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None,
+                     model: dict | None = None) -> dict:
     """
     내일 상승 확률 예측 (규칙 기반 + 기술적 분석 종합)
     - 완벽한 예측은 없으며, 참고용 확률입니다
@@ -208,6 +236,20 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     # 확률 계산
     probability = int((score / max_score * 60) + 20) if max_score > 0 else 50
     probability = max(15, min(85, probability))  # 15~85% 범위
+    rule_probability = probability
+
+    # 학습 모델 (백테스트에서 규칙보다 잘 맞았을 때만 채택됨 — ml_model.py)
+    model_summary = None
+    model_status = None
+    method = "rules"
+    if model and "prob" in model and model.get("adopted"):
+        probability, model_summary = _apply_model(model, factors, rule_probability)
+        method = f"model:{model.get('variant')}"
+    elif model and "prob" in model:
+        model_status = (f"학습 모델 미채택 ({model.get('reason')}) → 규칙 점수 사용 "
+                        f"(참고: 모델 확률 {model['prob'] * 100:.0f}%)")
+    elif model:
+        model_status = f"학습 모델 사용 안 함 — {model.get('status')}"
 
     if probability >= 65:
         signal = "매수 고려"
@@ -257,11 +299,17 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
         summary = "방향성 약함 — 상승·하락 신호가 섞여 있음"
         if ups or downs:
             summary += f" (긍정: {up_txt or '없음'} / 부정: {down_txt or '없음'})"
+    if model_summary:
+        summary = model_summary
     for w in warnings:
         summary += f" · ⚠ {w}"
 
     return {
         "probability": probability,
+        "rule_probability": rule_probability,
+        "model_probability": round(model["prob"] * 100) if model and "prob" in model else None,
+        "method": method,
+        "model_status": model_status,
         "signal": signal,
         "signal_color": signal_color,
         "confidence": confidence,

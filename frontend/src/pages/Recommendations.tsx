@@ -154,7 +154,7 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
 }
 
 type Group = "KR" | "US" | "SPAC" | "ETF";
-type Sort = "default" | "prob_desc" | "prob_asc" | "down_desc" | "down_asc";
+type Sort = "default" | "prob_desc" | "down_desc";
 
 const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
   { key: "KR", label: "🇰🇷 국내 주식", match: (x) => x.market === "KR" && x.category === "stock" },
@@ -198,8 +198,8 @@ export default function Recommendations() {
   const items = all
     .filter(g.match)
     .sort((a, b) =>
-      sort === "prob_desc" || sort === "down_asc" ? prob(b) - prob(a)
-      : sort === "prob_asc" || sort === "down_desc" ? prob(a) - prob(b)
+      sort === "prob_desc" ? prob(b) - prob(a)
+      : sort === "down_desc" ? prob(a) - prob(b)
       : tab === "long" ? (b.long_term_score || 0) - (a.long_term_score || 0)
       : prob(b) - prob(a)
     );
@@ -217,7 +217,8 @@ export default function Recommendations() {
       <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "rgba(251,191,36,0.3)", background: "rgba(251,191,36,0.04)" }}>
         <AlertTriangle size={15} style={{ color: "var(--yellow)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-          이 추천은 RSI·MACD·볼린저밴드·이동평균과 뉴스 키워드를 기반으로 하며, 미래 수익을 보장하지 않습니다.
+          상승 확률은 과거 2년 일봉으로 학습한 모델(백테스트에서 기존 지표 점수보다 잘 맞을 때만 사용, 아니면 RSI·MACD·볼린저·이평 점수)에
+          뉴스·외부 데이터를 소폭 반영한 값이며, 미래 수익을 보장하지 않습니다.
           실제 적중률은 사이드바의 "예측 검증"에서 확인할 수 있습니다.
         </p>
       </div>
@@ -247,9 +248,7 @@ export default function Recommendations() {
           {([
             ["default", tab === "long" ? "장기 적합도순" : "추천순"],
             ["prob_desc", "상승확률 높은 순"],
-            ["prob_asc", "상승확률 낮은 순"],
             ["down_desc", "하락확률 높은 순"],
-            ["down_asc", "하락확률 낮은 순"],
           ] as [Sort, string][]).map(([k, label]) => (
             <button key={k} className={`btn ${sort === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setSort(k)}>
               {label}

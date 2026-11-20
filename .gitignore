@@ -23,3 +23,4 @@ backend/.kis_token.json
 backend/.secret_key
 *.log
 backend/app/data/dart_corp.json
+backend/app/data/model_*.json

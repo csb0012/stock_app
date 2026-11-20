@@ -65,6 +65,9 @@ async def _record(rows: list, source: str):
             existing.signal = p.get("signal")
             existing.summary = p.get("summary")
             existing.factors = json.dumps(p.get("factors", []), ensure_ascii=False)
+            existing.method = p.get("method")
+            existing.rule_probability = p.get("rule_probability")
+            existing.model_probability = p.get("model_probability")
         await db.commit()
 
 
@@ -222,7 +225,9 @@ def _row(l, kind: str) -> dict:
         "id": f"{kind[0]}{l.id}", "kind": kind, "market": l.market, "symbol": l.symbol, "name": l.name,
         "sources": l.sources, "base_date": l.base_date, "target_date": l.target_date, "base_price": l.base_price,
         "probability": l.probability, "direction": direction(l.probability), "signal": l.signal,
-        "summary": l.summary, "factors": json.loads(l.factors or "[]"),
+        "summary": l.summary, "factors": json.loads(l.factors or "[]"), "method": l.method,
+        "rule_probability": l.rule_probability, "model_probability": l.model_probability,
+        "preopen_probability": l.preopen_probability,
         "evaluated": l.evaluated, "outcome": l.outcome, "actual_close": l.actual_close,
         "actual_change": l.actual_change, "gap_pct": l.gap_pct, "volume_ratio": l.volume_ratio,
         "index_name": l.index_name, "index_change": l.index_change,
@@ -291,6 +296,26 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
         by_date.setdefault(r["target_date"], []).append(r)
     daily = [{"date": d, **_acc(v)} for d, v in sorted(by_date.items())]
 
+    # 예측 방식별 적중률 — 같은 기록에 대해 규칙 점수 / 학습 모델 / (국내) 장 시작 전 학습 모델 비교
+    method_accuracy = []
+    for key, label in (("rule_probability", "규칙 점수 (RSI·MACD·볼린저·이평)"),
+                       ("model_probability", "학습 모델"),
+                       ("preopen_probability", "학습 모델 · 간밤 미국장 반영 (국내, 장 시작 전)")):
+        rs = [r for r in rows if r[key] is not None and r["actual_change"] is not None and r["evaluated"]]
+        up = [r for r in rs if r[key] >= UP_TH]
+        dn = [r for r in rs if r[key] <= DOWN_TH]
+        hit = sum(1 for r in up if r["actual_change"] > 0) + sum(1 for r in dn if r["actual_change"] < 0)
+        dirs = [r for r in rs if r[key] != 50]
+        dir_hit = sum(1 for r in dirs if (r[key] > 50) == (r["actual_change"] > 0) and r["actual_change"] != 0)
+        method_accuracy.append({
+            "key": key, "label": label, "n": len(rs), "calls": len(up) + len(dn), "hit": hit,
+            "accuracy": round(hit / (len(up) + len(dn)) * 100, 1) if up or dn else None,
+            "coverage": round((len(up) + len(dn)) / len(rs) * 100, 1) if rs else None,
+            "up_accuracy": round(sum(1 for r in up if r["actual_change"] > 0) / len(up) * 100, 1) if up else None,
+            "down_accuracy": round(sum(1 for r in dn if r["actual_change"] < 0) / len(dn) * 100, 1) if dn else None,
+            "dir_accuracy": round(dir_hit / len(dirs) * 100, 1) if dirs else None,
+        })
+
     # 종목별 적중률 (채점 5건 이상)
     by_sym: dict = {}
     for r in scored:
@@ -327,6 +352,7 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
         "calibration": buckets,
         "factor_accuracy": factor_accuracy,
         "by_symbol": by_symbol,
+        "method_accuracy": method_accuracy,
         "daily": daily,
         "counts": counts,
         "items": items,

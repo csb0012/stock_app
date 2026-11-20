@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.api.routes.auth import get_current_user
 from app.models.user import User
-from app.services import prediction_log, backtest
+from app.services import prediction_log, backtest, ml_model
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -23,6 +23,7 @@ async def review_predictions(
     data = await prediction_log.review(days, market, kind, outcome, limit)
     data["newly_evaluated"] = evaluated
     data["backtest"] = backtest.status()
+    data["model"] = ml_model.status()
     return data
 
 

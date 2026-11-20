@@ -19,7 +19,8 @@ export default function StockQuoteCard({
   const { data, isLoading, error } = useQuery({
     queryKey: ["quote", item.market, item.symbol],
     queryFn: () => stockApi.quote(item.market, item.symbol).then((r) => r.data),
-    staleTime: 60_000,
+    refetchInterval: 15_000,  // 현재가·상승 확률 15초마다 갱신
+    refetchIntervalInBackground: false,
   });
   const pred = data?.prediction;
   const ind = data?.indicators || {};

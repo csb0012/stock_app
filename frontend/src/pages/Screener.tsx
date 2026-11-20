@@ -4,12 +4,13 @@ import { stockApi, watchlistApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import StockSearchBox from "../components/common/StockSearchBox";
 import StockQuoteCard from "../components/common/StockQuoteCard";
-import { TrendingUp, TrendingDown, Star, Check, Flame, ArrowDownRight, BarChart3, Activity } from "lucide-react";
+import { TrendingUp, TrendingDown, Star, Check, Flame, ArrowDownRight, BarChart3, Activity, RefreshCw } from "lucide-react";
 
 type Market = "KR" | "US";
 type Mode = "volume_surge" | "trading_value" | "gainers" | "losers";
 
 const PAGE = 20;
+const REFRESH_SEC = 10;
 
 const MODES: { key: Mode; label: string; icon: any; desc: string }[] = [
   { key: "volume_surge",   label: "거래량 급증", icon: Activity,       desc: "평균 대비 거래량 폭증 종목" },
@@ -26,13 +27,14 @@ export default function Screener() {
   const [shown, setShown] = useState(PAGE);
   const [picked, setPicked] = useState<any>(null);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["screener", market, mode],
     queryFn: () =>
       market === "KR"
         ? stockApi.screenerKR(mode).then((r) => r.data)
         : stockApi.screenerUS(mode).then((r) => r.data),
-    refetchInterval: 60_000,
+    refetchInterval: REFRESH_SEC * 1000,
+    refetchIntervalInBackground: false,
   });
 
   const { data: watchlist = [] } = useQuery({
@@ -58,7 +60,7 @@ export default function Screener() {
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>종목 탐색</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>국내 · 미국 시장 실시간 스크리너 (1분 갱신) · 국내: KIS 순위 · 미국: Yahoo 전체 시장</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>국내 · 미국 시장 실시간 스크리너 ({REFRESH_SEC}초마다 갱신) · 국내: KIS 순위 · 미국: Yahoo 전체 시장</p>
       </div>
 
       {/* 종목 검색 */}
@@ -118,7 +120,16 @@ export default function Screener() {
         ))}
       </div>
 
-      <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 10 }}>{modeInfo.desc}</p>
+      <p style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12, marginBottom: 10 }}>
+        {modeInfo.desc}
+        {dataUpdatedAt > 0 && (
+          <>
+            <span>·</span>
+            <RefreshCw size={12} className={isFetching ? "spin" : undefined} />
+            마지막 갱신 {new Date(dataUpdatedAt).toLocaleTimeString("ko-KR", { hour12: false })} · {REFRESH_SEC}초마다 자동 갱신
+          </>
+        )}
+      </p>
 
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>

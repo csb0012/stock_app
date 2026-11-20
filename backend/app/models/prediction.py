@@ -17,6 +17,11 @@ class _PredictionColumns:
     signal = Column(String, nullable=True)
     summary = Column(Text, nullable=True)
     factors = Column(Text, nullable=True)          # JSON
+    # 예측 방식별 확률 — 방식별 적중률 비교용 (probability 는 화면에 보여준/채점한 값)
+    method = Column(String, nullable=True)                 # model:KR / model:KR_base / model:US / rules
+    rule_probability = Column(Integer, nullable=True)      # 규칙 점수(RSI·MACD·볼린저·이평…) 확률
+    model_probability = Column(Integer, nullable=True)     # 학습 모델 확률 (국내는 간밤 미국장 반영 전 KR_base)
+    preopen_probability = Column(Integer, nullable=True)   # 국내: 간밤 미국장 반영 후(장 시작 전) 학습 모델 확률
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

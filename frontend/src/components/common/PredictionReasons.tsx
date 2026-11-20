@@ -22,6 +22,9 @@ export default function PredictionReasons({ pred, defaultOpen = false }: { pred:
       {pred.summary && (
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{pred.summary}</p>
       )}
+      {pred.model_status && (
+        <p style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5, marginTop: 2 }}>ⓘ {pred.model_status}</p>
+      )}
       {factors.length > 0 && (
         <button
           onClick={() => setOpen(!open)}

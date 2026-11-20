@@ -80,8 +80,10 @@ services/
                    호출 제한 때문에 백그라운드 큐(worker)로 수집, get_extra() 는 기다리지 않고 캐시값 또는 pending 반환
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨
   prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점(grade) · 적중률/틀린 이유 집계 (review: 실제+백테스트 합산, 실제 우선)
-  backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 일봉 130개만으로 예측 → 채점 → prediction_backtest 저장 (증분, 하루 1회)
-                   뉴스·외부 데이터는 과거 기록이 없어 기술적 지표만 사용. 미래 데이터를 쓰지 않는 것이 핵심 규칙
+  backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 데이터만으로 규칙 점수·학습 모델(walk-forward) 예측 → 채점 →
+                   prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
+  ml_model.py    — 학습 모델(numpy 로지스틱 회귀): feature_frame(특징값), walk_forward, adoption(채택 조건), live_predict(실시간).
+                   변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base. 결과 app/data/model_*.json (gitignore)
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — yfinance: 지수/매크로/빅테크; Finnhub: 경제 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
@@ -93,10 +95,10 @@ api/routes/
   market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
-  predictions.py — /review (채점 후 적중률·기록, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
+  predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행), extras.worker (추천 후보 종목 미리 수집 예약).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), 국내 거래일 08:20~08:58 장 시작 전 예측 갱신(_preopen_loop), extras.worker (추천 후보 종목 미리 수집 예약).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -110,7 +112,7 @@ api/routes/
 
 1. `quote.py` 에서 캔들 조회 — 국내는 KIS 일봉(최대 100개씩 기간을 나눠 받아 날짜 오름차순 정렬), 미국은 yfinance.
 2. `analysis.calc_technical_indicators()` — RSI, MACD, 볼린저밴드, MA20/60 계산.
-3. `analysis.predict_next_day(candles, indicators, news, extra)` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15 + 키가 있을 때 거시환경 10·애널리스트 15·실적 10·공시 10) → 확률(15~85% 클램프), 지표별 근거(`factors`)·요약(`summary`)·경고(`warnings`). 가격: `_buy_zone()` 이 지지선·ATR 로 추천 매입가(`buy_price`, `buy_low/high`, `buy_gap_pct`, `buy_comment`), 목표가 = 현재가+2ATR, 손절가 = 매입가 아래. `quote.analyze_candles()` 가 대상일(`target_date`, `target_label`)과 `extras.get_extra()` 를 붙인다.
+3. `analysis.predict_next_day(candles, indicators, news, extra, model)` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15 + 키가 있을 때 거시환경 10·애널리스트 15·실적 10·공시 10) → 확률(15~85% 클램프), 지표별 근거(`factors`)·요약(`summary`)·경고(`warnings`). 가격: `_buy_zone()` 이 지지선·ATR 로 추천 매입가(`buy_price`, `buy_low/high`, `buy_gap_pct`, `buy_comment`), 목표가 = 현재가+2ATR, 손절가 = 매입가 아래. `quote.analyze_candles(..., symbol)` 가 대상일(`target_date`, `target_label`)과 `extras.get_extra()`, `ml_model.live_predict()` 를 붙인다. 학습 모델이 채택돼 있으면 최종 확률 = 모델 확률 + 뉴스·외부데이터 소폭 보정(`_apply_model`), 아니면 규칙 점수 확률 (`rule_probability`, `model_probability`, `method`, `model_status` 같이 반환).
 4. 분석한 예측은 `prediction_log.record()` 로 저장 → 대상일 장 마감 후 채점.
 5. `analysis.classify_investment_style()` — `long_term_score`, `short_term_score` 반환.
 

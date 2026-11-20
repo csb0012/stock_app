@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp, ClipboardCheck, History, RefreshCw } from "lucide-react";
 import { predictionApi, errMsg } from "../api/client";
@@ -58,6 +58,7 @@ function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
       </div>
       {s.running && (
         <div style={{ marginTop: 10 }}>
+          {s.phase && <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{s.phase}</p>}
           <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
             <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", transition: "width 0.5s" }} />
           </div>
@@ -180,6 +181,9 @@ export default function Predictions() {
               <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>대상일 장이 끝나면 자동 채점 (30분 주기)</p>
             </div>
           </div>
+
+          {/* 예측 방식별 적중률 */}
+          <MethodCard methods={data.method_accuracy || []} model={data.model} />
 
           {/* 확률 구간별 실제 상승 비율 */}
           <div className="card" style={{ marginBottom: 20 }}>
@@ -334,6 +338,61 @@ export default function Predictions() {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+const VARIANT_LABEL: Record<string, string> = {
+  US: "미국",
+  KR: "국내 · 장 시작 전 (간밤 미국장 반영)",
+  KR_base: "국내 · 장중/장 마감 후",
+};
+
+function MethodCard({ methods, model }: { methods: any[]; model: any }) {
+  const pct = (v: any) => (v == null ? "-" : `${v}%`);
+  const color = (v: any) => (v == null ? "var(--text-muted)" : v >= 55 ? "var(--green)" : v >= 50 ? "var(--yellow)" : "var(--red)");
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>예측 방식별 적중률</p>
+      <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.6 }}>
+        같은 기록을 방식별로 채점한 결과 · 판정 적중률 = 55% 이상(상승)/45% 이하(하락)로 판정한 것 중 맞은 비율 ·
+        방향 적중률 = 50% 기준으로 전부 판정했을 때 · 판정 비율 = 전체 중 상승/하락으로 판정한 비율
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 2fr) repeat(5, 1fr)", gap: "8px 12px", fontSize: 12, alignItems: "center" }}>
+        {["방식", "판정 적중률", "상승 판정", "하락 판정", "방향 적중률", "판정 비율"].map((h) => (
+          <span key={h} style={{ color: "var(--text-muted)" }}>{h}</span>
+        ))}
+        {methods.map((m) => (
+          <Fragment key={m.key}>
+            <span style={{ fontWeight: 600 }}>{m.label}<span style={{ color: "var(--text-muted)", fontWeight: 400 }}> ({m.n}건)</span></span>
+            <span style={{ fontWeight: 700, color: color(m.accuracy) }}>{pct(m.accuracy)} <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>({m.hit}/{m.calls})</span></span>
+            <span style={{ color: color(m.up_accuracy) }}>{pct(m.up_accuracy)}</span>
+            <span style={{ color: color(m.down_accuracy) }}>{pct(m.down_accuracy)}</span>
+            <span style={{ color: color(m.dir_accuracy) }}>{pct(m.dir_accuracy)}</span>
+            <span style={{ color: "var(--text-muted)" }}>{pct(m.coverage)}</span>
+          </Fragment>
+        ))}
+      </div>
+      {model && (
+        <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+          <p style={{ color: "var(--text-muted)" }}>학습 모델 사용 여부 (실시간 화면) — 백테스트에서 규칙 점수보다 잘 맞고 우연 수준을 넘을 때만 사용</p>
+          {Object.keys(VARIANT_LABEL).map((v) => {
+            const m = model[v];
+            return (
+              <p key={v}>
+                <span className={`badge ${m?.adopted ? "badge-up" : "badge-neutral"}`} style={{ marginRight: 8 }}>
+                  {m ? (m.adopted ? "사용 중" : "미사용") : "학습 전"}
+                </span>
+                <strong>{VARIANT_LABEL[v]}</strong>
+                <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>
+                  {m ? `${m.adopt_reason} · 학습 ${m.n?.toLocaleString()}건 (~${m.trained_until})` : "백테스트가 끝나면 학습됩니다"}
+                </span>
+              </p>
+            );
+          })}
+          {model.index_data?.error && <p style={{ color: "var(--red)" }}>지수 데이터 조회 실패: {model.index_data.error}</p>}
+        </div>
       )}
     </div>
   );

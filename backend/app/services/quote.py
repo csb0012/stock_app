@@ -19,6 +19,7 @@ from app.services.kis_api import kis_client
 from app.services import stock_master
 from app.services.news import get_news_many
 from app.services.extras import get_extra
+from app.services import ml_model
 from app.services.market_calendar import prediction_target, market_today, is_market_open
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
 
@@ -98,9 +99,15 @@ async def kr_chart(symbol: str, count: int = 100) -> dict:
 # ---------------- 분석 ----------------
 
 def analyze_candles(market: str, candles: list, per: float = 0, pbr: float = 0, news: dict | None = None,
-                    extra: dict | None = None) -> dict:
+                    extra: dict | None = None, symbol: str | None = None) -> dict:
     indicators = calc_technical_indicators(candles)
-    prediction = predict_next_day(candles, indicators, news, extra)
+    model = None
+    if symbol:
+        try:
+            model = ml_model.live_predict(market, symbol, candles)
+        except Exception as e:  # 부가 기능 — 실패하면 규칙 점수로 (화면에 사유 표시)
+            model = {"status": f"학습 모델 계산 실패: {e}"}
+    prediction = predict_next_day(candles, indicators, news, extra, model)
     prediction.update(prediction_target(market, candles[-1]["date"]))
     prediction["base_date"] = candles[-1]["date"][:10]
     return {
@@ -127,7 +134,7 @@ def _kr_result(symbol: str, chart: dict, news: dict | None) -> dict:
         "volume": candles[-1]["volume"],
         "candles": candles,
         "news": _news_brief(news),
-        **analyze_candles("KR", candles, chart["per"], chart["pbr"], news, get_extra("KR", symbol)),
+        **analyze_candles("KR", candles, chart["per"], chart["pbr"], news, get_extra("KR", symbol), symbol),
     }
 
 
@@ -148,7 +155,7 @@ def _us_result(symbol: str, candles: list, news: dict | None) -> dict:
         "volume": candles[-1]["volume"],
         "candles": candles,
         "news": _news_brief(news),
-        **analyze_candles("US", candles, news=news, extra=get_extra("US", symbol)),
+        **analyze_candles("US", candles, news=news, extra=get_extra("US", symbol), symbol=symbol),
     }
 
 
