@@ -104,6 +104,40 @@ C:\claude\stock_app\
    └─ node_modules\       ← 5번에서 생성
 ```
 
+### Docker 로 실행 (Python·Node 설치 없이 — 집 PC 권장)
+Python 3.13 / Node 22 가 이미지 안에 고정되어 PC마다 버전 맞출 필요 없음. `backend` 폴더를 그대로 연결하므로
+`.env`·`stock_app.db`·`.secret_key` 위치는 일반 실행과 똑같이 `C:\claude\stock_app\backend\`.
+
+**준비 (한 번만)**
+1. Docker Desktop 설치 (Windows 는 설치 중 WSL2 사용 체크, 재부팅 필요할 수 있음)
+```powershell
+winget install --id Docker.DockerDesktop -e
+winget install --id Git.Git -e
+```
+2. 코드 받기 + 파일 복사 — 위 "새 PC 설치" 의 1)·2) 와 동일 (Python·Node 설치, 3)~5) 는 건너뜀)
+
+**실행 / 끄기** (Docker Desktop 이 켜져 있어야 함)
+- `C:\claude\stock_app\start-docker.bat` 더블클릭, 또는:
+```powershell
+cd C:\claude\stock_app
+docker compose up -d --build
+```
+- 브라우저: `http://localhost:5173`
+- 끄기:
+```powershell
+docker compose down
+```
+- 백엔드 로그 보기:
+```powershell
+docker compose logs -f backend
+```
+- pull 후 `requirements.txt`·`package.json` 이 바뀌었으면 `docker compose up -d --build` (코드만 바뀐 건 자동 반영)
+- 계정 만들기 (DB 를 안 옮겼을 때):
+```powershell
+docker compose exec backend python create_admin.py <아이디> <비밀번호>
+```
+- ⚠️ `start.bat`(일반 실행)과 동시에 켜지 말 것 — 같은 포트(8000, 5173)를 써서 충돌
+
 ### 점검용
 - KIS 연결 테스트: `http://localhost:8000/api/stocks/test/kis`
 - 종목 검색 테스트: `http://localhost:8000/api/stocks/search?q=삼성전자`
@@ -201,6 +235,14 @@ C:\claude\stock_app\
 - PROGRESS.md "최초 설치"·"다른 PC로 옮기기" 를 "새 PC 설치 (처음부터)" 하나로 통합: 필요한 프로그램(Git·Python 3.13·Node.js LTS), 실행 정책, clone 위치, `.env`/`stock_app.db`/`.secret_key` 복사 위치, 가상환경 위치(루트 `.venv` 로 통일), npm install, 폴더 구조
 - 기존 "최초 설치" 에 프론트엔드 `npm install` 이 빠져 있던 것 보완, 가상환경 위치가 문서마다 달랐던 것(backend\.venv vs 루트 .venv) 통일
 
+### 2026-11-20 — Docker 실행 지원
+- `docker-compose.yml`, `backend/Dockerfile`(python:3.13-slim), `frontend/Dockerfile`(node:22-slim), `.dockerignore`, `start-docker.bat` 추가 → PC에 Python·Node 설치/버전 맞추기 불필요
+- backend·frontend 폴더를 컨테이너에 그대로 연결: `.env`/`stock_app.db`/`.secret_key` 위치 동일, 코드 수정 자동 반영(Windows 폴더 감지를 위해 폴링)
+- 포트는 `127.0.0.1` 에만 공개. `.env` 등 비밀 파일은 이미지에 포함하지 않음(.dockerignore)
+- `vite.config.ts`: 프록시 대상을 `VITE_PROXY_TARGET` 환경변수로 (Docker 에선 backend 컨테이너), `VITE_POLL` 이면 파일 감지 폴링
+- `requirements.txt` 에 `tzdata` 명시 (Windows·Docker 에서 Asia/Seoul 시간대 DB 보장)
+- 검증: 이미지 빌드 → compose 기동 → 프론트(5173) 경유 로그인·장 상태·종목 검색·회원가입 차단·컨테이너 안 create_admin 동작 확인 (실제 KIS 호출은 미검증)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
@@ -211,6 +253,8 @@ C:\claude\stock_app\
 - [ ] 네이버 금융 뉴스 페이지 구조가 바뀌면 뉴스 요인이 "뉴스 조회 실패 — 중립"으로 표시됨
 - [ ] 이번 업데이트 후 첫 실행 시 SECRET_KEY 가 예시값이었다면 한 번 로그아웃됨 (정상)
 - [ ] 장 운영 시간은 정규장 기준 (국내 09:00~15:30, 미국 09:30~16:00 현지) — 시간외·프리마켓 미반영, 국내 수능일 등 개장 지연 미반영
+- [ ] Docker: Windows 폴더 연결은 파일 감지를 폴링으로 해서 코드 수정 반영이 1초 정도 늦고 CPU 를 조금 더 씀
+- [ ] Docker: 패키지 버전은 requirements.txt 범위 안에서 빌드 시점 최신 — 회사 PC(일반 실행)와 pandas 등 버전이 다를 수 있음
 - [ ] 예측 확률 모델은 규칙 기반 — "예측 검증 > 지표별 적중률" 이 쌓이면 가중치 조정 필요
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능), PER/PBR 0 표시
 - [x] ~~투자종목 합계 KR(₩)+US($) 환율 없이 합산~~ → 통화별 분리 + 원화 환산 총합

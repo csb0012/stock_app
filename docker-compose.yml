@@ -1,0 +1,29 @@
+# Docker 로 실행: 루트에서  docker compose up -d --build
+# - 포트는 127.0.0.1 에만 열어서 같은 네트워크의 다른 PC 접속 차단
+# - backend 폴더를 그대로 연결 → .env / stock_app.db / .secret_key 를 Windows 폴더 위치 그대로 사용,
+#   코드를 고치면 자동 재시작
+services:
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+    environment:
+      - WATCHFILES_FORCE_POLLING=true   # Windows 폴더 마운트는 파일 변경 감지가 안 돼서 폴링
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules              # 컨테이너 안의 node_modules 사용 (Windows 쪽과 섞이지 않게)
+    environment:
+      - VITE_PROXY_TARGET=http://backend:8000
+      - VITE_POLL=1
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped

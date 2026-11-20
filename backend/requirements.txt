@@ -13,6 +13,7 @@ websockets
 apscheduler
 yfinance>=0.2.54   # yf.screen (미국 스크리너) 필요
 pandas
+tzdata   # Windows·Docker 에 시간대 DB 가 없을 때 필요 (Asia/Seoul, America/New_York)
 holidays>=0.60   # 거래소 휴장일 (XKRX, NYSE)
 pandas-ta
 numpy

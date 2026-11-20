@@ -1,0 +1,10 @@
+# 비밀·데이터 파일은 이미지에 넣지 않음 (실행 시 backend 폴더를 마운트해서 사용)
+.env
+.secret_key
+.kis_token.json
+stock_app.db
+app/data/master_cache.json
+.venv
+__pycache__
+*.pyc
+*.log

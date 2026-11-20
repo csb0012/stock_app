@@ -10,6 +10,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 가상환경(루트 `.venv` 또는 `backend\.venv`) 자동 활성화 후 백엔드(127.0.0.1:8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
 
+**Docker (Python·Node 설치 불필요):** 루트에서 `docker compose up -d --build` 또는 `start-docker.bat`. backend/frontend 폴더를 컨테이너에 마운트하므로 `.env`·`stock_app.db` 위치는 동일(`backend/`). 포트는 127.0.0.1:8000 / 127.0.0.1:5173. 자세한 명령은 `PROGRESS.md` "Docker 로 실행". 일반 실행(start.bat)과 동시에 켜면 포트 충돌.
+
 **최신 코드 받기 (실행 전):**
 ```powershell
 cd C:\claude\stock_app
@@ -131,7 +133,7 @@ index.css          — CSS 변수: --bg-primary, --bg-secondary, --bg-card,
                      --accent (#4f8ef7), --green (#34d399), --red (#f87171), --text-muted
 ```
 
-Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`).
+Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `VITE_PROXY_TARGET=http://backend:8000`).
 
 데이터 조회는 전부 React Query. 인증 상태는 Zustand (`store/auth.ts`).
 
