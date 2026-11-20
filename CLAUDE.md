@@ -10,6 +10,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 백엔드(8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
 
+**최신 코드 받기 (실행 전):**
+```powershell
+cd C:\claude\stock_app
+git pull origin claude/dazzling-darwin-et76zj
+
+# 로컬 변경사항 때문에 pull이 막히면
+git stash
+git pull origin claude/dazzling-darwin-et76zj
+```
+
 **수동 실행:**
 ```powershell
 # 백엔드 (backend/ 에서 .venv 활성화 후)
