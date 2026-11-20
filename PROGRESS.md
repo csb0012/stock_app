@@ -4,7 +4,15 @@
 
 ## 자주 쓰는 명령어
 
-### 최신 코드 받기 (로컬 PC, 작업 전 필수)
+### 어떤 방법으로 실행하나? (PC마다 하나만 — 섞지 말 것)
+| PC | 방법 | 설치·실행 안내 | 실행 |
+|---|---|---|---|
+| 회사 PC | 직접 설치 (Python 3.13 + Node + venv) | [docs/setup-local.md](docs/setup-local.md) | `start.bat` |
+| 집 PC | Docker (Python·Node 설치 안 함, venv·pip 안 씀) | [docs/setup-docker.md](docs/setup-docker.md) | `start-docker.bat` |
+
+두 방법 모두 `.env`·`stock_app.db`·`.secret_key` 위치는 **`C:\claude\stock_app\backend\`** 로 같다.
+
+### 최신 코드 받기 (두 방법 공통, 작업 전 필수)
 ```powershell
 cd C:\claude\stock_app
 git pull origin claude/dazzling-darwin-et76zj
@@ -14,140 +22,19 @@ git pull origin claude/dazzling-darwin-et76zj
 git stash
 git pull origin claude/dazzling-darwin-et76zj
 ```
-pull 후 `requirements.txt`가 바뀌었으면 패키지 갱신 (백엔드 .venv 활성화 상태에서):
-```powershell
-cd C:\claude\stock_app\backend
-pip install -r requirements.txt
-```
-⚠️ `--upgrade` 붙이지 말 것 — bcrypt가 5.x로 올라가 로그인이 500 오류로 깨짐 (requirements에 `bcrypt==4.0.1` 고정해 둠)
-로그인이 갑자기 안 되면: `pip install "bcrypt==4.0.1"` 후 백엔드 재시작
+pull 후 패키지 목록이 바뀌었을 때:
+- 직접 설치(회사 PC): `requirements.txt` → 가상환경 켜고 `backend` 에서 `pip install -r requirements.txt` (⚠️ `--upgrade` 금지 — bcrypt 5.x 로 올라가 로그인 깨짐), `package.json` → `frontend` 에서 `npm install`
+- Docker(집 PC): `start-docker.bat` 다시 실행 (이미지 재빌드)
 
-### 서버 실행
-```powershell
-# 백엔드 (가상환경은 루트 C:\claude\stock_app\.venv)
-cd C:\claude\stock_app
-.venv\Scripts\Activate
-cd backend
-python -m uvicorn app.main:app --reload --port 8000
+### 켜기 / 끄기
+| | 직접 설치 (회사 PC) | Docker (집 PC) |
+|---|---|---|
+| 켜기 | `start.bat` 더블클릭 | Docker Desktop 켜고 `start-docker.bat` 더블클릭 |
+| 끄기 | 열린 cmd 창 2개 닫기 | `docker compose down` |
+| 백엔드 로그 | 백엔드 cmd 창 | `docker compose logs -f backend` |
+| 계정 추가 | 가상환경 켜고 `backend` 에서 `python create_admin.py <아이디> <비밀번호>` | `docker compose exec backend python create_admin.py <아이디> <비밀번호>` |
 
-# 프론트엔드 (별도 터미널)
-cd C:\claude\stock_app\frontend
-npm run dev
-```
-또는 루트의 `start.bat` 더블클릭 — 가상환경(루트 `.venv` 또는 `backend\.venv`)을 자동으로 켜고, 백엔드는 `127.0.0.1` 로만 열림.
-
-### 새 PC 설치 (처음부터) — 회사 PC와 같은 구조로 맞춤
-**0) 프로그램 설치** (Visual Studio 는 실행에 필요 없음). PowerShell 에서:
-```powershell
-winget install --id Git.Git -e
-winget install --id Python.Python.3.13 -e
-winget install --id OpenJS.NodeJS.LTS -e
-```
-winget 이 안 되면 직접 설치: Git for Windows / Python 3.13 (설치 첫 화면 **"Add python.exe to PATH" 체크**) / Node.js LTS.
-설치 후 **PowerShell 을 새로 열고** 확인:
-```powershell
-git --version
-python --version
-node --version
-```
-PowerShell 에서 `.venv\Scripts\Activate` 가 "스크립트를 실행할 수 없습니다" 로 막히면 (한 번만):
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-```
-
-**1) 코드 받기** (저장소가 비공개면 GitHub 로그인 창이 뜸)
-```powershell
-mkdir C:\claude
-cd C:\claude
-git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git
-```
-
-**2) git 으로 안 넘어오는 파일 복사** — 회사 PC에서 USB/메신저로 가져와 **`C:\claude\stock_app\backend\`** 에 넣기
-- `backend\.env` — KIS 키·계좌번호·SECRET_KEY (필수, **절대 커밋 금지**)
-- `backend\stock_app.db` — 로그인 계정, 관심종목, 투자종목, 예측 검증 기록 (안 옮기면 4번에서 계정 새로 생성)
-- `backend\.secret_key` — 회사 PC에 이 파일이 있으면 같이 복사 (없으면 자동 생성되고 한 번 재로그인)
-- 복사하지 않는 것: `.venv`, `node_modules` (새로 설치), `.kis_token.json`·`master_cache.json` (자동 생성)
-
-**3) 백엔드 패키지** — 가상환경은 회사 PC와 같이 루트(`C:\claude\stock_app\.venv`)에 만든다
-```powershell
-cd C:\claude\stock_app
-python -m venv .venv
-.venv\Scripts\Activate
-cd backend
-pip install -r requirements.txt
-```
-
-**4) (DB 를 안 옮겼을 때만) 계정 만들기**
-```powershell
-python create_admin.py <아이디> <비밀번호>
-```
-
-**5) 프론트엔드 패키지** (새 PowerShell 창)
-```powershell
-cd C:\claude\stock_app\frontend
-npm install
-```
-
-**6) 실행** — `C:\claude\stock_app\start.bat` 더블클릭 → 브라우저에서 `http://localhost:5173`
-
-최종 폴더 구조:
-```
-C:\claude\stock_app\
-├─ .venv\                 ← 3번에서 생성
-├─ start.bat
-├─ backend\
-│  ├─ .env                ← 회사 PC에서 복사
-│  ├─ stock_app.db        ← 회사 PC에서 복사
-│  ├─ .secret_key         ← 있으면 복사
-│  └─ app\ ...
-└─ frontend\
-   └─ node_modules\       ← 5번에서 생성
-```
-
-### Docker 로 실행 (Python·Node 설치 없이 — 집 PC 권장)
-Python 3.13 / Node 22 가 이미지 안에 고정되어 PC마다 버전 맞출 필요 없음. `backend` 폴더를 그대로 연결하므로
-`.env`·`stock_app.db`·`.secret_key` 위치는 일반 실행과 똑같이 `C:\claude\stock_app\backend\`.
-
-**준비 (한 번만)**
-1. Docker Desktop 설치 (Windows 는 설치 중 WSL2 사용 체크, 재부팅 필요할 수 있음)
-```powershell
-winget install --id Docker.DockerDesktop -e
-winget install --id Git.Git -e
-```
-`winget` 을 찾을 수 없다고 나오면 (구버전 Windows 에는 없음) 직접 설치:
-- Docker Desktop: https://www.docker.com/products/docker-desktop/ → Download for Windows (Windows 10 22H2 이상 / Windows 11, BIOS 가상화 켜져 있어야 함)
-- Git: https://git-scm.com/download/win → 설치 화면 기본값으로 Next
-- 또는 Microsoft Store 에서 "앱 설치 관리자(App Installer)" 업데이트 → winget 사용 가능
-
-Docker Desktop 설치 중 `"Virtual Machine Platform" Windows feature ... is not enabled` 로 실패하면:
-**관리자 권한** PowerShell(시작 → powershell → 관리자 권한으로 실행)에서 아래 실행 → **재부팅** → 설치 파일 다시 실행
-```powershell
-wsl --install
-```
-(또는 설치 파일을 다시 실행해서 "All-users installation" 선택). 재부팅 후에도 가상화 오류가 나면 BIOS 에서 Intel VT-x / AMD SVM 켜기
-2. 코드 받기 + 파일 복사 — 위 "새 PC 설치" 의 1)·2) 와 동일 (Python·Node 설치, 3)~5) 는 건너뜀)
-
-**실행 / 끄기** (Docker Desktop 이 켜져 있어야 함)
-- `C:\claude\stock_app\start-docker.bat` 더블클릭, 또는:
-```powershell
-cd C:\claude\stock_app
-docker compose up -d --build
-```
-- 브라우저: `http://localhost:5173`
-- 끄기:
-```powershell
-docker compose down
-```
-- 백엔드 로그 보기:
-```powershell
-docker compose logs -f backend
-```
-- pull 후 `requirements.txt`·`package.json` 이 바뀌었으면 `docker compose up -d --build` (코드만 바뀐 건 자동 반영)
-- 계정 만들기 (DB 를 안 옮겼을 때):
-```powershell
-docker compose exec backend python create_admin.py <아이디> <비밀번호>
-```
-- ⚠️ `start.bat`(일반 실행)과 동시에 켜지 말 것 — 같은 포트(8000, 5173)를 써서 충돌
+수동 실행·처음 설치·문제 해결(winget 없음, WSL, 실행 정책 등)은 각 `docs/setup-*.md` 참고.
 
 ### 점검용
 - KIS 연결 테스트: `http://localhost:8000/api/stocks/test/kis`
@@ -159,7 +46,7 @@ docker compose exec backend python create_admin.py <아이디> <비밀번호>
 - 백엔드 시작 로그 `[repair] 종목코드 복구 ...` = 잘못 저장된 종목코드를 자동으로 고친 것
 - 장 운영 상태: `http://localhost:8000/api/market/status` (사이드바 하단에도 표시)
 - 로그인 토큰 서명 키: `backend\.secret_key` (`.env` 의 SECRET_KEY 가 예시값이면 자동 생성. 다른 PC로 옮길 때 같이 복사하면 재로그인 불필요)
-- 계정 추가: 회원가입 API는 계정이 하나라도 있으면 막힘 → `cd backend` 후 `python create_admin.py <아이디> <비밀번호>`
+- 계정 추가: 회원가입 API는 계정이 하나라도 있으면 막힘 → 위 "켜기 / 끄기" 표의 계정 추가 명령 사용
 - 헬스체크: `http://localhost:8000/api/health`
 - API 문서: `http://localhost:8000/docs`
 
@@ -253,6 +140,12 @@ docker compose exec backend python create_admin.py <아이디> <비밀번호>
 - `vite.config.ts`: 프록시 대상을 `VITE_PROXY_TARGET` 환경변수로 (Docker 에선 backend 컨테이너), `VITE_POLL` 이면 파일 감지 폴링
 - `requirements.txt` 에 `tzdata` 명시 (Windows·Docker 에서 Asia/Seoul 시간대 DB 보장)
 - 검증: 이미지 빌드 → compose 기동 → 프론트(5173) 경유 로그인·장 상태·종목 검색·회원가입 차단·컨테이너 안 create_admin 동작 확인 (실제 KIS 호출은 미검증)
+
+### 2026-11-20 — 설치 문서 정리 (방법별 분리)
+- 직접 설치(venv)와 Docker 안내가 한 곳에 섞여 Docker 사용 중 `python -m venv` 를 실행하는 혼란 → `docs/` 폴더로 방법별 분리
+  - `docs/setup-local.md` (회사 PC, 직접 설치), `docs/setup-docker.md` (집 PC, Docker)
+- PROGRESS.md "자주 쓰는 명령어" 는 어느 PC가 어떤 방법인지 표 + 공통 명령(pull) + 방법별 켜기/끄기 표만 남김
+- CLAUDE.md "앱 실행"·"최초 설치" 도 방법별로 나누고 docs 를 가리키도록 수정
 
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸

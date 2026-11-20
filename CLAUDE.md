@@ -8,11 +8,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 앱 실행
 
-**Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 가상환경(루트 `.venv` 또는 `backend\.venv`) 자동 활성화 후 백엔드(127.0.0.1:8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
+PC마다 아래 두 방법 중 **하나만** 쓴다 (섞으면 헷갈림). 두 방법 모두 `.env`·`stock_app.db`·`.secret_key` 위치는 `backend/` 로 같다.
 
-**Docker (Python·Node 설치 불필요):** 루트에서 `docker compose up -d --build` 또는 `start-docker.bat`. backend/frontend 폴더를 컨테이너에 마운트하므로 `.env`·`stock_app.db` 위치는 동일(`backend/`). 포트는 127.0.0.1:8000 / 127.0.0.1:5173. 자세한 명령은 `PROGRESS.md` "Docker 로 실행". 일반 실행(start.bat)과 동시에 켜면 포트 충돌.
+| 방법 | 쓰는 PC | 설치·실행 안내 | 실행 |
+|---|---|---|---|
+| **직접 설치** — Python 3.13 + Node + venv | 회사 PC | `docs/setup-local.md` | 루트 `start.bat` (가상환경 자동 활성화, 백엔드 127.0.0.1:8000, 프론트 5173) |
+| **Docker** — Python·Node 설치 안 함, venv·pip·npm install 안 씀 | 집 PC | `docs/setup-docker.md` | 루트 `start-docker.bat` (= `docker compose up -d --build`, backend/frontend 폴더 마운트, 127.0.0.1 만 공개) |
 
-**최신 코드 받기 (실행 전):**
+두 방법을 같은 PC에서 동시에 켜면 포트(8000, 5173) 충돌.
+
+**최신 코드 받기 (공통, 실행 전):**
 ```powershell
 cd C:\claude\stock_app
 git pull origin claude/dazzling-darwin-et76zj
@@ -22,11 +27,11 @@ git stash
 git pull origin claude/dazzling-darwin-et76zj
 ```
 
-**수동 실행:**
+**직접 설치 방식 수동 실행** (가상환경은 루트 `C:\claude\stock_app\.venv`):
 ```powershell
-# 백엔드 (가상환경 활성화 후 — 회사 PC는 루트 C:\claude\stock_app\.venv 에 있음)
-cd C:\claude\stock_app\backend
-..\.venv\Scripts\Activate   # 가상환경은 루트 .venv (예전에 backend\.venv 에 만들었다면 .venv\Scripts\Activate)
+cd C:\claude\stock_app
+.venv\Scripts\Activate
+cd backend
 python -m uvicorn app.main:app --reload --port 8000
 
 # 프론트엔드 (별도 터미널)
@@ -36,26 +41,7 @@ npm run dev
 
 ## 최초 설치
 
-새 PC 전체 절차(필요 프로그램, 파일 복사 위치 포함)는 `PROGRESS.md` 의 "새 PC 설치 (처음부터)" 참고. 요약:
-
-```powershell
-# 필요: Git, Python 3.13 (PATH 추가), Node.js LTS
-cd C:\claude
-git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git
-
-cd C:\claude\stock_app
-python -m venv .venv            # 가상환경은 루트에 (start.bat 이 자동으로 찾음)
-.venv\Scripts\Activate
-cd backend
-pip install -r requirements.txt   # bcrypt==4.0.1, sqlalchemy[asyncio] 포함
-# backend\.env 는 다른 PC에서 복사하거나 .env.example 을 복사해 KIS 키 입력
-python create_admin.py <아이디> <비밀번호>   # DB(stock_app.db)를 안 옮겼을 때만
-```
-
-```powershell
-cd C:\claude\stock_app\frontend
-npm install
-```
+방법별 전체 절차(필요 프로그램, 파일 복사 위치, 문제 해결)는 `docs/setup-local.md` / `docs/setup-docker.md` 에 있다. 설치 절차를 바꾸면 해당 docs 파일을 고친다.
 
 ## 주요 환경변수 (backend/.env)
 
@@ -158,7 +144,7 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 
 ## 작업 기록 규칙
 
-`PROGRESS.md`가 작업 이력·명령어·알려진 이슈의 단일 기록이다. 작업 시작 전 먼저 읽고, 작업을 마칠 때마다(커밋 전) 다음을 갱신한다:
+`PROGRESS.md`가 작업 이력·명령어·알려진 이슈의 단일 기록이다 (설치 절차만 `docs/setup-local.md`, `docs/setup-docker.md` 로 분리). 작업 시작 전 먼저 읽고, 작업을 마칠 때마다(커밋 전) 다음을 갱신한다:
 - "작업 이력"에 이번 작업 요약 추가 (날짜, 커밋 해시)
 - 새로 생긴 명령어/점검 URL은 "자주 쓰는 명령어"에 추가
 - 해결된 이슈는 체크, 새로 발견한 이슈는 "알려진 이슈"에 추가
