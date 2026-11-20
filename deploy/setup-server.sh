@@ -68,3 +68,5 @@ $COMPOSE up -d --build
 echo
 echo "완료: https://$domain"
 echo "로그 보기: $COMPOSE logs -f --tail 100"
+sleep 20
+free -m | awk '/^Mem:/ {u=($2-$7)/$2*100; printf "현재 메모리 사용률 %.0f%% (%dMB 중 %dMB) — Ampere 는 20%%를 넘으면 유휴 회수 대상이 아님\n", u, $2, $2-$7}'

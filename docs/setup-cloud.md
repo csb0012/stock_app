@@ -16,8 +16,17 @@ PC를 켜두지 않아도 앱이 계속 돌아가게 한다. 예를 들어 08:20
 
 ### 꼭 알아둘 조건
 - **가입에 신용카드 필요** (본인 확인용 소액 승인 후 취소). 무료 한도 안에서만 쓰면 청구되지 않는다.
-- 2026년 8월부터 Ampere 무료 한도가 **2 OCPU / 12GB 메모리**로 줄었다. 이 앱은 **1 OCPU / 6GB** 로 충분하다. 한도를 넘는 VM 은 정지·삭제될 수 있으니 더 크게 만들지 말 것.
-- **유휴 회수:** 무료 계정의 VM 은 7일 동안 CPU 사용률(95퍼센타일)이 20% 미만이면 Oracle 이 회수할 수 있다. 이 앱은 대부분 한가해서 해당될 수 있다.
+- 2026년 8월부터 Ampere 무료 한도가 **2 OCPU / 12GB 메모리**로 줄었다. 한도를 넘는 VM 은 정지·삭제될 수 있으니 크게 만들지 말 것.
+- **유휴 회수:** Oracle 은 7일 동안 아래 **세 가지가 모두** 20% 미만인 무료 VM 을 회수할 수 있다.
+  - CPU 사용률(95퍼센타일)
+  - 네트워크 사용률
+  - 메모리 사용률 (Ampere A1 에만 적용)
+
+  → **하나라도 20%를 넘으면 유휴가 아니다.** 그래서 이 문서는 VM 을 **1 OCPU / 2GB** 로 작게 만든다.
+  - 이 앱(백엔드 약 200~300MB + Caddy + Docker + OS)이 평소에 2GB 중 35~45% 를 쓰므로 메모리 조건으로 유휴에서 빠진다.
+  - CPU 를 일부러 돌리는 꼼수는 필요 없다. 게다가 하루 한 번 잠깐 돌리는 정도로는 95퍼센타일 기준을 못 넘는다. 일주일의 5% 이상, 즉 하루 약 1시간 12분 이상 20% 넘게 돌려야 한다.
+  - VM 을 크게(예: 6GB) 만들면 같은 사용량이 10% 남짓이 되어 회수 대상이 될 수 있다.
+  - 설치 후 일주일쯤 지나 콘솔 VM 화면 → **Metrics → Memory Utilization** 이 20% 위인지 확인한다. 이 그래프가 비어 있으면 VM 화면의 **Oracle Cloud Agent → Compute Instance Monitoring** 을 켠다.
   - 피하려면 계정을 **종량제(Pay As You Go)로 업그레이드**하는 방법이 알려져 있다. 무료 한도 안이면 여전히 0원이다.
   - 업그레이드했다면 **예산 알림**(Billing → Budgets, 예: 1달러)을 꼭 걸어둔다.
   - 회수돼도 DB 를 매일 백업하므로(아래 "백업"), PC 로 받아 두면 다시 만들 수 있다.
@@ -29,8 +38,8 @@ PC를 켜두지 않아도 앱이 계속 돌아가게 한다. 예를 들어 08:20
 1. https://www.oracle.com/cloud/free/ → 가입 (홈 리전: 서울 또는 춘천)
 2. 콘솔 → **Compute → Instances → Create instance**
    - Image: **Canonical Ubuntu 24.04**
-   - Shape: **Ampere → VM.Standard.A1.Flex, OCPU 1, Memory 6GB**
-     - Ampere 가 계속 안 되면 **VM.Standard.E2.1.Micro**(AMD, 1GB, 무료)를 쓴다. 스크립트가 스왑을 자동으로 추가한다.
+   - Shape: **Ampere → VM.Standard.A1.Flex, OCPU 1, Memory 2GB** (메모리를 늘리지 말 것 — 위 "유휴 회수" 참고)
+     - Ampere 가 계속 안 되면 **VM.Standard.E2.1.Micro**(AMD, 1GB, 무료)를 쓴다. 스크립트가 스왑을 자동으로 추가한다. (메모리 조건은 A1 에만 적용되므로 이 경우엔 유휴 회수 위험이 남음 → 종량제 업그레이드 고려)
    - Networking: 기본 VCN, **Assign a public IPv4 address** 체크
    - SSH keys: **Generate a key pair for me → Save private key** (예: `oracle.key` 를 `C:\Users\내이름\.ssh\` 에 저장)
 3. 만든 VM 화면에서 **Public IP address** 를 적어둔다 (아래 `서버IP`)
