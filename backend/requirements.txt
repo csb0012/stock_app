@@ -1,9 +1,10 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
+sqlalchemy[asyncio]
 aiosqlite
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.0.1   # passlib이 bcrypt 4.1+ 와 호환 안 됨 → 올리면 로그인 500 오류
 pyotp
 qrcode[pil]
 python-multipart

@@ -17,8 +17,10 @@ git pull origin claude/dazzling-darwin-et76zj
 pull 후 `requirements.txt`가 바뀌었으면 패키지 갱신 (백엔드 .venv 활성화 상태에서):
 ```powershell
 cd C:\claude\stock_app\backend
-pip install -r requirements.txt --upgrade
+pip install -r requirements.txt
 ```
+⚠️ `--upgrade` 붙이지 말 것 — bcrypt가 5.x로 올라가 로그인이 500 오류로 깨짐 (requirements에 `bcrypt==4.0.1` 고정해 둠)
+로그인이 갑자기 안 되면: `pip install "bcrypt==4.0.1"` 후 백엔드 재시작
 
 ### 서버 실행
 ```powershell
@@ -102,10 +104,13 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 - **KIS 순위 API 파라미터 수정**: 거래량급증 = `FID_BLNG_CLS_CODE=1`(거래증가율), 거래대금 = `3`(거래금액순). 기존 `FID_DIV_CLS_CODE=1` 은 보통주 필터였음. 등락률은 `fid_prc_cls_code=1`(종가대비)
 - **AI 추천**: 국내/미국 탭 분리, 상승확률 높은 순/낮은 순 정렬, 분석 실패 종목 표시
 
+### 2026-11-20 — 로그인 오류 수정
+- `pip install -r requirements.txt --upgrade` 안내 때문에 bcrypt가 5.x로 올라가 passlib 비밀번호 검증이 `ValueError(password cannot be longer than 72 bytes)` → 로그인 500. requirements.txt에 `bcrypt==4.0.1`, `sqlalchemy[asyncio]` 고정, 갱신 명령에서 `--upgrade` 제거
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
-- [ ] 미국 스크리너는 `yf.screen` 필요 → yfinance 0.2.54 이상 (`pip install -r requirements.txt --upgrade`)
+- [ ] 미국 스크리너는 `yf.screen` 필요 → yfinance 0.2.54 이상 (`pip install -r requirements.txt` 가 버전 맞춰 설치)
 - [ ] 국내 AI 추천은 KIS를 종목마다 호출해서 첫 로딩 10초 내외 (15분 캐시)
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능), PER/PBR 0 표시
 - [x] ~~투자종목 합계 KR(₩)+US($) 환율 없이 합산~~ → 통화별 분리 + 원화 환산 총합
