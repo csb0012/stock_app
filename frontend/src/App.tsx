@@ -1,0 +1,37 @@
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useAuthStore } from "./store/auth";
+import Layout from "./components/common/Layout";
+import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
+import Recommendations from "./pages/Recommendations";
+import Screener from "./pages/Screener";
+import Watchlist from "./pages/Watchlist";
+import CalendarPage from "./pages/Calendar";
+import Search from "./pages/Search";
+
+const qc = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { token } = useAuthStore();
+  return token ? <Layout>{children}</Layout> : <Navigate to="/login" replace />;
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={qc}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/recommendations" element={<ProtectedRoute><Recommendations /></ProtectedRoute>} />
+          <Route path="/screener" element={<ProtectedRoute><Screener /></ProtectedRoute>} />
+          <Route path="/watchlist" element={<ProtectedRoute><Watchlist /></ProtectedRoute>} />
+          <Route path="/calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
+          <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </QueryClientProvider>
+  );
+}
