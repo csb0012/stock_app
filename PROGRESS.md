@@ -210,7 +210,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 미국 모델(방향 48.8%), 국내 장중/마감 후 모델(방향 52.0% < 기준 52.1%)은 우연 수준을 못 넘어 미사용 → 규칙 점수 유지
 - 예측 검증 화면의 백테스트 설명이 "기술적 지표만" 으로 남아 있던 것을 학습 모델 포함 설명으로 수정
 
-### 2026-11-20 — 클라우드 서버 배포 (commit `COMMIT_HASH`)
+### 2026-11-20 — 클라우드 서버 배포 (commit `1ae8c2a`)
 - 목적: PC 를 켜두지 않고 24시간 운영 (08:20 장 시작 전 예측·채점·백테스트)
 - 조사: Render·Koyeb 등 무료 PaaS 는 유휴 시 잠듦/파일 초기화 → 부적합. 무료로 계속 켜지는 건 Oracle Cloud Always Free VM(2026-08부터 Ampere 2 OCPU/12GB 한도)·Google Cloud e2-micro 정도 → Oracle 한국 리전 선택 (KIS 를 국내 IP 에서 호출)
 - `docker-compose.cloud.yml` + `deploy/` (Dockerfile.web: React 빌드 → Caddy, Caddyfile: 자동 HTTPS·보안 헤더·basic auth·/api 프록시, setup-server.sh: Docker 설치·스왑·iptables 80/443·도메인/비밀번호·매일 백업 cron·실행, update.sh, backup.sh: SQLite 온라인 백업 14개 보관)
