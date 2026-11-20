@@ -2,36 +2,36 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## 프로젝트 개요
 
-Personal stock investment web app — Korean (KOSPI/KOSDAQ) + US (NYSE/NASDAQ) markets. Backend: FastAPI + SQLite. Frontend: React + TypeScript + Vite. Local-only deployment on Windows PC; Electron desktop wrapper is a future goal.
+개인용 주식 투자 웹앱 — 국내(KOSPI/KOSDAQ) + 미국(NYSE/NASDAQ) 시장. 백엔드: FastAPI + SQLite. 프론트엔드: React + TypeScript + Vite. Windows PC 로컬 전용 배포. Electron 데스크탑 래퍼는 추후 목표.
 
-## Running the App
+## 앱 실행
 
-**Windows (quickest):** double-click `start.bat` from the repo root — it opens two cmd windows, backend on 8000, frontend on 5173.
+**Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 백엔드(8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
 
-**Manually:**
+**수동 실행:**
 ```powershell
-# Backend (from backend/ with .venv activated)
+# 백엔드 (backend/ 에서 .venv 활성화 후)
 .venv\Scripts\Activate
 python -m uvicorn app.main:app --reload --port 8000
 
-# Frontend (separate terminal)
+# 프론트엔드 (별도 터미널)
 cd frontend
 npm run dev
 ```
 
-## First-time Setup
+## 최초 설치
 
 ```powershell
 cd backend
 python -m venv .venv
 .venv\Scripts\Activate
 pip install -r requirements.txt
-pip install "sqlalchemy[asyncio]" "bcrypt==4.0.1"   # required on Python 3.13
-cp .env.example .env   # then fill in KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO
+pip install "sqlalchemy[asyncio]" "bcrypt==4.0.1"   # Python 3.13 필수
+cp .env.example .env   # KIS_APP_KEY, KIS_APP_SECRET, KIS_ACCOUNT_NO 입력
 
-python create_admin.py <username> <password>         # create first user
+python create_admin.py <아이디> <비밀번호>   # 첫 계정 생성
 ```
 
 ```powershell
@@ -39,75 +39,75 @@ cd frontend
 npm install
 ```
 
-## Key Environment Variables (backend/.env)
+## 주요 환경변수 (backend/.env)
 
-| Variable | Required | Purpose |
+| 변수 | 필수 | 용도 |
 |---|---|---|
-| `KIS_APP_KEY` / `KIS_APP_SECRET` | Yes | KIS OAuth token |
-| `KIS_ACCOUNT_NO` | Yes | Brokerage account |
-| `KIS_IS_REAL` | — | `false` = mock server, `true` = real server |
-| `SECRET_KEY` | Yes | JWT signing key |
-| `FINNHUB_API_KEY` | Optional | Real economic calendar (mock used if absent) |
+| `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 |
+| `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 |
+| `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
+| `SECRET_KEY` | 필수 | JWT 서명 키 |
+| `FINNHUB_API_KEY` | 선택 | 실제 경제 캘린더 (없으면 목업 사용) |
 
-## Architecture
+## 아키텍처
 
-### Backend (`backend/app/`)
+### 백엔드 (`backend/app/`)
 
 ```
 core/
-  config.py      — Pydantic Settings (reads .env)
-  database.py    — async SQLAlchemy + aiosqlite; init_db() called at startup
-  security.py    — bcrypt hashing, JWT create/decode, TOTP via pyotp
+  config.py      — Pydantic Settings (.env 읽기)
+  database.py    — async SQLAlchemy + aiosqlite; 시작 시 init_db() 호출
+  security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
 models/
   user.py        — User (username, hashed_password, totp_secret, totp_enabled)
   watchlist.py   — WatchlistItem (user_id, symbol, market, name)
 services/
-  kis_api.py     — KISClient: token cache + KR/US price, history, volume-surge endpoints
-  market_data.py — yfinance: index/macro data, bigtech; BeautifulSoup: Naver news; Finnhub: calendar
+  kis_api.py     — KISClient: 토큰 캐시 + 국내/미국 주가·일봉·거래량급증 API
+  market_data.py — yfinance: 지수/매크로/빅테크; BeautifulSoup: 네이버 뉴스; Finnhub: 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day(), classify_investment_style()
 api/routes/
-  auth.py        — /register, /login (TOTP-aware), /setup-totp, /enable-totp, /me
+  auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
   stocks.py      — /kr/{symbol}, /us/{symbol}, /volume-surge, /recommendations/{longterm,shortterm}
-  market.py      — /overview (indices + bigtech), /calendar
-  watchlist.py   — CRUD for watchlist items
+  market.py      — /overview (지수 + 빅테크), /calendar
+  watchlist.py   — 관심종목 CRUD
 ```
 
-All routes are mounted under `/api` in `main.py`.
+모든 라우트는 `main.py`에서 `/api` 접두사로 마운트.
 
-### Data flow for stock analysis
+### 주식 분석 데이터 흐름
 
-1. `kis_api.py` fetches OHLCV candles from KIS (falls back to `yfinance` for US stocks if KIS fails).
-2. `analysis.calc_technical_indicators()` computes RSI, MACD, Bollinger Bands, MA20/60 from the candle list.
-3. `analysis.predict_next_day()` applies rule-based scoring → probability (clamped 15–85%), target price (ATR-based), stop-loss.
-4. `analysis.classify_investment_style()` returns `long_term_score` and `short_term_score`.
+1. `kis_api.py` 에서 KIS로 OHLCV 캔들 조회 (미국 주식은 KIS 실패 시 `yfinance` 폴백).
+2. `analysis.calc_technical_indicators()` — RSI, MACD, 볼린저밴드, MA20/60 계산.
+3. `analysis.predict_next_day()` — 룰 기반 점수 → 확률(15~85% 클램프), ATR 기반 목표가·손절가.
+4. `analysis.classify_investment_style()` — `long_term_score`, `short_term_score` 반환.
 
-### Frontend (`frontend/src/`)
+### 프론트엔드 (`frontend/src/`)
 
 ```
-api/client.ts      — axios instance; Bearer token injected; 401 → redirect /login
-store/auth.ts      — Zustand store: token + user
+api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
+store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Calendar, Login
-components/common/ — Layout (sidebar nav), ChangeTag, LoadingSpinner
-index.css          — CSS custom properties: --bg-primary, --bg-secondary, --bg-card,
+components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner
+index.css          — CSS 변수: --bg-primary, --bg-secondary, --bg-card,
                      --accent (#4f8ef7), --green (#34d399), --red (#f87171), --text-muted
 ```
 
-Vite proxies `/api` → `localhost:8000` (see `vite.config.ts`).
+Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`).
 
-React Query is used for all data fetching. Auth state lives in Zustand (`store/auth.ts`).
+데이터 조회는 전부 React Query. 인증 상태는 Zustand (`store/auth.ts`).
 
-### KIS API notes
+### KIS API 주의사항
 
-- Real server: `https://openapi.koreainvestment.com:9443` (requires real brokerage account with API enabled)
-- Mock server: `https://openapivts.koreainvestment.com:29443` (`KIS_IS_REAL=false`)
-- Token is cached in-process for 23 hours; a fresh uvicorn start always re-fetches.
-- Test endpoint (no auth): `GET /api/stocks/test/kis`
+- 실서버: `https://openapi.koreainvestment.com:9443` (실거래 계좌 + API 신청 필요)
+- 모의서버: `https://openapivts.koreainvestment.com:29443` (`KIS_IS_REAL=false`)
+- 토큰은 프로세스 내 23시간 캐시; uvicorn 재시작 시 항상 재발급.
+- 연결 테스트 엔드포인트 (인증 불필요): `GET /api/stocks/test/kis`
 
-### Authentication
+### 인증
 
-- JWT stored in `localStorage`, sent as `Authorization: Bearer …`.
-- TOTP (Google Authenticator) is optional; enabled per-user via `/api/auth/setup-totp` → `/api/auth/enable-totp`.
+- JWT를 `localStorage`에 저장, `Authorization: Bearer …` 헤더로 전송.
+- TOTP(Google Authenticator)는 선택사항; `/api/auth/setup-totp` → `/api/auth/enable-totp` 순서로 활성화.
 
 ## Git
 
-Development branch: `claude/dazzling-darwin-et76zj`. Always pull this branch before editing on the local PC; push fixes here.
+개발 브랜치: `claude/dazzling-darwin-et76zj`. 로컬 PC에서 작업 전 반드시 pull 후 편집, 완료 후 이 브랜치로 push.
