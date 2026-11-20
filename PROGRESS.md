@@ -118,6 +118,13 @@ winget install --id Git.Git -e
 - Docker Desktop: https://www.docker.com/products/docker-desktop/ → Download for Windows (Windows 10 22H2 이상 / Windows 11, BIOS 가상화 켜져 있어야 함)
 - Git: https://git-scm.com/download/win → 설치 화면 기본값으로 Next
 - 또는 Microsoft Store 에서 "앱 설치 관리자(App Installer)" 업데이트 → winget 사용 가능
+
+Docker Desktop 설치 중 `"Virtual Machine Platform" Windows feature ... is not enabled` 로 실패하면:
+**관리자 권한** PowerShell(시작 → powershell → 관리자 권한으로 실행)에서 아래 실행 → **재부팅** → 설치 파일 다시 실행
+```powershell
+wsl --install
+```
+(또는 설치 파일을 다시 실행해서 "All-users installation" 선택). 재부팅 후에도 가상화 오류가 나면 BIOS 에서 Intel VT-x / AMD SVM 켜기
 2. 코드 받기 + 파일 복사 — 위 "새 PC 설치" 의 1)·2) 와 동일 (Python·Node 설치, 3)~5) 는 건너뜀)
 
 **실행 / 끄기** (Docker Desktop 이 켜져 있어야 함)
