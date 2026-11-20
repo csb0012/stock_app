@@ -53,6 +53,33 @@ PC를 켜두지 않아도 앱이 계속 돌아가게 한다. 예를 들어 08:20
    - Source CIDR `0.0.0.0/0`, IP Protocol `TCP`, Destination Port Range `80,443` → 저장
    - 서버 안 방화벽은 `setup-server.sh` 가 연다
 
+## 1-1. 요금 안전장치 (1달러라도 나가면 메일 알림)
+- **종량제(Pay As You Go)로 업그레이드하지 않은 무료 계정은 요금이 청구되지 않는다.**
+  - 30일 체험 크레딧이 끝나면 유료 자원은 멈추고, Always Free 자원만 남는다.
+  - 이 문서는 메모리 조건으로 유휴 회수를 피하므로(위 참고) 업그레이드할 필요가 없다. **업그레이드 버튼을 누르지 않는 것이 가장 확실한 차단**이다.
+- 그래도 안전장치로 **예산 알림**을 걸어둔다. Oracle 예산은 **알림만** 보내고 자원을 자동으로 멈추지는 않는다.
+  1. 콘솔 왼쪽 위 메뉴(≡) → **Billing & Cost Management(청구 및 비용 관리) → Budgets(예산) → Create Budget(예산 생성)**
+  2. 아래처럼 입력한다:
+
+     | 항목 | 값 |
+     |---|---|
+     | Name | `free-guard` |
+     | Budget scope | Compartment |
+     | Target compartment | 맨 위 루트(계정 이름, `(root)`) |
+     | Schedule | Monthly |
+     | Budget amount | `1` (계정 통화가 원화면 `1000`) |
+  3. 같은 화면의 **Budget alert rule** 을 입력한다:
+
+     | 항목 | 값 |
+     |---|---|
+     | Threshold metric | **Actual spend** (실제 사용액) |
+     | Threshold type | Percentage of budget |
+     | Threshold % | `1` → 1센트라도 쓰면 알림 |
+     | Email recipients | 받을 메일 주소 |
+  4. **Create** — 알림 규칙을 하나 더 만들어 **Forecast spend**(예상 사용액) 100% 도 걸어두면, 쓰기 전에 미리 알 수 있다.
+- 예산은 몇 시간 간격으로 계산되므로 알림이 즉시 오지는 않는다.
+- 이상한 금액이 보이면 **Cost Analysis(비용 분석)** 에서 어느 자원인지 확인한다. 무료 자원에는 **Always Free** 표시가 붙어 있다.
+
 ## 2. DuckDNS 주소 만들기
 1. https://www.duckdns.org → GitHub 또는 Google 로 로그인
 2. sub domain 에 원하는 이름 입력(예: `mystock`) → **add domain**
