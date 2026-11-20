@@ -162,7 +162,19 @@ bash deploy/setup-server.sh
   - Security List 에 80,443 이 열려 있는지 확인한다.
   - 로그 확인: `sudo docker compose -f docker-compose.cloud.yml logs web`
 - **KIS 오류**: 로그 `logs backend` 를 본다. `backend/.env` 가 PC 와 같은지 확인한다(`KIS_IS_REAL` 포함).
-- **Out of capacity (VM 생성 실패)**: 몇 시간 뒤에 다시 시도하거나, 다른 가용 도메인(AD)을 고르거나, E2.1.Micro 로 만든다.
+- **Out of capacity (VM 생성 실패)** — Ampere 무료 자리가 꽉 찬 것이다. 수시로 자리가 나므로 **자동 재시도 스크립트**를 쓴다.
+  1. PC 브라우저에서 GitHub 저장소의 `deploy/oci-launch-retry.sh` 를 연다 → 오른쪽 위 **Download raw file**
+  2. Oracle 콘솔 오른쪽 위 **>_ (Cloud Shell)** 아이콘 → 터미널이 열리면 터미널의 ⚙ 메뉴 → **Upload** → 받은 파일 선택
+  3. Cloud Shell 에서 `bash oci-launch-retry.sh` 를 실행한다. 스크립트가 하는 일:
+     - 네트워크를 만든다.
+     - 80/443 을 연다 (= 1단계 4번을 대신함).
+     - SSH 키를 만든다.
+     - 90초마다 VM 생성을 재시도한다. 성공하면 공인 IP 를 알려 준다.
+  4. 성공하면 Cloud Shell ⚙ → **Download** → `/home/<이름>/.ssh/id_ed25519` 를 받아 PC 의 `C:\Users\내이름\.ssh\oracle.key` 로 저장한다. 이후 3단계부터 진행한다.
+  - Cloud Shell 은 오래 손대지 않으면 세션이 끊길 수 있다. 탭을 열어 두고, 끊기면 같은 명령을 다시 실행한다(이미 만든 건 건너뜀).
+  - 그래도 며칠째 안 되면 두 가지 방법이 있다:
+    - **종량제로 업그레이드**: 무료 자원은 그대로 0원이고, 자리 배정이 잘 된다는 사례가 많다. 예산 알림을 걸어 둔 상태여야 한다.
+    - **E2.1.Micro**(AMD 1GB)로 만든다.
 - **VM 이 사라짐(유휴 회수)**: 위 "꼭 알아둘 조건" 참고. 다시 만들고 백업한 `stock_app.db` 를 복사한다.
 
 ## 구성
