@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 앱 실행
 
-**Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 백엔드(8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
+**Windows (빠른 방법):** 루트의 `start.bat` 더블클릭 — 가상환경(루트 `.venv` 또는 `backend\.venv`) 자동 활성화 후 백엔드(127.0.0.1:8000), 프론트엔드(5173) 각각 cmd 창으로 실행.
 
 **최신 코드 받기 (실행 전):**
 ```powershell
@@ -22,9 +22,9 @@ git pull origin claude/dazzling-darwin-et76zj
 
 **수동 실행:**
 ```powershell
-# 백엔드 (backend/ 에서 .venv 활성화 후)
+# 백엔드 (가상환경 활성화 후 — 회사 PC는 루트 C:\claude\stock_app\.venv 에 있음)
 cd C:\claude\stock_app\backend
-.venv\Scripts\Activate
+..\.venv\Scripts\Activate   # backend\.venv 에 만들었다면 .venv\Scripts\Activate
 python -m uvicorn app.main:app --reload --port 8000
 
 # 프론트엔드 (별도 터미널)
@@ -57,7 +57,7 @@ npm install
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 — 없거나 예시값이면 서버가 시작되지 않음 |
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
-| `SECRET_KEY` | 필수 | JWT 서명 키 |
+| `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `FINNHUB_API_KEY` | 선택 | 실제 경제 캘린더 (없으면 목업 사용) |
 
 ## 아키텍처
@@ -90,7 +90,7 @@ api/routes/
   stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /screener/{kr,us}/{mode}
-  market.py      — /overview (지수 + 빅테크), /calendar
+  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   predictions.py — /review (채점 후 적중률·기록 반환)
@@ -98,7 +98,9 @@ api/routes/
 
 `main.py` lifespan: init_db → stock_master.load → repair_symbols → 30분마다 prediction_log.evaluate_pending 백그라운드 실행.
 
-**오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다.
+**오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
+
+**지표값:** `calc_technical_indicators()` 결과는 NaN/inf 가 없어야 한다 (FastAPI JSON 응답이 NaN 에서 실패함) → `_clean()` 으로 None 처리.
 
 **종목코드:** 종목을 손으로 적은 코드표로 관리하지 않는다. 검색·추가·검증은 모두 `stock_master` (KIS 공식 파일, `backend/app/data/master_cache.json` 에 하루 단위 캐시)로 한다.
 
@@ -139,6 +141,8 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`).
 ### 인증
 
 - JWT를 `localStorage`에 저장, `Authorization: Bearer …` 헤더로 전송.
+- `/api/auth/register` 는 계정이 하나도 없을 때만 동작 (개인용 — 이후 계정은 `create_admin.py`).
+- 백엔드는 `127.0.0.1` 에만 바인딩 (같은 네트워크의 다른 PC 접속 차단).
 - TOTP(Google Authenticator)는 선택사항; `/api/auth/setup-totp` → `/api/auth/enable-totp` 순서로 활성화.
 
 ## Git
