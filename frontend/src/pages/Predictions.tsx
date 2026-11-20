@@ -43,7 +43,8 @@ function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
           <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
             최근 90일의 거래일마다 <strong>그 전날 종가까지의 일봉만</strong> 보고 다음 날을 예측한 뒤 실제 등락과 비교합니다
             (예: 11/18까지 데이터로 11/19 예측 → 11/19 종가로 채점). 결과는 DB(prediction_backtest)에 저장되고 하루 한 번 새 날짜만 추가됩니다.
-            대상: AI 추천 후보 + 관심종목 + 투자종목 · 뉴스·거시·애널리스트·공시는 과거 시점 기록이 없어 <strong>기술적 지표만</strong> 사용.
+            대상: AI 추천 후보 + 관심종목 + 투자종목 · 규칙 점수와 학습 모델(과거 2년 일봉으로 학습, 10거래일마다 그 이전 데이터로만 다시 학습)을 같이 계산해 아래 "예측 방식별 적중률"에서 비교합니다.
+            뉴스·거시·애널리스트·공시는 과거 시점 기록이 없어 <strong>가격·거래량·지수 데이터만</strong> 사용.
           </p>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
@@ -174,7 +175,7 @@ export default function Predictions() {
             <Acc title="상승 예측 적중률" a={data.up_calls} sub="오른다고 한 것 중 실제 상승" />
             <Acc title="하락 예측 적중률" a={data.down_calls} sub="내린다고 한 것 중 실제 하락" />
             {kind === "all" && <Acc title="실제 예측 적중률" a={data.by_kind?.live} />}
-            {kind === "all" && <Acc title="백테스트 적중률" a={data.by_kind?.backtest} sub="기술적 지표만" />}
+            {kind === "all" && <Acc title="백테스트 적중률" a={data.by_kind?.backtest} sub="가격·지수 데이터만" />}
             <div className="card" style={{ padding: "14px 16px" }}>
               <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>채점 대기 / 중립</p>
               <p style={{ fontSize: 22, fontWeight: 700 }}>{data.pending_count} / {data.neutral_count}</p>
@@ -301,7 +302,7 @@ export default function Predictions() {
                         <div style={{ color: "var(--text-secondary)" }}>
                           <span style={{ color: "var(--text-muted)" }}>예측 당시 ({r.base_date}, {fmtPrice(r.base_price, r.market)}): </span>
                           {r.summary}
-                          <span style={{ color: "var(--text-muted)" }}> · 출처: {r.sources}{r.kind === "backtest" ? " (기술적 지표만, 대상일 전날 종가까지의 데이터)" : ""}</span>
+                          <span style={{ color: "var(--text-muted)" }}> · 출처: {r.sources}{r.kind === "backtest" ? " (가격·지수 데이터만, 대상일 전날 종가까지의 데이터)" : ""}</span>
                         </div>
                         {r.evaluated && r.review?.length > 0 && (
                           <div>
