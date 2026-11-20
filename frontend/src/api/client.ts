@@ -65,6 +65,11 @@ export const watchlistApi = {
   analysis: () => api.get("/watchlist/analysis"),
 };
 
+// 예측 검증
+export const predictionApi = {
+  review: (days = 30, market = "ALL") => api.get(`/predictions/review?days=${days}&market=${market}`),
+};
+
 // Portfolio
 export const portfolioApi = {
   list: () => api.get("/portfolio/"),

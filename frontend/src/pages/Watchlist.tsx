@@ -4,7 +4,7 @@ import { watchlistApi, stockApi, errMsg } from "../api/client";
 import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw } from "lucide-react";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
-import { fmtPrice, fmtSigned, probColor, probLabel } from "../components/common/format";
+import { fmtPrice, fmtSigned, probColor, probLabel, sessionLabel } from "../components/common/format";
 
 type Sort = "added" | "change" | "prob" | "target";
 
@@ -98,7 +98,7 @@ export default function Watchlist() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>관심종목</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>현재가 · 내일 전망 · 메모 · 목표 매수가 알림</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>현재가 · 다음 거래일 전망 · 메모 · 목표 매수가 알림</p>
         </div>
         <button className="btn btn-primary" onClick={openModal}>
           <Plus size={14} />
@@ -277,7 +277,7 @@ export default function Watchlist() {
                     <div style={{ minWidth: 220, maxWidth: 360 }}>
                       {pred && (
                         <>
-                          <p style={{ fontSize: 11, color: "var(--text-muted)" }}>내일 전망</p>
+                          <p style={{ fontSize: 11, color: "var(--text-muted)" }}>{sessionLabel(pred)} 전망</p>
                           <p style={{ fontWeight: 700, fontSize: 13, color: probColor(pred.probability) }}>
                             상승 확률 {pred.probability}% · {probLabel(pred.probability)}
                           </p>

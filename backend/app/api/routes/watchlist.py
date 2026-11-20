@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.watchlist import WatchlistItem
 from app.services import stock_master
 from app.services.quote import analyze_items
+from app.services import prediction_log
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -125,6 +126,7 @@ async def analyze_watchlist(
     )
     items = [_to_dict(i) for i in result.scalars().all()]
     analyzed = await analyze_items(items)
+    await prediction_log.record(list(analyzed.values()), "관심종목")
     rows = []
     for item in items:
         r = analyzed.get((item["market"], item["symbol"]), {"error": "분석 결과 없음"})

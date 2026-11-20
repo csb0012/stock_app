@@ -16,3 +16,8 @@ export function probColor(p: number): string {
 export function probLabel(p: number): string {
   return p >= 65 ? "상승 유력" : p >= 55 ? "약상승" : p >= 45 ? "중립" : p >= 35 ? "약하락" : "하락 주의";
 }
+
+/** 예측 대상 거래일 라벨: "내일" / "오늘" / "월요일(11/23)" (휴장일 반영, 백엔드 계산) */
+export function sessionLabel(pred: any): string {
+  return pred?.target_label || "다음 거래일";
+}

@@ -4,7 +4,10 @@
   KISError 로 올려 보낸다. 실패를 빈 목록으로 숨기지 않는다.
 """
 import time
+import json
+import hashlib
 import asyncio
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -14,6 +17,10 @@ from app.core.config import settings
 
 KIS_REAL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_MOCK_BASE = "https://openapivts.koreainvestment.com:29443"
+
+
+# 발급받은 토큰 저장 파일 (git 제외)
+_TOKEN_FILE = Path(__file__).resolve().parents[2] / ".kis_token.json"
 
 
 class KISError(RuntimeError):
@@ -48,20 +55,46 @@ class KISClient:
         self._min_interval = 0.07 if settings.kis_is_real else 0.55
         self._rate_lock = asyncio.Lock()
         self._last_call = 0.0
+        self._http: Optional[httpx.AsyncClient] = None
+
+    def _client(self) -> httpx.AsyncClient:
+        # 연결 재사용(keep-alive) — 요청마다 새로 TLS 연결을 맺으면 호출당 0.1~0.3초씩 더 걸림
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(
+                timeout=15.0,
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=20),
+            )
+        return self._http
+
+    def _load_saved_token(self):
+        """재시작해도 토큰 재사용 (KIS는 토큰 발급이 1분에 1회로 제한되고, 발급에 시간이 걸림)"""
+        try:
+            saved = json.loads(_TOKEN_FILE.read_text(encoding="utf-8"))
+            if saved.get("key") != self._token_key():
+                return
+            expires = datetime.fromisoformat(saved["expires"])
+            if datetime.now() < expires:
+                self._access_token, self._token_expires = saved["token"], expires
+        except (FileNotFoundError, ValueError, KeyError):
+            pass
+
+    def _token_key(self) -> str:
+        return hashlib.sha256(f"{self.base_url}|{settings.kis_app_key}".encode()).hexdigest()[:16]
 
     async def _get_token(self) -> str:
         async with self._token_lock:
+            if self._access_token is None:
+                self._load_saved_token()
             if self._access_token and self._token_expires and datetime.now() < self._token_expires:
                 return self._access_token
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    f"{self.base_url}/oauth2/tokenP",
-                    json={
-                        "grant_type": "client_credentials",
-                        "appkey": settings.kis_app_key,
-                        "appsecret": settings.kis_app_secret,
-                    },
-                )
+            resp = await self._client().post(
+                f"{self.base_url}/oauth2/tokenP",
+                json={
+                    "grant_type": "client_credentials",
+                    "appkey": settings.kis_app_key,
+                    "appsecret": settings.kis_app_secret,
+                },
+            )
             data = resp.json() if resp.content else {}
             if resp.status_code != 200 or "access_token" not in data:
                 raise KISError(
@@ -70,6 +103,10 @@ class KISClient:
                 )
             self._access_token = data["access_token"]
             self._token_expires = datetime.now() + timedelta(hours=23)
+            _TOKEN_FILE.write_text(json.dumps({
+                "key": self._token_key(), "token": self._access_token,
+                "expires": self._token_expires.isoformat(),
+            }), encoding="utf-8")
             return self._access_token
 
     async def _throttle(self):
@@ -91,8 +128,7 @@ class KISClient:
         }
         for attempt in range(3):
             await self._throttle()
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(f"{self.base_url}{path}", headers=headers, params=params)
+            resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
             data = resp.json() if resp.content else {}
             # 초당 호출 초과(EGW00201)는 잠시 후 재시도
             if data.get("msg_cd") == "EGW00201" and attempt < 2:
@@ -101,6 +137,8 @@ class KISClient:
             # 토큰 만료/무효(EGW00123, EGW00121)는 토큰을 새로 받아 재시도
             if data.get("msg_cd") in ("EGW00123", "EGW00121") and attempt < 2:
                 self._access_token = None
+                self._token_expires = None
+                _TOKEN_FILE.unlink(missing_ok=True)
                 headers["authorization"] = f"Bearer {await self._get_token()}"
                 continue
             if resp.status_code != 200 or data.get("rt_cd") != "0":

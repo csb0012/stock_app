@@ -3,7 +3,18 @@ import { useQuery } from "@tanstack/react-query";
 import { stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
-import { TrendingUp, Zap, AlertTriangle } from "lucide-react";
+import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper } from "lucide-react";
+import { sessionLabel, fmtPrice } from "../components/common/format";
+
+function Delta({ now, prev }: { now: number; prev?: number | null }) {
+  if (prev === undefined || prev === null || prev === now) return null;
+  const d = now - prev;
+  return (
+    <span style={{ fontSize: 11, fontWeight: 700, color: d > 0 ? "var(--green)" : "var(--red)", marginLeft: 6 }}>
+      {d > 0 ? "▲" : "▼"}{Math.abs(d)}%p
+    </span>
+  );
+}
 
 function ProbabilityBar({ value }: { value: number }) {
   const color = value >= 65 ? "var(--green)" : value >= 45 ? "var(--yellow)" : "var(--red)";
@@ -32,15 +43,18 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
             <span className="badge badge-neutral">{isKR ? "국내" : "미국"}</span>
           </div>
           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-            {isKR ? `₩${(item.price || 0).toLocaleString()}` : `$${(item.price || 0).toFixed(2)}`}
+            {fmtPrice(item.price, item.market)}
           </span>
         </div>
         {item.change_rate !== undefined && <ChangeTag value={item.change_rate} />}
       </div>
 
-      {/* 내일 상승 확률 */}
+      {/* 다음 거래일 상승 확률 */}
       <div>
-        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>내일 상승 확률</p>
+        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+          {sessionLabel(pred)} 상승 확률
+          <Delta now={pred.probability} prev={item.prev_probability} />
+        </p>
         <ProbabilityBar value={pred.probability || 50} />
         {pred.signal && (
           <span style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4, display: "block" }}>
@@ -83,6 +97,18 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
         <PredictionReasons pred={pred} />
       </div>
 
+      {/* 최근 뉴스 */}
+      {item.news?.headlines?.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {item.news.headlines.slice(0, 2).map((h: any, i: number) => (
+            <div key={i} style={{ display: "flex", gap: 6, fontSize: 11, color: "var(--text-muted)" }}>
+              <Newspaper size={11} style={{ flexShrink: 0, marginTop: 2, color: h.tone === "pos" ? "var(--green)" : h.tone === "neg" ? "var(--red)" : "var(--text-muted)" }} />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.title}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* 장기 점수 */}
       {type === "long" && item.long_term_score > 0 && (
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-muted)" }}>
@@ -99,35 +125,48 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
   );
 }
 
-type Market = "KR" | "US";
+type Group = "KR" | "US" | "SPAC" | "ETF";
 type Sort = "default" | "prob_desc" | "prob_asc";
+
+const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
+  { key: "KR", label: "🇰🇷 국내 주식", match: (x) => x.market === "KR" && x.category === "stock" },
+  { key: "US", label: "🇺🇸 미국", match: (x) => x.market === "US" && x.category !== "etf" },
+  { key: "SPAC", label: "스팩", match: (x) => x.category === "spac" },
+  { key: "ETF", label: "ETF·ETN", match: (x) => x.category === "etf" },
+];
+
+const REFRESH_SEC = 15;
 
 export default function Recommendations() {
   const [tab, setTab] = useState<"long" | "short">("long");
-  const [market, setMarket] = useState<Market>("KR");
+  const [group, setGroup] = useState<Group>("KR");
   const [sort, setSort] = useState<Sort>("default");
 
+  // 15초마다 현재가·뉴스로 상승 확률을 다시 계산한 결과를 받아옴
   const longQuery = useQuery({
     queryKey: ["longterm"],
     queryFn: () => stockApi.longterm().then((r) => r.data),
     enabled: tab === "long",
-    staleTime: 5 * 60 * 1000,
+    refetchInterval: REFRESH_SEC * 1000,
+    refetchIntervalInBackground: false,
   });
 
   const shortQuery = useQuery({
     queryKey: ["shortterm"],
     queryFn: () => stockApi.shortterm().then((r) => r.data),
     enabled: tab === "short",
-    staleTime: 60 * 1000,
+    refetchInterval: REFRESH_SEC * 1000,
+    refetchIntervalInBackground: false,
   });
 
   const query = tab === "long" ? longQuery : shortQuery;
   const all: any[] = query.data?.items || [];
-  const errors: any[] = (query.data?.errors || []).filter((e: any) => e.market === market);
+  const g = GROUPS.find((x) => x.key === group)!;
+  const errors: any[] = (query.data?.errors || []).filter((e: any) => (group === "US" ? e.market === "US" : e.market === "KR"));
 
   const prob = (x: any) => x.prediction?.probability ?? 0;
   const items = all
-    .filter((x) => x.market === market)
+    .filter(g.match)
     .sort((a, b) =>
       sort === "prob_desc" ? prob(b) - prob(a)
       : sort === "prob_asc" ? prob(a) - prob(b)
@@ -135,22 +174,21 @@ export default function Recommendations() {
       : prob(b) - prob(a)
     );
 
-  const countKR = all.filter((x) => x.market === "KR").length;
-  const countUS = all.filter((x) => x.market === "US").length;
-
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>AI 주식 추천</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>기술적 분석 기반 추천 · 투자 손실에 대한 책임은 본인에게 있습니다</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+          기술적 분석 + 뉴스 분위기 · {REFRESH_SEC}초마다 현재가·뉴스로 확률 재계산 · 투자 손실에 대한 책임은 본인에게 있습니다
+        </p>
       </div>
 
       {/* Disclaimer */}
       <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "rgba(251,191,36,0.3)", background: "rgba(251,191,36,0.04)" }}>
         <AlertTriangle size={15} style={{ color: "var(--yellow)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-          이 추천은 RSI·MACD·볼린저밴드 등 기술적 지표를 기반으로 하며, 미래 수익을 보장하지 않습니다.
-          소액 분산 투자를 권장하며, 최종 투자 판단은 본인이 하세요.
+          이 추천은 RSI·MACD·볼린저밴드·이동평균과 뉴스 키워드를 기반으로 하며, 미래 수익을 보장하지 않습니다.
+          실제 적중률은 사이드바의 "예측 검증"에서 확인할 수 있습니다.
         </p>
       </div>
 
@@ -166,12 +204,12 @@ export default function Recommendations() {
         </button>
       </div>
 
-      {/* 국내/미국 + 정렬 */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {(["KR", "US"] as Market[]).map((m) => (
-            <button key={m} className={`btn ${market === m ? "btn-primary" : "btn-ghost"}`} style={{ minWidth: 90 }} onClick={() => setMarket(m)}>
-              {m === "KR" ? `🇰🇷 국내 (${countKR})` : `🇺🇸 미국 (${countUS})`}
+      {/* 분류 + 정렬 */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {GROUPS.map((x) => (
+            <button key={x.key} className={`btn ${group === x.key ? "btn-primary" : "btn-ghost"}`} style={{ minWidth: 80 }} onClick={() => setGroup(x.key)}>
+              {x.label} ({all.filter(x.match).length})
             </button>
           ))}
         </div>
@@ -188,8 +226,18 @@ export default function Recommendations() {
         </div>
       </div>
 
+      {query.data?.updated_at && (
+        <p style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12, marginBottom: 14 }}>
+          <RefreshCw size={12} className={query.isFetching ? "spin" : undefined} />
+          마지막 갱신 {query.data.updated_at} · {REFRESH_SEC}초마다 자동 갱신
+          {query.data.live_errors?.length > 0 && (
+            <span style={{ color: "var(--yellow)" }}> · 현재가 조회 실패: {query.data.live_errors.join(" / ")}</span>
+          )}
+        </p>
+      )}
+
       {query.isLoading && (
-        <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>분석 중... (국내 종목은 KIS에서 한 종목씩 받아 10초 정도 걸립니다)</div>
+        <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>분석 중... (처음엔 KIS·뉴스를 받느라 10~20초 걸립니다)</div>
       )}
       {query.error && (
         <div className="card" style={{ padding: 20, borderColor: "rgba(248,113,113,0.4)", marginBottom: 16 }}>
@@ -203,7 +251,9 @@ export default function Recommendations() {
         </p>
       )}
       {query.data && items.length === 0 && (
-        <p style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 40 }}>이 시장의 추천 종목이 없습니다</p>
+        <p style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 40 }}>
+          {group === "SPAC" || group === "ETF" ? "오늘 거래량 급증 종목 중 해당 분류가 없습니다 (단기/스윙 탭에서 주로 나옵니다)" : "추천 종목이 없습니다"}
+        </p>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 16 }}>

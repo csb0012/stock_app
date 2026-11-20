@@ -1,0 +1,201 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ChevronDown, ChevronUp, ClipboardCheck } from "lucide-react";
+import { predictionApi, errMsg } from "../api/client";
+import { fmtPrice, fmtSigned } from "../components/common/format";
+
+type Filter = "all" | "miss" | "hit" | "pending";
+
+const OUTCOME: Record<string, { label: string; cls: string }> = {
+  hit: { label: "적중", cls: "badge-up" },
+  miss: { label: "빗나감", cls: "badge-down" },
+  neutral: { label: "중립(채점 제외)", cls: "badge-neutral" },
+  no_data: { label: "시세 없음", cls: "badge-neutral" },
+};
+
+function Acc({ title, a, sub }: { title: string; a: any; sub?: string }) {
+  const v = a?.accuracy;
+  const color = v == null ? "var(--text-muted)" : v >= 55 ? "var(--green)" : v >= 45 ? "var(--yellow)" : "var(--red)";
+  return (
+    <div className="card" style={{ padding: "14px 16px" }}>
+      <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{title}</p>
+      <p style={{ fontSize: 22, fontWeight: 700, color }}>{v == null ? "-" : `${v}%`}</p>
+      <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
+        {a ? `맞음 ${a.hit} · 틀림 ${a.miss}` : ""}{sub ? ` · ${sub}` : ""}
+      </p>
+    </div>
+  );
+}
+
+export default function Predictions() {
+  const [days, setDays] = useState(30);
+  const [market, setMarket] = useState("ALL");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [open, setOpen] = useState<number | null>(null);
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["prediction-review", days, market],
+    queryFn: () => predictionApi.review(days, market).then((r) => r.data),
+    staleTime: 60_000,
+  });
+
+  const items: any[] = data?.items || [];
+  const shown = items.filter((r) =>
+    filter === "all" ? true
+    : filter === "pending" ? !r.evaluated
+    : r.outcome === filter
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>예측 검증</h1>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+          AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측을 장 마감 후 실제 등락과 비교해 채점합니다 ·
+          상승 예측 = 확률 {data?.thresholds?.up ?? 55}% 이상, 하락 예측 = {data?.thresholds?.down ?? 45}% 이하
+        </p>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+        {[7, 30, 90].map((d) => (
+          <button key={d} className={`btn ${days === d ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setDays(d)}>
+            최근 {d}일
+          </button>
+        ))}
+        <span style={{ width: 12 }} />
+        {[["ALL", "전체"], ["KR", "국내"], ["US", "미국"]].map(([k, l]) => (
+          <button key={k} className={`btn ${market === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setMarket(k)}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {isLoading && <p style={{ color: "var(--text-muted)" }}>채점 중...</p>}
+      {error && <p style={{ color: "var(--red)" }}>예측 검증 조회 실패: {errMsg(error)}</p>}
+
+      {data && (
+        <>
+          {/* 적중률 요약 */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
+            <Acc title="전체 적중률" a={data.overall} />
+            <Acc title="상승 예측 적중률" a={data.up_calls} sub="오른다고 한 것 중 실제 상승" />
+            <Acc title="하락 예측 적중률" a={data.down_calls} sub="내린다고 한 것 중 실제 하락" />
+            <div className="card" style={{ padding: "14px 16px" }}>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>채점 대기 / 중립</p>
+              <p style={{ fontSize: 22, fontWeight: 700 }}>{data.pending_count} / {data.neutral_count}</p>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>대상일 장이 끝나면 자동 채점 (30분 주기)</p>
+            </div>
+          </div>
+
+          {/* 확률 구간별 실제 상승 비율 */}
+          <div className="card" style={{ marginBottom: 20 }}>
+            <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>확률 구간별 실제 상승 비율</p>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+              예측 확률이 정확하다면 두 막대 길이가 비슷해야 합니다 (예: 60%라고 한 종목은 10번 중 6번 상승)
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {data.calibration.map((b: any) => (
+                <div key={b.label} style={{ display: "grid", gridTemplateColumns: "70px 1fr 120px", gap: 12, alignItems: "center", fontSize: 12 }}>
+                  <span style={{ color: "var(--text-secondary)" }}>{b.label}</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3 }}>
+                      <div style={{ width: `${b.avg_prob ?? 0}%`, height: "100%", background: "var(--accent)", borderRadius: 3 }} />
+                    </div>
+                    <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3 }}>
+                      <div style={{ width: `${b.actual_up_rate ?? 0}%`, height: "100%", background: "var(--green)", borderRadius: 3 }} />
+                    </div>
+                  </div>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {b.count ? `예측 ${b.avg_prob}% · 실제 ${b.actual_up_rate}% (${b.count}건)` : "기록 없음"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 14, fontSize: 11, color: "var(--text-muted)", marginTop: 10 }}>
+              <span><span style={{ display: "inline-block", width: 10, height: 6, background: "var(--accent)", borderRadius: 2, marginRight: 4 }} />평균 예측 확률</span>
+              <span><span style={{ display: "inline-block", width: 10, height: 6, background: "var(--green)", borderRadius: 2, marginRight: 4 }} />실제 상승 비율</span>
+            </div>
+          </div>
+
+          {/* 기록 목록 */}
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {([["all", "전체"], ["miss", "틀린 것"], ["hit", "맞은 것"], ["pending", "채점 대기"]] as [Filter, string][]).map(([k, l]) => (
+              <button key={k} className={`btn ${filter === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setFilter(k)}>
+                {l} ({items.filter((r) => k === "all" ? true : k === "pending" ? !r.evaluated : r.outcome === k).length})
+              </button>
+            ))}
+          </div>
+
+          {shown.length === 0 ? (
+            <div className="card" style={{ textAlign: "center", padding: 40 }}>
+              <ClipboardCheck size={32} style={{ color: "var(--border)", margin: "0 auto 10px" }} />
+              <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+                기록이 없습니다. AI 추천·투자종목·관심종목 화면을 열면 예측이 기록되고, 다음 거래일 장 마감 후 채점됩니다.
+              </p>
+            </div>
+          ) : (
+            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+              {shown.map((r, i) => {
+                const isOpen = open === r.id;
+                const dirTxt = r.direction === "up" ? "상승 예측" : r.direction === "down" ? "하락 예측" : "중립";
+                const o = r.evaluated ? OUTCOME[r.outcome] : { label: "채점 대기", cls: "badge-neutral" };
+                return (
+                  <div key={r.id} style={{ borderBottom: i < shown.length - 1 ? "1px solid var(--border)" : "none" }}>
+                    <div
+                      onClick={() => setOpen(isOpen ? null : r.id)}
+                      style={{ display: "grid", gridTemplateColumns: "90px 1.6fr 1fr 1fr 110px 20px", gap: 10, alignItems: "center", padding: "11px 16px", cursor: "pointer", fontSize: 13 }}
+                    >
+                      <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{r.target_date.slice(5)}</span>
+                      <span>
+                        <strong>{r.name || r.symbol}</strong>
+                        <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 6 }}>{r.symbol} · {r.market === "KR" ? "국내" : "미국"}</span>
+                      </span>
+                      <span>
+                        상승 {r.probability}%
+                        <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 6 }}>{dirTxt}</span>
+                      </span>
+                      <span style={{ fontWeight: 600, color: r.actual_change == null ? "var(--text-muted)" : r.actual_change >= 0 ? "var(--green)" : "var(--red)" }}>
+                        {r.actual_change == null ? "-" : `실제 ${fmtSigned(r.actual_change)}%`}
+                      </span>
+                      <span className={`badge ${o.cls}`} style={{ justifySelf: "start" }}>{o.label}</span>
+                      {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    </div>
+                    {isOpen && (
+                      <div style={{ padding: "0 16px 14px 116px", fontSize: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ color: "var(--text-secondary)" }}>
+                          <span style={{ color: "var(--text-muted)" }}>예측 당시 ({r.base_date}, {fmtPrice(r.base_price, r.market)}): </span>
+                          {r.summary}
+                          <span style={{ color: "var(--text-muted)" }}> · 출처: {r.sources}</span>
+                        </div>
+                        {r.evaluated && r.review?.length > 0 && (
+                          <div>
+                            <p style={{ color: "var(--text-muted)", marginBottom: 4 }}>{r.outcome === "miss" ? "틀린 이유 (추정)" : "결과 분석"}</p>
+                            <ul style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                              {r.review.map((t: string, k: number) => (
+                                <li key={k} style={{ display: "flex", gap: 6, color: "var(--text-secondary)" }}>
+                                  <span style={{ color: r.outcome === "miss" ? "var(--red)" : "var(--accent)" }}>•</span>{t}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {r.evaluated && r.actual_close != null && (
+                          <div style={{ color: "var(--text-muted)", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                            <span>종가 {fmtPrice(r.actual_close, r.market)}</span>
+                            {r.gap_pct != null && <span>시가 갭 {fmtSigned(r.gap_pct)}%</span>}
+                            {r.volume_ratio != null && <span>거래량 {r.volume_ratio}배</span>}
+                            {r.index_change != null && <span>{r.index_name} {fmtSigned(r.index_change)}%</span>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

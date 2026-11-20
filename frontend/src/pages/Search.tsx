@@ -122,7 +122,7 @@ export default function Search() {
               {pred && (
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <div>
-                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>내일 상승 확률</p>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>{pred?.target_label || "다음 거래일"} 상승 확률</p>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <div style={{ flex: 1, height: 8, background: "var(--bg-secondary)", borderRadius: 4, overflow: "hidden" }}>
                         <div style={{ width: `${pred.probability}%`, height: "100%", background: pred.probability >= 65 ? "var(--green)" : pred.probability >= 45 ? "var(--yellow)" : "var(--red)", borderRadius: 4 }} />

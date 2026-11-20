@@ -10,6 +10,7 @@ import Watchlist from "./pages/Watchlist";
 import Portfolio from "./pages/Portfolio";
 import CalendarPage from "./pages/Calendar";
 import Search from "./pages/Search";
+import Predictions from "./pages/Predictions";
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/screener" element={<ProtectedRoute><Screener /></ProtectedRoute>} />
           <Route path="/watchlist" element={<ProtectedRoute><Watchlist /></ProtectedRoute>} />
           <Route path="/portfolio" element={<ProtectedRoute><Portfolio /></ProtectedRoute>} />
+          <Route path="/predictions" element={<ProtectedRoute><Predictions /></ProtectedRoute>} />
           <Route path="/calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
           <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />

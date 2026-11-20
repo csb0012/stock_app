@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { portfolioApi, stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
-import { probLabel } from "../components/common/format";
+import { probLabel, sessionLabel } from "../components/common/format";
 import { Briefcase, Plus, Trash2, X, Search, Edit2, Check, AlertTriangle } from "lucide-react";
 
 function useDebounce(value: string, delay: number) {
@@ -135,7 +135,7 @@ export default function Portfolio() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>투자종목</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>보유 종목별 수익/손실 · 내일 전망</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>보유 종목별 수익/손실 · 다음 거래일 전망</p>
         </div>
         <button className="btn btn-primary" onClick={openModal}>
           <Plus size={14} />
@@ -407,7 +407,7 @@ export default function Portfolio() {
                   <div style={{ flex: 1, maxWidth: 560 }}>
                     {pred.probability ? (
                       <div>
-                        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>내일 전망</p>
+                        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{sessionLabel(pred)} 전망</p>
                         <ProbBadge value={pred.probability} />
                         {pred.signal && (
                           <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>

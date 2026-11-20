@@ -11,6 +11,7 @@ from app.models.user import User
 from app.models.portfolio import PortfolioItem
 from app.services import stock_master
 from app.services.quote import analyze_items, get_usdkrw
+from app.services import prediction_log
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -201,6 +202,7 @@ async def analyze_portfolio(
             return None, str(e)
 
     analyzed, (usdkrw, fx_error) = await asyncio.gather(analyze_items(items), fx())
+    await prediction_log.record(list(analyzed.values()), "투자종목")
 
     rows = []
     totals = {cur: {"invested": 0.0, "value": 0.0, "pnl": 0.0, "count": 0} for cur in ("KRW", "USD")}

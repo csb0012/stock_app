@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { stockApi, errMsg } from "../../api/client";
 import ChangeTag from "./ChangeTag";
 import PredictionReasons from "./PredictionReasons";
-import { fmtPrice, probColor, probLabel } from "./format";
+import { fmtPrice, probColor, probLabel, sessionLabel } from "./format";
 
 /** 검색으로 고른 종목 1개의 시세 + 내일 전망 카드 */
 export default function StockQuoteCard({
@@ -54,7 +54,7 @@ export default function StockQuoteCard({
           </div>
           {pred && (
             <div>
-              <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>내일 전망</p>
+              <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>{sessionLabel(pred)} 전망</p>
               <p style={{ fontWeight: 700, color: probColor(pred.probability) }}>
                 상승 확률 {pred.probability}% · {probLabel(pred.probability)}
                 <span style={{ fontWeight: 400, fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>신뢰도 {pred.confidence}</span>

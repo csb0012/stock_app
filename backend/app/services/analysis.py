@@ -61,7 +61,7 @@ def calc_technical_indicators(candles: list) -> dict:
     }
 
 
-def predict_next_day(candles: list, indicators: dict) -> dict:
+def predict_next_day(candles: list, indicators: dict, news: dict | None = None) -> dict:
     """
     내일 상승 확률 예측 (규칙 기반 + 기술적 분석 종합)
     - 완벽한 예측은 없으며, 참고용 확률입니다
@@ -156,6 +156,23 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
             got, short, detail = 0, "이평선 하회", "현재가가 5일·20일 이평 아래 (하락 추세)"
         score += got
         add("이동평균", short, detail, got, 25)
+
+    # 5. 뉴스 분위기 (15점) — news: {"pos": n, "neg": n, "total": n, "headlines": [...]} (news.py)
+    if news is not None:
+        max_score += 15
+        pos, neg, total = news.get("pos", 0), news.get("neg", 0), news.get("total", 0)
+        if news.get("error"):
+            got, short, detail = 7, "뉴스 조회 실패", f"뉴스 조회 실패 — 중립 처리 ({news['error'][:60]})"
+        elif pos + neg == 0:
+            got, short, detail = 7, "뉴스 중립", f"최근 뉴스 {total}건, 뚜렷한 호재·악재 키워드 없음"
+        else:
+            got = round(15 * pos / (pos + neg))
+            tone = "호재 우세" if pos > neg else "악재 우세" if neg > pos else "호재·악재 혼재"
+            short = f"뉴스 {tone}"
+            sample = next((h["title"] for h in news.get("headlines", []) if h.get("tone") == ("pos" if pos >= neg else "neg")), "")
+            detail = f"최근 뉴스 {total}건 중 호재 {pos} · 악재 {neg}" + (f" — 예: {sample[:50]}" if sample else "")
+        score += got
+        add("뉴스", short, detail, got, 15)
 
     reasons = [f["detail"] for f in factors]
 

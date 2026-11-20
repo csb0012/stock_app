@@ -179,3 +179,20 @@ def require(market: str, symbol: str) -> dict:
     if not item:
         raise MasterError(f"종목마스터에 없는 종목입니다: {market} {symbol}")
     return item
+
+
+def find_by_name(market: str, name: str) -> list:
+    """이름이 정확히 같은 종목 (띄어쓰기·대소문자 무시)"""
+    n = _norm(name or "")
+    if not n:
+        return []
+    return [i for i in _items if i["market"] == market and _norm(i["name"]) == n]
+
+
+def category(item: dict) -> str:
+    """추천 분류: stock(일반 주식) / spac(스팩) / etf(ETF·ETN)"""
+    if item.get("type") in ("etf", "etn"):
+        return "etf"
+    if item.get("market") == "KR" and "스팩" in (item.get("name") or ""):
+        return "spac"
+    return "stock"

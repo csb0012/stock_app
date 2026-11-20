@@ -7,7 +7,10 @@ from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.services.kis_api import kis_client, KISError
 from app.services import stock_master
-from app.services.quote import analyze_kr, analyze_kr_many, analyze_us_many, strip_candles
+from app.services.quote import (analyze_kr, analyze_kr_many, analyze_us_many, strip_candles,
+                                live_prices, patch_candles, analyze_candles)
+from app.services.news import get_news_many
+from app.services import prediction_log
 from app.services.market_data import get_news_naver
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
@@ -105,10 +108,11 @@ def _fail(e: Exception):
 def _rec_row(r: dict, extra: dict) -> dict:
     return {
         "symbol": r["symbol"], "name": r["name"], "market": r["market"],
-        "exchange": r.get("exchange"),
+        "exchange": r.get("exchange"), "category": r.get("category", "stock"),
         "price": r["price"], "change_rate": r["change_rate"],
         "per": r.get("per", 0), "pbr": r.get("pbr", 0),
         "prediction": r["prediction"],
+        "news": r.get("news"),
         "long_term_score": r["style"].get("long_term_score", 0),
         "short_term_score": r["style"].get("short_term_score", 0),
         "trend_6m": r["style"].get("trend_6m", 0),
@@ -118,58 +122,106 @@ def _rec_row(r: dict, extra: dict) -> dict:
     }
 
 
-def _collect(results: dict, extra_by_symbol: dict | None = None) -> tuple[list, list]:
-    rows, errors = [], []
-    for sym, r in results.items():
-        if "error" in r:
-            errors.append({"market": r.get("market"), "symbol": sym, "error": r["error"]})
-            continue
-        rows.append(_rec_row(r, (extra_by_symbol or {}).get(sym, {})))
-    return rows, errors
-
-
-async def _build_longterm_recommendations() -> dict:
+async def _build_longterm() -> dict:
     kr, us = await asyncio.gather(
         analyze_kr_many([c["symbol"] for c in KR_LONGTERM], count=130),
         analyze_us_many([c["symbol"] for c in US_LONGTERM], period="6mo"),
     )
-    kr_rows, kr_err = _collect(kr)
-    us_rows, us_err = _collect(us)
-    if not kr_rows and not us_rows:
-        raise RuntimeError("추천 분석 실패: " + "; ".join(f"{e['symbol']}: {e['error']}" for e in (kr_err + us_err)[:3]))
-    rows = kr_rows + us_rows
-    rows.sort(key=lambda x: x["long_term_score"], reverse=True)
-    return {"items": rows, "errors": kr_err + us_err}
+    return {"raw": {**kr, **us}, "extra": {}}
 
 
-async def _build_shortterm_recommendations() -> dict:
-    surge = (await kis_client.get_volume_surge_kr())[:20]
-    surge_extra = {c["symbol"]: {"volume": c["volume"], "volume_ratio": c["volume_ratio"]} for c in surge}
+async def _build_shortterm() -> dict:
+    surge = (await kis_client.get_volume_surge_kr())[:30]
+    extra = {c["symbol"]: {"volume": c["volume"], "volume_ratio": c["volume_ratio"]} for c in surge}
     kr, us = await asyncio.gather(
-        analyze_kr_many([c["symbol"] for c in surge], count=80),
+        analyze_kr_many([c["symbol"] for c in surge], count=100),
         analyze_us_many([c["symbol"] for c in US_SHORTTERM_EXTRA], period="3mo"),
     )
-    kr_rows, kr_err = _collect(kr, surge_extra)
-    us_rows, us_err = _collect(us)
-    for r in us_rows:
-        r.setdefault("volume_ratio", 0)
-    rows = kr_rows + us_rows
-    if not rows:
-        raise RuntimeError("추천 분석 실패: " + "; ".join(f"{e['symbol']}: {e['error']}" for e in (kr_err + us_err)[:3]))
-    rows.sort(key=lambda x: x["prediction"].get("probability", 0), reverse=True)
-    return {"items": rows, "errors": kr_err + us_err}
+    return {"raw": {**kr, **us}, "extra": extra}
 
 
-async def _cached_rec(key: str, builder):
-    cache = _rec_cache[key]
-    if cache["data"] and (time.time() - cache["ts"]) < _CACHE_TTL:
-        return cache["data"]
-    try:
-        data = await builder()
-    except Exception as e:
-        _fail(e)
-    cache["data"] = data
-    cache["ts"] = time.time()
+_BUILDERS = {"longterm": _build_longterm, "shortterm": _build_shortterm}
+_LIVE_TTL = 10.0
+_build_locks = {k: asyncio.Lock() for k in _BUILDERS}
+
+
+async def _base(kind: str) -> dict:
+    """일봉·뉴스 등 무거운 데이터 (15분 캐시)"""
+    cache = _rec_cache[kind]
+    async with _build_locks[kind]:
+        if cache["data"] and (time.time() - cache["ts"]) < _CACHE_TTL:
+            return cache["data"]
+        try:
+            data = await _BUILDERS[kind]()
+        except Exception as e:
+            _fail(e)
+        ok = [r for r in data["raw"].values() if "error" not in r]
+        if not ok:
+            errs = "; ".join(f"{r['symbol']}: {r['error']}" for r in list(data["raw"].values())[:3])
+            _fail(RuntimeError("추천 분석 실패: " + errs))
+        cache["data"], cache["ts"] = data, time.time()
+        cache["live"] = None
+        return data
+
+
+def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
+    rows, errors = [], []
+    for sym, r in raw.items():
+        if "error" in r:
+            errors.append({"market": r.get("market"), "symbol": sym, "error": r["error"]})
+        else:
+            rows.append(_rec_row(r, extra.get(sym, {})))
+    key = (lambda x: x["long_term_score"]) if kind == "longterm" else (lambda x: x["prediction"].get("probability", 0))
+    rows.sort(key=key, reverse=True)
+    return {"items": rows, "errors": errors}
+
+
+async def _live(kind: str) -> dict:
+    """현재가 + 뉴스(10분 캐시)로 상승 확률을 다시 계산 (10초 캐시)"""
+    base = await _base(kind)
+    cache = _rec_cache[kind]
+    live = cache.get("live")
+    if live and time.time() - live["ts"] < _LIVE_TTL:
+        return live["data"]
+
+    ok = {s: r for s, r in base["raw"].items() if "error" not in r}
+    keys = [(r["market"], s) for s, r in ok.items()]
+    prices, news = await asyncio.gather(
+        live_prices([{"market": m, "symbol": s} for m, s in keys]),
+        get_news_many(keys),
+    )
+
+    def recompute():
+        out = {}
+        for s, r in base["raw"].items():
+            if "error" in r:
+                out[s] = r
+                continue
+            lp = prices.get((r["market"], s), {})
+            candles = patch_candles(r["market"], r["candles"], lp) if "price" in lp else r["candles"]
+            prev = candles[-2]["close"] if len(candles) >= 2 else candles[-1]["close"]
+            price = lp.get("price", r["price"])
+            change = lp.get("change_rate")
+            if change is None:
+                change = round((price / prev - 1) * 100, 2) if prev else 0.0
+            n = news.get((r["market"], s))
+            out[s] = {**r, "price": price, "change_rate": change, "candles": candles,
+                      "news": n and {k: n.get(k) for k in ("total", "pos", "neg", "error")} | {"headlines": n.get("headlines", [])[:5]},
+                      "live_error": lp.get("error"),
+                      **analyze_candles(r["market"], candles, r.get("per", 0), r.get("pbr", 0), n)}
+        return out
+
+    raw = await asyncio.get_event_loop().run_in_executor(None, recompute)
+    data = _rows_from(raw, base["extra"], kind)
+
+    prev_probs = {(x["market"], x["symbol"]): x["prediction"]["probability"] for x in (live["data"]["items"] if live else [])}
+    for x in data["items"]:
+        x["prev_probability"] = prev_probs.get((x["market"], x["symbol"]))
+    data["updated_at"] = time.strftime("%H:%M:%S")
+    data["live_errors"] = sorted({r["live_error"] for r in raw.values() if r.get("live_error")})[:3]
+    cache["live"] = {"ts": time.time(), "data": data}
+
+    await prediction_log.record(list(raw.values()), "AI추천")
     return data
 
 
@@ -270,6 +322,7 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
         raise
     except Exception as e:
         _fail(e)
+    await prediction_log.record([r], "검색")
     return strip_candles(r)
 
 
@@ -310,14 +363,17 @@ async def get_volume_surge(current_user: User = Depends(get_current_user)):
         _fail(e)
 
 
-@router.get("/recommendations/longterm")
-async def get_longterm_recommendations(current_user: User = Depends(get_current_user)):
-    return await _cached_rec("longterm", _build_longterm_recommendations)
-
-
-@router.get("/recommendations/shortterm")
-async def get_shortterm_recommendations(current_user: User = Depends(get_current_user)):
-    return await _cached_rec("shortterm", _build_shortterm_recommendations)
+@router.get("/recommendations/{kind}")
+async def get_recommendations(kind: str, current_user: User = Depends(get_current_user)):
+    """AI 추천 (kind: longterm | shortterm) — 호출할 때마다 현재가·뉴스로 상승 확률 재계산 (10초 캐시)"""
+    if kind not in _BUILDERS:
+        raise HTTPException(status_code=404, detail="kind 는 longterm 또는 shortterm")
+    try:
+        return await _live(kind)
+    except HTTPException:
+        raise
+    except Exception as e:
+        _fail(e)
 
 
 @router.get("/screener/kr/{mode}")

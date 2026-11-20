@@ -19,3 +19,4 @@ Thumbs.db
 
 # 종목마스터 캐시 (KIS에서 매일 새로 받음)
 backend/app/data/master_cache.json
+backend/.kis_token.json

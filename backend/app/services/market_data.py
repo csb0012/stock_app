@@ -42,29 +42,23 @@ US_ETF_TICKERS = {
 
 
 async def get_index_data() -> dict:
-    """주요 지수/매크로 데이터 조회"""
+    """주요 지수/매크로 데이터 조회 (yfinance 배치 1회)"""
     def _fetch():
+        tickers = list(INDEX_TICKERS.values())
+        data = yf.download(tickers, period="5d", progress=False, auto_adjust=True, threads=True)
         results = {}
         for key, ticker in INDEX_TICKERS.items():
             try:
-                t = yf.Ticker(ticker)
-                info = t.fast_info
-                hist = t.history(period="2d")
-                if len(hist) >= 2:
-                    prev_close = float(hist["Close"].iloc[-2])
-                    curr_close = float(hist["Close"].iloc[-1])
-                    change = curr_close - prev_close
-                    change_rate = (change / prev_close) * 100
-                else:
-                    curr_close = float(info.last_price) if hasattr(info, 'last_price') else 0
-                    change = 0
-                    change_rate = 0
-
+                closes = data["Close"][ticker].dropna()
+                if len(closes) < 2:
+                    raise ValueError("데이터 부족")
+                prev_close, curr_close = float(closes.iloc[-2]), float(closes.iloc[-1])
+                change = curr_close - prev_close
                 results[key] = {
                     "ticker": ticker,
                     "price": round(curr_close, 2),
                     "change": round(change, 2),
-                    "change_rate": round(change_rate, 2),
+                    "change_rate": round(change / prev_close * 100, 2),
                 }
             except Exception as e:
                 results[key] = {"ticker": ticker, "price": 0, "change": 0, "change_rate": 0, "error": str(e)}
