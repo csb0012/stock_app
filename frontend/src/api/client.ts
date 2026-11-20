@@ -45,6 +45,8 @@ export const stockApi = {
   shortterm: () => api.get("/stocks/recommendations/shortterm"),
   search: (q: string, market = "ALL") =>
     api.get(`/stocks/search?q=${encodeURIComponent(q)}&market=${market}`),
+  screenerKR: (mode: string) => api.get(`/stocks/screener/kr/${mode}`),
+  screenerUS: (mode: string) => api.get(`/stocks/screener/us/${mode}`),
 };
 
 // Watchlist
@@ -53,4 +55,15 @@ export const watchlistApi = {
   add: (symbol: string, market: string, name: string) =>
     api.post("/watchlist/", { symbol, market, name }),
   remove: (id: number) => api.delete(`/watchlist/${id}`),
+};
+
+// Portfolio
+export const portfolioApi = {
+  list: () => api.get("/portfolio/"),
+  add: (symbol: string, market: string, name: string, quantity: number, avg_price: number) =>
+    api.post("/portfolio/", { symbol, market, name, quantity, avg_price }),
+  update: (id: number, quantity: number, avg_price: number) =>
+    api.put(`/portfolio/${id}`, { quantity, avg_price }),
+  remove: (id: number) => api.delete(`/portfolio/${id}`),
+  analysis: () => api.get("/portfolio/analysis"),
 };

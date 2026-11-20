@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  Search, LogOut, BarChart2,
+  Search, LogOut, BarChart2, Briefcase,
 } from "lucide-react";
 
 const navItems = [
@@ -10,6 +10,7 @@ const navItems = [
   { to: "/recommendations", icon: TrendingUp, label: "AI 추천" },
   { to: "/screener", icon: BarChart2, label: "종목탐색" },
   { to: "/watchlist", icon: Star, label: "관심종목" },
+  { to: "/portfolio", icon: Briefcase, label: "투자종목" },
   { to: "/calendar", icon: Calendar, label: "경제캘린더" },
   { to: "/search", icon: Search, label: "종목검색" },
 ];

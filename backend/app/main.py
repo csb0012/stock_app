@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, stocks, market, watchlist
+from app.api.routes import auth, stocks, market, watchlist, portfolio
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
+app.include_router(portfolio.router, prefix="/api")
 
 
 @app.get("/api/health")

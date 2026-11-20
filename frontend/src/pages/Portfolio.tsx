@@ -1,0 +1,438 @@
+import { useState, useEffect, useRef } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { portfolioApi, stockApi } from "../api/client";
+import ChangeTag from "../components/common/ChangeTag";
+import { Briefcase, Plus, Trash2, X, Search, Edit2, Check } from "lucide-react";
+
+function useDebounce(value: string, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
+function ProbBadge({ value }: { value: number }) {
+  const color = value >= 65 ? "var(--green)" : value >= 45 ? "var(--yellow)" : "var(--red)";
+  const label = value >= 65 ? "상승 유력" : value >= 55 ? "약상승" : value >= 45 ? "중립" : "하락 주의";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ width: 50, height: 5, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${value}%`, height: "100%", background: color, borderRadius: 3 }} />
+      </div>
+      <span style={{ fontSize: 12, fontWeight: 700, color }}>{value}%</span>
+      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
+    </div>
+  );
+}
+
+export default function Portfolio() {
+  const qc = useQueryClient();
+  const [showAdd, setShowAdd] = useState(false);
+  const [query, setQuery] = useState("");
+  const [marketFilter, setMarketFilter] = useState("ALL");
+  const [selectedStock, setSelectedStock] = useState<any>(null);
+  const [quantity, setQuantity] = useState("");
+  const [avgPrice, setAvgPrice] = useState("");
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editQ, setEditQ] = useState("");
+  const [editP, setEditP] = useState("");
+  const debouncedQ = useDebounce(query, 300);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ["portfolio"],
+    queryFn: () => portfolioApi.list().then((r) => r.data),
+  });
+
+  const { data: analysis = [], isFetching: analyzing } = useQuery({
+    queryKey: ["portfolio-analysis"],
+    queryFn: () => portfolioApi.analysis().then((r) => r.data),
+    enabled: (items as any[]).length > 0,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const { data: searchResults = [], isFetching: searching } = useQuery({
+    queryKey: ["stock-search", debouncedQ, marketFilter],
+    queryFn: () => stockApi.search(debouncedQ, marketFilter).then((r) => r.data),
+    enabled: debouncedQ.length >= 1 && !selectedStock,
+  });
+
+  const addMutation = useMutation({
+    mutationFn: (item: any) =>
+      portfolioApi.add(item.symbol, item.market, item.name, parseFloat(item.qty), parseFloat(item.price)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["portfolio-analysis"] });
+      closeModal();
+    },
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, q, p }: { id: number; q: number; p: number }) =>
+      portfolioApi.update(id, q, p),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["portfolio-analysis"] });
+      setEditId(null);
+    },
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (id: number) => portfolioApi.remove(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portfolio"] });
+      qc.invalidateQueries({ queryKey: ["portfolio-analysis"] });
+    },
+  });
+
+  function openModal() {
+    setShowAdd(true);
+    setQuery("");
+    setSelectedStock(null);
+    setQuantity("");
+    setAvgPrice("");
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
+
+  function closeModal() {
+    setShowAdd(false);
+    setQuery("");
+    setSelectedStock(null);
+    setQuantity("");
+    setAvgPrice("");
+  }
+
+  function handleSelectStock(item: any) {
+    setSelectedStock(item);
+    setQuery(item.name);
+  }
+
+  function handleAdd() {
+    if (!selectedStock || !quantity) return;
+    addMutation.mutate({ ...selectedStock, qty: quantity, price: avgPrice || "0" });
+  }
+
+  // Merge base list with analysis data
+  const portfolioSymbols = new Set((items as any[]).map((i: any) => i.symbol));
+  const analysisMap = new Map((analysis as any[]).map((a: any) => [a.symbol, a]));
+
+  const enriched = (items as any[]).map((item: any) => ({
+    ...item,
+    ...(analysisMap.get(item.symbol) || {}),
+  }));
+
+  const totalInvested = enriched.reduce((sum, i) => sum + (i.avg_price || 0) * (i.quantity || 0), 0);
+  const totalValue = enriched.reduce((sum, i) => sum + (i.current_price || i.avg_price || 0) * (i.quantity || 0), 0);
+  const totalPnl = totalValue - totalInvested;
+  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>투자종목</h1>
+          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>보유 종목별 수익/손실 · 내일 전망</p>
+        </div>
+        <button className="btn btn-primary" onClick={openModal}>
+          <Plus size={14} />
+          종목 추가
+        </button>
+      </div>
+
+      {/* 종합 수익 카드 */}
+      {enriched.length > 0 && (
+        <div className="card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20, marginBottom: 24 }}>
+          <div>
+            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>총 투자금액</p>
+            <p style={{ fontWeight: 700, fontSize: 18 }}>
+              {totalInvested > 0 ? `₩${totalInvested.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-"}
+            </p>
+          </div>
+          <div>
+            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>평가금액</p>
+            <p style={{ fontWeight: 700, fontSize: 18 }}>
+              {totalValue > 0 ? `₩${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-"}
+            </p>
+          </div>
+          <div>
+            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>총 수익/손실</p>
+            <p style={{ fontWeight: 700, fontSize: 18, color: totalPnl >= 0 ? "var(--green)" : "var(--red)" }}>
+              {totalPnl >= 0 ? "+" : ""}{totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              <span style={{ fontSize: 13, marginLeft: 6 }}>({totalPnlPct >= 0 ? "+" : ""}{totalPnlPct.toFixed(2)}%)</span>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Add Modal */}
+      {showAdd && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}
+          onClick={(e) => e.target === e.currentTarget && closeModal()}
+        >
+          <div className="card" style={{ width: 460, maxHeight: "85vh", display: "flex", flexDirection: "column", position: "relative" }}>
+            <button onClick={closeModal} style={{ position: "absolute", top: 12, right: 12, background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)" }}>
+              <X size={18} />
+            </button>
+            <h3 style={{ fontWeight: 700, marginBottom: 16 }}>투자종목 추가</h3>
+
+            {/* 종목 검색 */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <div style={{ flex: 1, position: "relative" }}>
+                <Search size={14} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }} />
+                <input
+                  ref={inputRef}
+                  placeholder="종목명 또는 코드 검색"
+                  value={query}
+                  onChange={(e) => { setQuery(e.target.value); setSelectedStock(null); }}
+                  style={{ width: "100%", padding: "9px 12px 9px 32px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                />
+              </div>
+              <select
+                value={marketFilter}
+                onChange={(e) => setMarketFilter(e.target.value)}
+                style={{ padding: "9px 10px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 13, outline: "none", cursor: "pointer" }}
+              >
+                <option value="ALL">전체</option>
+                <option value="KR">국내</option>
+                <option value="US">미국</option>
+              </select>
+            </div>
+
+            {/* 검색 결과 */}
+            {!selectedStock && (
+              <div style={{ flex: 1, overflowY: "auto", minHeight: 0, maxHeight: 200, marginBottom: 12 }}>
+                {debouncedQ.length === 0 ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "16px 0" }}>종목명 또는 코드를 입력하세요</p>
+                ) : searching ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "16px 0" }}>검색 중...</p>
+                ) : (searchResults as any[]).length === 0 ? (
+                  <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "16px 0" }}>검색 결과 없음</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {(searchResults as any[]).filter((s) => !portfolioSymbols.has(s.symbol)).map((item: any) => (
+                      <div
+                        key={item.symbol}
+                        onClick={() => handleSelectStock(item)}
+                        style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 7, background: "var(--bg-secondary)", cursor: "pointer" }}
+                        onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--bg-hover)")}
+                        onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--bg-secondary)")}
+                      >
+                        <div style={{ flex: 1 }}>
+                          <span style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</span>
+                          <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "rgba(79,142,247,0.15)" : "rgba(52,211,153,0.15)", color: item.market === "KR" ? "var(--accent)" : "var(--green)", marginLeft: 8 }}>{item.market}</span>
+                        </div>
+                        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{item.symbol}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 선택된 종목 + 수량/단가 입력 */}
+            {selectedStock && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, background: "rgba(79,142,247,0.1)", marginBottom: 14 }}>
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontWeight: 600 }}>{selectedStock.name}</span>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{selectedStock.symbol} · {selectedStock.market}</span>
+                  </div>
+                  <button onClick={() => setSelectedStock(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)" }}>
+                    <X size={14} />
+                  </button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>보유 수량</label>
+                    <input
+                      type="number"
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      placeholder="0"
+                      style={{ width: "100%", padding: "9px 12px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 12, color: "var(--text-muted)", display: "block", marginBottom: 4 }}>평균 매수가</label>
+                    <input
+                      type="number"
+                      value={avgPrice}
+                      onChange={(e) => setAvgPrice(e.target.value)}
+                      placeholder="0"
+                      style={{ width: "100%", padding: "9px 12px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 14, outline: "none", boxSizing: "border-box" }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {selectedStock && (
+              <button
+                className="btn btn-primary"
+                onClick={handleAdd}
+                disabled={!quantity || addMutation.isPending}
+                style={{ width: "100%" }}
+              >
+                {addMutation.isPending ? "추가 중..." : "추가하기"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 목록 */}
+      {isLoading ? (
+        <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
+      ) : enriched.length === 0 ? (
+        <div style={{ textAlign: "center", paddingTop: 60 }}>
+          <Briefcase size={40} style={{ color: "var(--border)", margin: "0 auto 12px" }} />
+          <p style={{ color: "var(--text-muted)" }}>투자 중인 종목을 추가해보세요</p>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {analyzing && (
+            <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "8px 0" }}>
+              예측 분석 중...
+            </p>
+          )}
+          {enriched.map((item: any) => {
+            const isEditing = editId === item.id;
+            const pred = item.prediction || {};
+            const isKR = item.market === "KR";
+            const pnlColor = (item.pnl_pct || 0) >= 0 ? "var(--green)" : "var(--red)";
+
+            return (
+              <div key={item.id} className="card" style={{ padding: "14px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+                  {/* 종목 헤더 */}
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontWeight: 700, fontSize: 15 }}>{item.name || item.symbol}</span>
+                      <span className="badge badge-neutral">{item.symbol}</span>
+                      <span className="badge badge-neutral">{isKR ? "국내" : "미국"}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--text-secondary)" }}>
+                      <span>
+                        현재가: <strong style={{ color: "var(--text-primary)" }}>
+                          {item.current_price > 0
+                            ? (isKR ? `₩${item.current_price.toLocaleString()}` : `$${item.current_price.toFixed(2)}`)
+                            : "-"}
+                        </strong>
+                      </span>
+                      {item.change_rate !== undefined && item.change_rate !== 0 && (
+                        <ChangeTag value={item.change_rate} />
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn btn-ghost"
+                    style={{ padding: "5px 8px", color: "var(--red)" }}
+                    onClick={() => removeMutation.mutate(item.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+
+                {/* 보유 정보 + 수익 */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+                  <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>수량</p>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        value={editQ}
+                        onChange={(e) => setEditQ(e.target.value)}
+                        style={{ width: "100%", padding: "2px 6px", background: "var(--bg-primary)", border: "1px solid var(--accent)", borderRadius: 4, color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+                      />
+                    ) : (
+                      <p style={{ fontWeight: 600, fontSize: 14 }}>{item.quantity}</p>
+                    )}
+                  </div>
+                  <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>평단가</p>
+                    {isEditing ? (
+                      <input
+                        type="number"
+                        value={editP}
+                        onChange={(e) => setEditP(e.target.value)}
+                        style={{ width: "100%", padding: "2px 6px", background: "var(--bg-primary)", border: "1px solid var(--accent)", borderRadius: 4, color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+                      />
+                    ) : (
+                      <p style={{ fontWeight: 600, fontSize: 14 }}>
+                        {isKR ? `₩${(item.avg_price || 0).toLocaleString()}` : `$${(item.avg_price || 0).toFixed(2)}`}
+                      </p>
+                    )}
+                  </div>
+                  <div style={{ background: item.pnl_pct >= 0 ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)", borderRadius: 7, padding: "8px 12px" }}>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>수익률</p>
+                    <p style={{ fontWeight: 700, fontSize: 14, color: pnlColor }}>
+                      {(item.pnl_pct || 0) >= 0 ? "+" : ""}{(item.pnl_pct || 0).toFixed(2)}%
+                    </p>
+                  </div>
+                  <div style={{ background: item.pnl_amount >= 0 ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)", borderRadius: 7, padding: "8px 12px" }}>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>평가손익</p>
+                    <p style={{ fontWeight: 700, fontSize: 13, color: pnlColor }}>
+                      {(item.pnl_amount || 0) >= 0 ? "+" : ""}
+                      {isKR
+                        ? `₩${Math.abs(item.pnl_amount || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`
+                        : `$${Math.abs(item.pnl_amount || 0).toFixed(2)}`}
+                    </p>
+                  </div>
+                </div>
+
+                {/* 예측 + 수정 버튼 */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    {pred.probability ? (
+                      <div>
+                        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>내일 전망</p>
+                        <ProbBadge value={pred.probability} />
+                        {pred.signal && (
+                          <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 3 }}>
+                            {pred.signal} · {pred.confidence} 신뢰도
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p style={{ fontSize: 12, color: "var(--text-muted)" }}>분석 데이터 없음</p>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {isEditing ? (
+                      <>
+                        <button
+                          className="btn btn-primary"
+                          style={{ padding: "5px 12px", fontSize: 12 }}
+                          onClick={() => updateMutation.mutate({ id: item.id, q: parseFloat(editQ), p: parseFloat(editP) })}
+                        >
+                          <Check size={13} />
+                          저장
+                        </button>
+                        <button className="btn btn-ghost" style={{ padding: "5px 10px" }} onClick={() => setEditId(null)}>
+                          <X size={13} />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: "5px 10px", fontSize: 12 }}
+                        onClick={() => { setEditId(item.id); setEditQ(String(item.quantity)); setEditP(String(item.avg_price)); }}
+                      >
+                        <Edit2 size={13} />
+                        수정
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

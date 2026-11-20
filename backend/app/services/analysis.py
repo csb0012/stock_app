@@ -181,7 +181,6 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
 
     # 목표가·손절가 (ATR 기반 단순 계산)
     if candles and curr:
-        prices = [c["close"] for c in candles[-14:]]
         highs = [c["high"] for c in candles[-14:]]
         lows = [c["low"] for c in candles[-14:]]
         atr = np.mean([h - l for h, l in zip(highs, lows)])
@@ -190,6 +189,23 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
     else:
         target_price = None
         stop_loss = None
+
+    # 진입 추천가
+    entry_price = None
+    entry_comment = None
+    if curr:
+        ma20 = indicators.get("ma20")
+        bb_lower_v = indicators.get("bb_lower")
+        if probability >= 65:
+            if bb_lower_v and curr > bb_lower_v * 1.03:
+                entry_price = round(bb_lower_v * 1.01, 2)
+                entry_comment = "볼린저 하단 근처 분할 매수"
+            else:
+                entry_price = round(curr * 0.985, 2)
+                entry_comment = "1~2% 하락 시 분할 매수"
+        elif probability >= 55:
+            entry_price = round(curr, 2)
+            entry_comment = "현재가 소규모 진입"
 
     confidence = "높음" if max_score >= 80 and len(reasons) >= 3 else "중간" if max_score >= 50 else "낮음"
 
@@ -200,6 +216,8 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
         "confidence": confidence,
         "target_price": target_price,
         "stop_loss": stop_loss,
+        "entry_price": entry_price,
+        "entry_comment": entry_comment,
         "reasons": reasons,
         "disclaimer": "이 분석은 참고용이며 투자 손실에 대한 책임을 지지 않습니다.",
     }

@@ -186,7 +186,7 @@ class KISClient:
             resp.raise_for_status()
             data = resp.json()
             results = []
-            for item in (data.get("output", []) or [])[:20]:
+            for item in (data.get("output", []) or [])[:30]:
                 results.append({
                     "symbol": item.get("mksc_shrn_iscd", ""),
                     "name": item.get("hts_kor_isnm", ""),
@@ -194,6 +194,118 @@ class KISClient:
                     "change_rate": float(item.get("prdy_ctrt", 0)),
                     "volume": int(item.get("acml_vol", 0)),
                     "volume_ratio": float(item.get("vol_inrt", 0)),
+                    "trading_value": int(item.get("acml_tr_pbmn", 0)),
+                })
+            return results
+
+    async def get_trading_value_kr(self) -> list:
+        """국내 거래대금 상위 종목"""
+        headers = await self._headers("FHPST01710000")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/uapi/domestic-stock/v1/quotations/volume-rank",
+                headers=headers,
+                params={
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_COND_SCR_DIV_CODE": "20171",
+                    "FID_INPUT_ISCD": "0001",
+                    "FID_DIV_CLS_CODE": "1",  # 1 = 거래대금
+                    "FID_BLNG_CLS_CODE": "0",
+                    "FID_TRGT_CLS_CODE": "111111111",
+                    "FID_TRGT_EXLS_CLS_CODE": "000000",
+                    "FID_INPUT_PRICE_1": "1000",
+                    "FID_INPUT_PRICE_2": "999999999",
+                    "FID_VOL_CNT": "100000",
+                    "FID_INPUT_DATE_1": "",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = []
+            for item in (data.get("output", []) or [])[:30]:
+                tv = int(item.get("acml_tr_pbmn", 0))
+                results.append({
+                    "symbol": item.get("mksc_shrn_iscd", ""),
+                    "name": item.get("hts_kor_isnm", ""),
+                    "price": int(item.get("stck_prpr", 0)),
+                    "change_rate": float(item.get("prdy_ctrt", 0)),
+                    "volume": int(item.get("acml_vol", 0)),
+                    "trading_value": tv,
+                    "trading_value_display": f"{tv // 100_000_000}억" if tv >= 100_000_000 else f"{tv // 1_000_000}백만",
+                })
+            return results
+
+    async def get_gainers_kr(self) -> list:
+        """국내 등락률 상위(급등) 종목"""
+        headers = await self._headers("FHPST01700000")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/uapi/domestic-stock/v1/ranking/fluctuation",
+                headers=headers,
+                params={
+                    "fid_cond_mrkt_div_code": "J",
+                    "fid_cond_scr_div_code": "20170",
+                    "fid_input_iscd": "0001",
+                    "fid_rank_sort_cls_code": "0",  # 0 = 상승률
+                    "fid_input_cnt_1": "0",
+                    "fid_prc_cls_code": "0",
+                    "fid_input_price_1": "1000",
+                    "fid_input_price_2": "999999999",
+                    "fid_vol_cnt": "100000",
+                    "fid_trgt_cls_code": "0",
+                    "fid_trgt_exls_cls_code": "0",
+                    "fid_div_cls_code": "0",
+                    "fid_rsfl_rate1": "",
+                    "fid_rsfl_rate2": "",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = []
+            for item in (data.get("output", []) or [])[:30]:
+                results.append({
+                    "symbol": item.get("stck_shrn_iscd", ""),
+                    "name": item.get("hts_kor_isnm", ""),
+                    "price": int(item.get("stck_prpr", 0)),
+                    "change_rate": float(item.get("prdy_ctrt", 0)),
+                    "volume": int(item.get("acml_vol", 0)),
+                })
+            return results
+
+    async def get_losers_kr(self) -> list:
+        """국내 등락률 하위(급하향) 종목"""
+        headers = await self._headers("FHPST01700000")
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/uapi/domestic-stock/v1/ranking/fluctuation",
+                headers=headers,
+                params={
+                    "fid_cond_mrkt_div_code": "J",
+                    "fid_cond_scr_div_code": "20170",
+                    "fid_input_iscd": "0001",
+                    "fid_rank_sort_cls_code": "1",  # 1 = 하락률
+                    "fid_input_cnt_1": "0",
+                    "fid_prc_cls_code": "0",
+                    "fid_input_price_1": "1000",
+                    "fid_input_price_2": "999999999",
+                    "fid_vol_cnt": "100000",
+                    "fid_trgt_cls_code": "0",
+                    "fid_trgt_exls_cls_code": "0",
+                    "fid_div_cls_code": "0",
+                    "fid_rsfl_rate1": "",
+                    "fid_rsfl_rate2": "",
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = []
+            for item in (data.get("output", []) or [])[:30]:
+                results.append({
+                    "symbol": item.get("stck_shrn_iscd", ""),
+                    "name": item.get("hts_kor_isnm", ""),
+                    "price": int(item.get("stck_prpr", 0)),
+                    "change_rate": float(item.get("prdy_ctrt", 0)),
+                    "volume": int(item.get("acml_vol", 0)),
                 })
             return results
 
