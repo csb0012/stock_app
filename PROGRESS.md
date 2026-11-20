@@ -55,6 +55,13 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 헬스체크: `http://localhost:8000/api/health`
 - API 문서: `http://localhost:8000/docs`
 
+### 클라우드 서버 (24시간, `docs/setup-cloud.md`)
+- 처음 설치: 서버에서 `cd ~/stock_app && bash deploy/setup-server.sh`
+- 업데이트: `bash deploy/update.sh` (git pull + 화면 재빌드 + 백엔드 재시작)
+- 로그: `sudo docker compose -f docker-compose.cloud.yml logs -f --tail 100 backend`
+- 백업: 매일 04:00 자동 → `~/stock_app/backups/` (수동: `bash deploy/backup.sh`)
+- 접속: `https://<이름>.duckdns.org` → 접속 비밀번호(Caddy) → 앱 로그인
+
 ## 작업 이력
 
 ### 2026-11 — 초기 셋업 & 버그 수정
@@ -203,6 +210,14 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 미국 모델(방향 48.8%), 국내 장중/마감 후 모델(방향 52.0% < 기준 52.1%)은 우연 수준을 못 넘어 미사용 → 규칙 점수 유지
 - 예측 검증 화면의 백테스트 설명이 "기술적 지표만" 으로 남아 있던 것을 학습 모델 포함 설명으로 수정
 
+### 2026-11-20 — 클라우드 서버 배포 (commit `COMMIT_HASH`)
+- 목적: PC 를 켜두지 않고 24시간 운영 (08:20 장 시작 전 예측·채점·백테스트)
+- 조사: Render·Koyeb 등 무료 PaaS 는 유휴 시 잠듦/파일 초기화 → 부적합. 무료로 계속 켜지는 건 Oracle Cloud Always Free VM(2026-08부터 Ampere 2 OCPU/12GB 한도)·Google Cloud e2-micro 정도 → Oracle 한국 리전 선택 (KIS 를 국내 IP 에서 호출)
+- `docker-compose.cloud.yml` + `deploy/` (Dockerfile.web: React 빌드 → Caddy, Caddyfile: 자동 HTTPS·보안 헤더·basic auth·/api 프록시, setup-server.sh: Docker 설치·스왑·iptables 80/443·도메인/비밀번호·매일 백업 cron·실행, update.sh, backup.sh: SQLite 온라인 백업 14개 보관)
+- 보안: backend 비공개, 앱 로그인 앞 basic auth, 로그인 5회 실패 시 IP 15분 차단(`auth.py`), FastAPI 문서는 /api 밖이라 비공개
+- 문서: `docs/setup-cloud.md` (가입·VM·DuckDNS·SSH·배포 키·파일 복사·설치·백업·문제 해결)
+- 이 환경에서 Docker 로 검증: 두 이미지 빌드, 비밀번호 없으면 401, 화면/SPA 경로/`/api` 프록시 정상, http→https 리다이렉트, 보안 헤더, 로그인 차단(5회 실패 → 429, 다른 IP 는 정상)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
@@ -226,6 +241,8 @@ pull 후 패키지 목록이 바뀌었을 때:
 - [ ] 학습 모델은 실데이터로 아직 미검증 — 실제로 규칙보다 나을지는 PC에서 백테스트를 돌려 "예측 방식별 적중률" 로 확인. 하루 단위 주가 방향은 원래 맞히기 어려워 실데이터에선 우연 수준을 못 넘어 미채택될 수 있음 (그 경우 기존 규칙 그대로)
 - [ ] 국내 '간밤 미국장 반영' 예측은 08:20~08:58 에 서버가 켜져 있어야 자동 기록됨 (꺼져 있으면 전날 저녁 예측이 채점됨)
 - [ ] 뉴스·외부 데이터 보정폭(±2~3%p)은 과거 데이터가 없어 검증 안 된 값
+- [ ] 클라우드: Oracle 무료 계정은 7일간 CPU 20% 미만이면 VM 회수 가능 → 종량제 업그레이드(무료 한도 내 0원) + 예산 알림 권장. 실제 Oracle VM 에서 미검증(ARM 이미지 빌드 포함)
+- [ ] 클라우드에서 KIS API 호출 실서버 미검증 (국내 리전 IP 기준이라 문제없을 것으로 예상)
 - [ ] 백테스트가 국내 종목마다 KIS 일봉 500개(호출 5~6회)를 받음 → 첫 실행 2~3분
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능), PER/PBR 0 표시
 - [x] ~~투자종목 합계 KR(₩)+US($) 환율 없이 합산~~ → 통화별 분리 + 원화 환산 총합

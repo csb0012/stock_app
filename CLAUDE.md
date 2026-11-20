@@ -8,12 +8,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 앱 실행
 
-PC마다 아래 두 방법 중 **하나만** 쓴다 (섞으면 헷갈림). 두 방법 모두 `.env`·`stock_app.db`·`.secret_key` 위치는 `backend/` 로 같다.
+PC마다 아래 방법 중 **하나만** 쓴다 (섞으면 헷갈림). 모든 방법에서 `.env`·`stock_app.db`·`.secret_key` 위치는 `backend/` 로 같다.
+클라우드 서버를 켜 두면 PC 에서는 아무것도 실행하지 않고 브라우저로 접속만 한다 (같은 KIS 키로 동시에 돌리면 초당 호출 제한에 걸리고 DB 가 갈라짐).
 
 | 방법 | 쓰는 PC | 설치·실행 안내 | 실행 |
 |---|---|---|---|
 | **직접 설치** — Python 3.13 + Node + venv | 회사 PC | `docs/setup-local.md` | 루트 `start.bat` (가상환경 자동 활성화, 백엔드 127.0.0.1:8000, 프론트 5173) |
 | **Docker** — Python·Node 설치 안 함, venv·pip·npm install 안 씀 | 집 PC | `docs/setup-docker.md` | 루트 `start-docker.bat` (= `docker compose up -d --build`, backend/frontend 폴더 마운트, 127.0.0.1 만 공개) |
+| **클라우드 (24시간)** — Oracle Cloud Always Free VM + DuckDNS | 서버 | `docs/setup-cloud.md` | 서버에서 `bash deploy/setup-server.sh` (처음) / `bash deploy/update.sh` (업데이트). `docker-compose.cloud.yml`: Caddy(HTTPS·접속 비밀번호·빌드된 화면·/api 프록시) + backend(비공개) |
 
 두 방법을 같은 PC에서 동시에 켜면 포트(8000, 5173) 충돌.
 
@@ -144,7 +146,8 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 
 - JWT를 `localStorage`에 저장, `Authorization: Bearer …` 헤더로 전송.
 - `/api/auth/register` 는 계정이 하나도 없을 때만 동작 (개인용 — 이후 계정은 `create_admin.py`).
-- 백엔드는 `127.0.0.1` 에만 바인딩 (같은 네트워크의 다른 PC 접속 차단).
+- 백엔드는 `127.0.0.1` 에만 바인딩 (같은 네트워크의 다른 PC 접속 차단). 클라우드에선 backend 는 공개하지 않고 Caddy(80/443)만 공개 — Caddy basic auth(`deploy/auth.caddy`, git 제외) 한 겹 + 앱 로그인.
+- 로그인 5회 실패(10분 안) → 그 IP 15분 차단 (`auth.py`, X-Forwarded-For 기준).
 - TOTP(Google Authenticator)는 선택사항; `/api/auth/setup-totp` → `/api/auth/enable-totp` 순서로 활성화.
 
 ## Git

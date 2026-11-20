@@ -1,0 +1,8 @@
+# docker-compose.cloud.yml 의 web 이미지(루트 기준 빌드)에 필요 없는 것 — 특히 backend/.env 등 비밀 파일 제외
+.git
+backend
+frontend/node_modules
+frontend/dist
+*.log
+deploy/.env
+deploy/auth.caddy

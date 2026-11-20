@@ -1,0 +1,40 @@
+# 클라우드 서버(Oracle Cloud 등 리눅스 VM)용 — 24시간 켜두기
+#   처음 설치:  bash deploy/setup-server.sh
+#   업데이트:   bash deploy/update.sh
+#
+# - web(Caddy): 80/443 만 인터넷에 공개. HTTPS 인증서 자동 발급, 앱 앞에 비밀번호 한 겹(basic auth) 추가,
+#   빌드된 화면 파일 제공 + /api 는 backend 로 전달
+# - backend: 인터넷에 직접 공개하지 않음 (web 컨테이너만 접근). backend 폴더를 그대로 연결해서
+#   .env / stock_app.db / .secret_key / app/data 위치는 PC 와 같다
+services:
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./backend:/app
+    environment:
+      - TZ=Asia/Seoul
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    env_file: deploy/.env            # DOMAIN=xxx.duckdns.org (setup-server.sh 가 만듦)
+    volumes:
+      - ./deploy/auth.caddy:/etc/caddy/auth.caddy:ro   # basic auth 계정 (setup-server.sh 가 만듦)
+      - caddy_data:/data             # HTTPS 인증서 보관
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
