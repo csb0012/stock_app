@@ -61,7 +61,7 @@ function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
           <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
             <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", transition: "width 0.5s" }} />
           </div>
-          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+          <p style={{ fontSize: 12, color: s.retry_wait ? "var(--yellow)" : "var(--text-muted)", marginTop: 4 }}>
             {s.done}/{s.total} 종목 ({pct}%) · {s.current} · 새 기록 {s.added}건
           </p>
         </div>

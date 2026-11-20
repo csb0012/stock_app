@@ -27,6 +27,15 @@ class KISError(RuntimeError):
     pass
 
 
+class KISRateLimitError(KISError):
+    """초당 호출 제한(EGW00201)을 재시도 후에도 넘김 — 잠시 뒤 다시 하면 되는 오류"""
+    pass
+
+
+_RATE_RETRIES = 6      # EGW00201 재시도 횟수 (대기 1·2·3·4·5초 → 최대 약 15초 기다림)
+_SLOW_SECONDS = 60     # EGW00201 이 나면 이 시간 동안 호출 간격을 2배로
+
+
 def _int(v) -> int:
     try:
         return int(float(v))
@@ -52,7 +61,9 @@ class KISClient:
         self._token_expires: Optional[datetime] = None
         self._token_lock = asyncio.Lock()
         # 실서버 초당 20건, 모의서버 초당 2건 제한 → 여유 두고 간격 유지
-        self._min_interval = 0.07 if settings.kis_is_real else 0.55
+        self._base_interval = 0.07 if settings.kis_is_real else 0.55
+        self._min_interval = self._base_interval
+        self._slow_until = 0.0
         self._rate_lock = asyncio.Lock()
         self._last_call = 0.0
         self._http: Optional[httpx.AsyncClient] = None
@@ -114,10 +125,21 @@ class KISClient:
 
     async def _throttle(self):
         async with self._rate_lock:
+            if self._min_interval != self._base_interval and time.monotonic() > self._slow_until:
+                self._min_interval = self._base_interval  # 제한 걸린 뒤 1분 지나면 원래 속도로
             wait = self._last_call + self._min_interval - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
-            self._last_call = time.monotonic()
+            self._last_call = max(self._last_call, time.monotonic())
+
+    async def _rate_limited(self, attempt: int):
+        """EGW00201: 다른 요청들도 같이 멈추고(한 앱키 기준 제한이라) 점점 길게 기다린 뒤 느린 속도로 재개"""
+        wait = float(attempt + 1)
+        async with self._rate_lock:
+            self._last_call = max(self._last_call, time.monotonic() + wait)
+            self._min_interval = self._base_interval * 2
+            self._slow_until = time.monotonic() + _SLOW_SECONDS
+        print(f"[KIS] 초당 호출 제한 — {wait:.0f}초 후 재시도 ({attempt + 1}/{_RATE_RETRIES - 1})")
 
     async def _get(self, path: str, tr_id: str, params: dict) -> dict:
         token = await self._get_token()
@@ -129,19 +151,24 @@ class KISClient:
             "tr_id": tr_id,
             "custtype": "P",
         }
-        for attempt in range(3):
+        for attempt in range(_RATE_RETRIES):
             await self._throttle()
             resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
             try:
                 data = resp.json() if resp.content else {}
             except ValueError:  # 점검 시간 등 HTML 오류 페이지
                 data = {}
-            # 초당 호출 초과(EGW00201)는 잠시 후 재시도
-            if data.get("msg_cd") == "EGW00201" and attempt < 2:
-                await asyncio.sleep(1.0)
-                continue
+            # 초당 호출 초과(EGW00201)는 기다렸다가 재시도
+            if data.get("msg_cd") == "EGW00201":
+                if attempt < _RATE_RETRIES - 1:
+                    await self._rate_limited(attempt)
+                    continue
+                raise KISRateLimitError(
+                    f"KIS {tr_id} 실패 (HTTP {resp.status_code}, EGW00201): "
+                    f"{data.get('msg1') or '초당 거래건수를 초과하였습니다.'} ({_RATE_RETRIES - 1}회 재시도 후)"
+                )
             # 토큰 만료/무효(EGW00123, EGW00121)는 토큰을 새로 받아 재시도
-            if data.get("msg_cd") in ("EGW00123", "EGW00121") and attempt < 2:
+            if data.get("msg_cd") in ("EGW00123", "EGW00121") and attempt < _RATE_RETRIES - 1:
                 self._access_token = None
                 self._token_expires = None
                 _TOKEN_FILE.unlink(missing_ok=True)
@@ -153,7 +180,7 @@ class KISClient:
                     f"{data.get('msg1') or resp.text[:200]}"
                 )
             return data
-        raise KISError(f"KIS {tr_id} 실패: 초당 호출 제한 초과")
+        raise KISError(f"KIS {tr_id} 실패: 재시도 횟수 초과")
 
     # ---------------- 국내 ----------------
 

@@ -19,9 +19,11 @@ from app.models.prediction import BacktestLog
 from app.models.watchlist import WatchlistItem
 from app.models.portfolio import PortfolioItem
 from app.services import stock_master
+from app.services.kis_api import KISRateLimitError
 from app.services.analysis import calc_technical_indicators, predict_next_day
 from app.services.market_calendar import market_today, is_market_open, _after_close
 
+RETRY_WAITS = (10, 30, 60)  # 초당 호출 제한으로 실패한 종목만 이만큼 기다렸다가 다시 계산 (초)
 DAYS = 90        # 대상일 기준 최근 90일 (달력 기준)
 WINDOW = 130     # 예측에 쓰는 일봉 개수 (실시간 AI 추천과 같음)
 KR_COUNT = 240   # 90일치 대상일 + 지표 계산용 과거 일봉
@@ -29,7 +31,7 @@ KR_COUNT = 240   # 90일치 대상일 + 지표 계산용 과거 일봉
 _lock = asyncio.Lock()
 _status = {
     "running": False, "done": 0, "total": 0, "current": None, "added": 0,
-    "started_at": None, "finished_at": None, "last_run_date": None, "errors": [],
+    "started_at": None, "finished_at": None, "last_run_date": None, "errors": [], "retry_wait": None,
 }
 
 
@@ -87,7 +89,7 @@ async def run(force: bool = False) -> dict:
     if _lock.locked():
         return status()
     async with _lock:
-        _status.update(running=True, done=0, total=0, current=None, added=0, errors=[],
+        _status.update(running=True, done=0, total=0, current=None, added=0, errors=[], retry_wait=None,
                        started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None)
         try:
             await _run(force)
@@ -121,35 +123,70 @@ async def _run(force: bool):
     us_syms = [s["symbol"] for s in stocks if s["market"] == "US"]
     us_hist = await batch_yf_history(us_syms, "1y") if us_syms else {}
 
-    for st in stocks:
+    async def one(st: dict):
         _status["current"] = st["name"] or st["symbol"]
+        if st["market"] == "KR":
+            candles = (await kr_chart(st["symbol"], KR_COUNT))["candles"]
+        else:
+            candles = us_hist.get(st["symbol"], [])
+        if len(candles) < 40:
+            raise ValueError(f"일봉 {len(candles)}개 — 데이터 부족")
+        have = existing.get((st["market"], st["symbol"]), set())
+        sims = await asyncio.to_thread(_simulate, st, candles, have, cutoff)
+        if sims:
+            async with AsyncSessionLocal() as db:
+                for x in sims:
+                    p = x["pred"]
+                    log = BacktestLog(
+                        market=st["market"], symbol=st["symbol"], name=st["name"], sources="백테스트",
+                        base_date=x["base_date"], target_date=x["target_date"], base_price=x["base_price"],
+                        probability=int(p["probability"]), signal=p.get("signal"), summary=p.get("summary"),
+                        factors=json.dumps(p.get("factors", []), ensure_ascii=False),
+                    )
+                    grade(log, candles, x["ti"], idx_change)
+                    db.add(log)
+                await db.commit()
+            _status["added"] += len(sims)
+
+    def fail(st: dict, e: Exception):
+        _status["errors"].append(f"{st['name'] or st['symbol']}({st['symbol']}): {e}")
+        print(f"[backtest] {st['symbol']} 실패: {e}")
+
+    retry = []
+    for st in stocks:
         try:
-            if st["market"] == "KR":
-                candles = (await kr_chart(st["symbol"], KR_COUNT))["candles"]
-            else:
-                candles = us_hist.get(st["symbol"], [])
-            if len(candles) < 40:
-                raise ValueError(f"일봉 {len(candles)}개 — 데이터 부족")
-            have = existing.get((st["market"], st["symbol"]), set())
-            sims = await asyncio.to_thread(_simulate, st, candles, have, cutoff)
-            if sims:
-                async with AsyncSessionLocal() as db:
-                    for x in sims:
-                        p = x["pred"]
-                        log = BacktestLog(
-                            market=st["market"], symbol=st["symbol"], name=st["name"], sources="백테스트",
-                            base_date=x["base_date"], target_date=x["target_date"], base_price=x["base_price"],
-                            probability=int(p["probability"]), signal=p.get("signal"), summary=p.get("summary"),
-                            factors=json.dumps(p.get("factors", []), ensure_ascii=False),
-                        )
-                        grade(log, candles, x["ti"], idx_change)
-                        db.add(log)
-                    await db.commit()
-                _status["added"] += len(sims)
+            await one(st)
+            _status["done"] += 1
+        except KISRateLimitError:
+            retry.append(st)  # 나중에 이 종목만 다시
         except Exception as e:
-            _status["errors"].append(f"{st['name'] or st['symbol']}({st['symbol']}): {e}")
-            print(f"[backtest] {st['symbol']} 실패: {e}")
-        _status["done"] += 1
+            fail(st, e)
+            _status["done"] += 1
+
+    # 초당 호출 제한으로 실패한 종목: 호출이 풀릴 때까지 기다렸다가 그 종목만 다시 계산
+    for n, wait in enumerate(RETRY_WAITS):
+        if not retry:
+            break
+        names = ", ".join(s["name"] or s["symbol"] for s in retry[:3]) + (" 외" if len(retry) > 3 else "")
+        _status["retry_wait"] = {"seconds": wait, "count": len(retry), "names": names, "round": n + 1}
+        _status["current"] = f"초당 호출 제한 — {wait}초 후 {len(retry)}종목 다시 계산 ({names})"
+        print(f"[backtest] {_status['current']}")
+        await asyncio.sleep(wait)
+        _status["retry_wait"] = None
+        pending, retry = retry, []
+        for st in pending:
+            try:
+                await one(st)
+                _status["done"] += 1
+            except KISRateLimitError as e:
+                if n == len(RETRY_WAITS) - 1:
+                    fail(st, e)
+                    _status["done"] += 1
+                else:
+                    retry.append(st)
+            except Exception as e:
+                fail(st, e)
+                _status["done"] += 1
 
 
 def due() -> bool:
