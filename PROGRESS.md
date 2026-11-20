@@ -17,7 +17,8 @@ git pull origin claude/dazzling-darwin-et76zj
 
 ### 서버 실행
 ```powershell
-# 백엔드 (backend/ 에서)
+# 백엔드
+cd C:\claude\stock_app\backend
 .venv\Scripts\Activate
 python -m uvicorn app.main:app --reload --port 8000
 

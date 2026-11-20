@@ -13,6 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **수동 실행:**
 ```powershell
 # 백엔드 (backend/ 에서 .venv 활성화 후)
+cd C:\claude\stock_app\backend
 .venv\Scripts\Activate
 python -m uvicorn app.main:app --reload --port 8000
 
