@@ -95,7 +95,10 @@ class KISClient:
                     "appsecret": settings.kis_app_secret,
                 },
             )
-            data = resp.json() if resp.content else {}
+            try:
+                data = resp.json() if resp.content else {}
+            except ValueError:
+                data = {}
             if resp.status_code != 200 or "access_token" not in data:
                 raise KISError(
                     f"KIS 토큰 발급 실패 (HTTP {resp.status_code}): "
@@ -129,7 +132,10 @@ class KISClient:
         for attempt in range(3):
             await self._throttle()
             resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
-            data = resp.json() if resp.content else {}
+            try:
+                data = resp.json() if resp.content else {}
+            except ValueError:  # 점검 시간 등 HTML 오류 페이지
+                data = {}
             # 초당 호출 초과(EGW00201)는 잠시 후 재시도
             if data.get("msg_cd") == "EGW00201" and attempt < 2:
                 await asyncio.sleep(1.0)

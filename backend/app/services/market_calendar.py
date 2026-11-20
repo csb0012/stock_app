@@ -45,6 +45,39 @@ def is_market_open(market: str) -> bool:
     return 9 * 60 + 30 <= hm <= 16 * 60
 
 
+def market_status(market: str) -> dict:
+    """장 운영 상태: 장중 / 개장 전 / 장 마감 / 휴장 + 다음 개장일"""
+    now = datetime.now(_TZ[market])
+    today = now.date()
+    hm = now.hour * 60 + now.minute
+    open_hm, close_hm = (9 * 60, 15 * 60 + 30) if market == "KR" else (9 * 60 + 30, 16 * 60)
+    if not is_trading_day(market, today):
+        state, nxt = "휴장", next_trading_day(market, today)
+    elif hm < open_hm:
+        state, nxt = "개장 전", today
+    elif hm <= close_hm:
+        state, nxt = "장중", None
+    else:
+        state, nxt = "장 마감", next_trading_day(market, today)
+    return {
+        "market": market,
+        "state": state,
+        "open": state == "장중",
+        "local_time": now.strftime("%H:%M"),
+        "next_open": nxt.isoformat() if nxt else None,
+        "next_open_label": session_label(market, nxt) if nxt else None,
+        # 다음 개장 시각을 한국시간으로 (미국장은 날짜가 하루 어긋나 보이므로)
+        "next_open_kst": _kst_open(market, nxt) if nxt else None,
+    }
+
+
+def _kst_open(market: str, d: date) -> str:
+    oh, om = (9, 0) if market == "KR" else (9, 30)
+    local = datetime(d.year, d.month, d.day, oh, om, tzinfo=_TZ[market])
+    k = local.astimezone(_TZ["KR"])
+    return f"{_WEEKDAY[k.weekday()]} {k.month}/{k.day} {k.hour:02d}:{k.minute:02d}"
+
+
 def session_label(market: str, target: date) -> str:
     """'오늘' / '내일' / '월요일(11/23)' — 사용자가 보는 기준(한국 날짜)"""
     today_kr = market_today("KR")

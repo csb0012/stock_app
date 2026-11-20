@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { stockApi, errMsg } from "../api/client";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { stockApi, watchlistApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
-import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper } from "lucide-react";
+import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice } from "../components/common/format";
 
 function Delta({ now, prev }: { now: number; prev?: number | null }) {
@@ -28,7 +28,29 @@ function ProbabilityBar({ value }: { value: number }) {
   );
 }
 
-function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
+function WatchButton({ item, inList }: { item: any; inList: boolean }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: () => watchlistApi.add(item.symbol, item.market, item.name),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist"] }),
+  });
+  const done = inList || m.isSuccess;
+  return (
+    <button
+      title={m.error ? errMsg(m.error) : done ? "관심종목에 있음" : "관심종목 추가"}
+      disabled={done || m.isPending}
+      onClick={() => m.mutate()}
+      style={{ display: "flex", alignItems: "center", gap: 3, padding: "3px 8px", borderRadius: 6, border: "none", cursor: done ? "default" : "pointer",
+        background: m.error ? "rgba(248,113,113,0.1)" : done ? "rgba(52,211,153,0.1)" : "rgba(79,142,247,0.1)",
+        color: m.error ? "var(--red)" : done ? "var(--green)" : "var(--accent)", fontSize: 11 }}
+    >
+      {done ? <Check size={12} /> : <Star size={12} />}
+      {m.error ? "실패" : done ? "관심" : "관심+"}
+    </button>
+  );
+}
+
+function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "short"; inWatchlist: boolean }) {
   const pred = item.prediction || {};
   const isKR = item.market === "KR";
 
@@ -46,7 +68,10 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
             {fmtPrice(item.price, item.market)}
           </span>
         </div>
-        {item.change_rate !== undefined && <ChangeTag value={item.change_rate} />}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <WatchButton item={item} inList={inWatchlist} />
+          {item.change_rate !== undefined && <ChangeTag value={item.change_rate} />}
+        </div>
       </div>
 
       {/* 다음 거래일 상승 확률 */}
@@ -160,6 +185,8 @@ export default function Recommendations() {
   });
 
   const query = tab === "long" ? longQuery : shortQuery;
+  const { data: watchlist = [] } = useQuery({ queryKey: ["watchlist"], queryFn: () => watchlistApi.list().then((r) => r.data) });
+  const watchSet = new Set((watchlist as any[]).map((w) => `${w.market}-${w.symbol}`));
   const all: any[] = query.data?.items || [];
   const g = GROUPS.find((x) => x.key === group)!;
   const errors: any[] = (query.data?.errors || []).filter((e: any) => (group === "US" ? e.market === "US" : e.market === "KR"));
@@ -258,7 +285,7 @@ export default function Recommendations() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 16 }}>
         {items.map((item: any) => (
-          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} />
+          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} inWatchlist={watchSet.has(`${item.market}-${item.symbol}`)} />
         ))}
       </div>
     </div>

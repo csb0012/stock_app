@@ -44,6 +44,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
 
 @router.post("/register")
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    # 개인용 앱: 계정이 하나라도 있으면 외부에서 새 계정을 만들 수 없게 막음
+    # (같은 네트워크의 다른 사람이 가입해서 KIS 키로 조회하는 것 방지). 추가 계정은 create_admin.py 로.
+    if (await db.execute(select(User).limit(1))).scalar_one_or_none():
+        raise HTTPException(status_code=403, detail="이미 계정이 있습니다. 추가 계정은 backend 에서 python create_admin.py 로 만드세요")
     result = await db.execute(select(User).where(User.username == req.username))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already exists")

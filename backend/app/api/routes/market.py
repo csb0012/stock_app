@@ -25,6 +25,13 @@ async def get_market_overview(current_user: User = Depends(get_current_user)):
     return data
 
 
+@router.get("/status")
+async def get_market_status(current_user: User = Depends(get_current_user)):
+    """국내·미국 장 운영 상태 (휴장일 반영)"""
+    from app.services.market_calendar import market_status
+    return {"KR": market_status("KR"), "US": market_status("US")}
+
+
 @router.get("/indices")
 async def get_indices(current_user: User = Depends(get_current_user)):
     return await get_index_data()

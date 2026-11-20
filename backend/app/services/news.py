@@ -42,7 +42,10 @@ async def _fetch_kr(symbol: str) -> list:
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=6.0) as c:
         resp = await c.get(url)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    # 네이버 금융은 EUC-KR — 헤더에 charset 이 없으면 글자가 깨져 키워드 판단이 안 됨
+    ctype = resp.headers.get("content-type", "").lower()
+    html = resp.text if "charset" in ctype else resp.content.decode("euc-kr", errors="replace")
+    soup = BeautifulSoup(html, "lxml")
     out = []
     for row in soup.select("table.type5 tbody tr"):
         a = row.select_one("td.title a")

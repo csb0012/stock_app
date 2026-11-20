@@ -1,5 +1,7 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
+import { useQuery } from "@tanstack/react-query";
+import { marketApi } from "../../api/client";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
   Search, LogOut, BarChart2, Briefcase, ClipboardCheck,
@@ -65,6 +67,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
+        {/* 장 운영 상태 */}
+        <MarketStatus />
+
         {/* Logout */}
         <div style={{ padding: "16px 10px", borderTop: "1px solid var(--border)" }}>
           <button onClick={handleLogout} className="btn btn-ghost"
@@ -81,6 +86,35 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </main>
+    </div>
+  );
+}
+
+function MarketStatus() {
+  const { data } = useQuery({
+    queryKey: ["market-status"],
+    queryFn: () => marketApi.status().then((r) => r.data),
+    refetchInterval: 60_000,
+  });
+  if (!data) return null;
+  return (
+    <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
+      {(["KR", "US"] as const).map((m) => {
+        const st = data[m];
+        const color = st.open ? "var(--green)" : st.state === "휴장" ? "var(--red)" : "var(--text-muted)";
+        return (
+          <div key={m} style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 6, height: 6, borderRadius: 3, background: color, flexShrink: 0 }} />
+              <span style={{ color: "var(--text-secondary)" }}>{m === "KR" ? "국내" : "미국"}</span>
+              <span style={{ color }}>{st.state}</span>
+            </div>
+            {!st.open && st.next_open_kst && (
+              <div style={{ color: "var(--text-muted)", paddingLeft: 12 }}>개장 {st.next_open_kst} (한국시간)</div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

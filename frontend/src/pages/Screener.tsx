@@ -65,6 +65,9 @@ export default function Screener() {
       <div style={{ marginBottom: 16 }}>
         <StockSearchBox onSelect={(item) => setPicked(item)} />
       </div>
+      {addMutation.error && (
+        <p style={{ color: "var(--red)", fontSize: 12, marginBottom: 10 }}>관심종목 추가 실패: {errMsg(addMutation.error)}</p>
+      )}
       {picked && (
         <StockQuoteCard
           item={picked}

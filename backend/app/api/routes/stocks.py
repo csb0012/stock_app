@@ -143,6 +143,8 @@ async def _build_shortterm() -> dict:
 _BUILDERS = {"longterm": _build_longterm, "shortterm": _build_shortterm}
 _LIVE_TTL = 10.0
 _build_locks = {k: asyncio.Lock() for k in _BUILDERS}
+# 여러 탭/요청이 동시에 와도 현재가 재계산은 한 번만 (KIS 호출 중복 방지)
+_live_locks = {k: asyncio.Lock() for k in _BUILDERS}
 
 
 async def _base(kind: str) -> dict:
@@ -178,6 +180,11 @@ def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
 
 async def _live(kind: str) -> dict:
     """현재가 + 뉴스(10분 캐시)로 상승 확률을 다시 계산 (10초 캐시)"""
+    async with _live_locks[kind]:
+        return await _live_locked(kind)
+
+
+async def _live_locked(kind: str) -> dict:
     base = await _base(kind)
     cache = _rec_cache[kind]
     live = cache.get("live")
@@ -330,7 +337,7 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
 async def get_kr_stock(symbol: str, current_user: User = Depends(get_current_user)):
     try:
         price, r = await asyncio.gather(kis_client.get_kr_stock_price(symbol), analyze_kr(symbol))
-    except KISError as e:
+    except Exception as e:
         _fail(e)
     news = await get_news_naver(symbol, market="KR")
     return {"price": price, "candles": r["candles"], "indicators": r["indicators"],
@@ -345,7 +352,7 @@ async def get_us_stock(
 ):
     try:
         price = await kis_client.get_us_stock_price(symbol, exchange)
-    except KISError as e:
+    except Exception as e:
         _fail(e)
     r = (await analyze_us_many([symbol]))[symbol]
     if "error" in r:

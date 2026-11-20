@@ -39,6 +39,7 @@ export const authApi = {
 export const marketApi = {
   overview: () => api.get("/market/overview"),
   calendar: () => api.get("/market/calendar"),
+  status: () => api.get("/market/status"),
 };
 
 // Stocks

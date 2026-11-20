@@ -164,6 +164,9 @@ def _with_pnl(item: dict, r: dict) -> dict:
     avg, qty = item.get("avg_price", 0), item.get("quantity", 0)
     invested = avg * qty
     value = price * qty
+    # 오늘 손익: 전일 종가 = 현재가 / (1 + 등락률)
+    rate = r.get("change_rate") or 0
+    prev_close = price / (1 + rate / 100) if rate > -100 else price
     return {
         **item,
         "current_price": price,
@@ -172,6 +175,7 @@ def _with_pnl(item: dict, r: dict) -> dict:
         "value": round(value, 2),
         "pnl_pct": round((price - avg) / avg * 100, 2) if avg > 0 else 0,
         "pnl_amount": round(value - invested, 2) if avg > 0 else 0,
+        "day_pnl": round((price - prev_close) * qty, 2),
         "prediction": r["prediction"],
     }
 
@@ -205,7 +209,7 @@ async def analyze_portfolio(
     await prediction_log.record(list(analyzed.values()), "투자종목")
 
     rows = []
-    totals = {cur: {"invested": 0.0, "value": 0.0, "pnl": 0.0, "count": 0} for cur in ("KRW", "USD")}
+    totals = {cur: {"invested": 0.0, "value": 0.0, "pnl": 0.0, "day_pnl": 0.0, "count": 0} for cur in ("KRW", "USD")}
     for item in items:
         r = analyzed.get((item["market"], item["symbol"]), {"error": "분석 결과 없음"})
         warning = _code_warning(item)
@@ -219,11 +223,12 @@ async def analyze_portfolio(
         t["invested"] += row["invested"]
         t["value"] += row["value"]
         t["pnl"] += row["pnl_amount"]
+        t["day_pnl"] += row["day_pnl"]
         t["count"] += 1
 
     for t in totals.values():
         t["pnl_pct"] = round(t["pnl"] / t["invested"] * 100, 2) if t["invested"] > 0 else 0
-        for k in ("invested", "value", "pnl"):
+        for k in ("invested", "value", "pnl", "day_pnl"):
             t[k] = round(t[k], 2)
 
     combined = None
@@ -232,10 +237,20 @@ async def analyze_portfolio(
         k, u = totals["KRW"], totals["USD"]
         inv = k["invested"] + u["invested"] * rate
         val = k["value"] + u["value"] * rate
+        # 손익은 통화별 손익의 합 (평단가 미입력 종목은 손익 0 으로 통화별 카드와 같은 기준)
+        pnl = k["pnl"] + u["pnl"] * rate
+        day = k["day_pnl"] + u["day_pnl"] * rate
         combined = {
-            "invested": round(inv), "value": round(val), "pnl": round(val - inv),
-            "pnl_pct": round((val - inv) / inv * 100, 2) if inv > 0 else 0,
+            "invested": round(inv), "value": round(val), "pnl": round(pnl),
+            "pnl_pct": round(pnl / inv * 100, 2) if inv > 0 else 0,
+            "day_pnl": round(day),
         }
+        # 종목별 비중 (원화 환산 평가금액 기준)
+        if val > 0:
+            for row in rows:
+                if "value" in row:
+                    v = row["value"] * (rate if row["market"] == "US" else 1)
+                    row["weight"] = round(v / val * 100, 1)
 
     return {
         "items": rows,

@@ -117,6 +117,24 @@ export default function Predictions() {
             </div>
           </div>
 
+          {/* 지표별 적중률 */}
+          {data.factor_accuracy?.length > 0 && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>지표별 적중률</p>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>
+                각 지표가 상승/하락 신호를 냈을 때 다음 거래일에 실제로 그렇게 움직인 비율 — 50%보다 낮은 지표는 믿기 어렵다는 뜻
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: "100px 1fr 1fr", gap: "8px 16px", fontSize: 12, alignItems: "center" }}>
+                <span style={{ color: "var(--text-muted)" }}>지표</span>
+                <span style={{ color: "var(--text-muted)" }}>상승 신호 → 실제 상승</span>
+                <span style={{ color: "var(--text-muted)" }}>하락 신호 → 실제 하락</span>
+                {data.factor_accuracy.map((f: any) => (
+                  <FactorRow key={f.name} f={f} />
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 기록 목록 */}
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             {([["all", "전체"], ["miss", "틀린 것"], ["hit", "맞은 것"], ["pending", "채점 대기"]] as [Filter, string][]).map(([k, l]) => (
@@ -197,5 +215,29 @@ export default function Predictions() {
         </>
       )}
     </div>
+  );
+}
+
+function RateBar({ rate, n }: { rate: number | null; n: number }) {
+  if (rate === null) return <span style={{ color: "var(--text-muted)" }}>신호 없음</span>;
+  const color = rate >= 55 ? "var(--green)" : rate >= 45 ? "var(--yellow)" : "var(--red)";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ flex: 1, height: 6, background: "var(--bg-secondary)", borderRadius: 3, position: "relative" }}>
+        <div style={{ width: `${rate}%`, height: "100%", background: color, borderRadius: 3 }} />
+        <div style={{ position: "absolute", left: "50%", top: -2, width: 1, height: 10, background: "var(--text-muted)" }} />
+      </div>
+      <span style={{ color, fontWeight: 600, minWidth: 90 }}>{rate}% <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>({n}건)</span></span>
+    </div>
+  );
+}
+
+function FactorRow({ f }: { f: any }) {
+  return (
+    <>
+      <span style={{ fontWeight: 600 }}>{f.name}</span>
+      <RateBar rate={f.up_rate} n={f.up_n} />
+      <RateBar rate={f.down_rate} n={f.down_n} />
+    </>
   );
 }

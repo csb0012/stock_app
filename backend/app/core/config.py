@@ -47,4 +47,23 @@ class Settings(BaseSettings):
         case_sensitive = False
 
 
+_SECRET_PLACEHOLDERS = {"", "change-this-secret-key-in-production", "your-very-long-random-secret-key-change-this"}
+_SECRET_FILE = BACKEND_DIR / ".secret_key"
+
+
+def _ensure_secret_key(s: "Settings"):
+    """SECRET_KEY 가 예시값이면 로그인 토큰(JWT)을 누구나 위조할 수 있다.
+    → 무작위 키를 만들어 backend/.secret_key 에 저장하고 계속 그 키를 사용 (git 제외 파일)."""
+    if s.secret_key not in _SECRET_PLACEHOLDERS:
+        return
+    import secrets
+    if _SECRET_FILE.exists():
+        s.secret_key = _SECRET_FILE.read_text(encoding="utf-8").strip()
+    else:
+        s.secret_key = secrets.token_urlsafe(48)
+        _SECRET_FILE.write_text(s.secret_key, encoding="utf-8")
+        print("[config] SECRET_KEY 가 예시값이라 무작위 키를 생성해 backend/.secret_key 에 저장했습니다 (한 번 다시 로그인 필요)")
+
+
 settings = Settings()
+_ensure_secret_key(settings)

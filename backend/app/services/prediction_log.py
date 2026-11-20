@@ -4,6 +4,7 @@
 2) evaluate_pending(): 대상일 장이 끝난 기록을 실제 등락과 비교해 채점하고, 맞은/틀린 이유를 찾음
 3) review(): 적중률 통계 + 기록 목록
 """
+import asyncio
 import json
 from datetime import datetime
 
@@ -14,7 +15,10 @@ from app.models.prediction import PredictionLog
 from app.services import stock_master
 from app.services.market_calendar import market_today, is_market_open, _after_close
 
-UP_TH, DOWN_TH = 55, 45  # 이 이상이면 '상승 예측', 이 이하면 '하락 예측', 사이는 중립(채점 제외)
+UP_TH, DOWN_TH = 55, 45
+
+# AI 추천(15초 갱신)·투자종목·관심종목이 동시에 같은 종목을 기록하면 UNIQUE 충돌/SQLite 잠금이 나므로 직렬화
+_record_lock = asyncio.Lock()  # 이 이상이면 '상승 예측', 이 이하면 '하락 예측', 사이는 중립(채점 제외)
 
 _INDEX = {"KOSPI": ("^KS11", "코스피"), "KOSDAQ": ("^KQ11", "코스닥"), "US": ("^GSPC", "S&P500")}
 
@@ -24,10 +28,21 @@ def direction(prob: int) -> str:
 
 
 async def record(results: list, source: str):
-    """results: quote 분석 결과 목록 (error 항목은 건너뜀)"""
+    """results: quote 분석 결과 목록 (error 항목은 건너뜀)
+
+    예측 기록은 부가 기능이라, 저장이 실패해도 시세 화면 응답은 그대로 내보내고 로그만 남긴다.
+    """
     rows = [r for r in results if r and "error" not in r and r.get("prediction", {}).get("target_date")]
     if not rows:
         return
+    try:
+        async with _record_lock:
+            await _record(rows, source)
+    except Exception as e:
+        print(f"[prediction] 예측 기록 실패 ({source}): {e}")
+
+
+async def _record(rows: list, source: str):
     async with AsyncSessionLocal() as db:
         for r in rows:
             p = r["prediction"]
@@ -221,6 +236,29 @@ async def review(days: int = 30, market: str = "ALL") -> dict:
             "actual_up_rate": round(ups / len(b) * 100, 1) if b else None,
         })
 
+    # 요인별 적중률 — 어떤 지표가 실제로 잘 맞는지 (상승 신호였을 때 실제 상승 비율, 하락 신호였을 때 실제 하락 비율)
+    fstats: dict = {}
+    for r in rows:
+        if not r["evaluated"] or r["actual_change"] is None:
+            continue
+        for f in r["factors"]:
+            name = f.get("name") or f.get("short")
+            if not name or f.get("impact") not in ("up", "down"):
+                continue
+            st = fstats.setdefault(name, {"name": name, "up_n": 0, "up_hit": 0, "down_n": 0, "down_hit": 0})
+            if f["impact"] == "up":
+                st["up_n"] += 1
+                st["up_hit"] += r["actual_change"] > 0
+            else:
+                st["down_n"] += 1
+                st["down_hit"] += r["actual_change"] < 0
+    factor_accuracy = []
+    for st in fstats.values():
+        st["up_rate"] = round(st["up_hit"] / st["up_n"] * 100, 1) if st["up_n"] else None
+        st["down_rate"] = round(st["down_hit"] / st["down_n"] * 100, 1) if st["down_n"] else None
+        factor_accuracy.append(st)
+    factor_accuracy.sort(key=lambda x: -(x["up_n"] + x["down_n"]))
+
     # 날짜별 적중률
     by_date = {}
     for r in scored:
@@ -235,6 +273,7 @@ async def review(days: int = 30, market: str = "ALL") -> dict:
         "neutral_count": sum(1 for r in rows if r["outcome"] == "neutral"),
         "pending_count": sum(1 for r in rows if not r["evaluated"]),
         "calibration": buckets,
+        "factor_accuracy": factor_accuracy,
         "daily": daily,
         "items": rows,
         "thresholds": {"up": UP_TH, "down": DOWN_TH},

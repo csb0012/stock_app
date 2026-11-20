@@ -5,6 +5,17 @@ import numpy as np
 from typing import Optional
 
 
+def _clean(v):
+    """NaN/inf → None (가격이 전혀 안 움직인 종목은 RSI 가 NaN 이 되고, NaN 은 JSON 응답을 깨뜨림)"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
 def calc_technical_indicators(candles: list) -> dict:
     """캔들 데이터로 주요 기술지표 계산"""
     if len(candles) < 20:
@@ -18,13 +29,13 @@ def calc_technical_indicators(candles: list) -> dict:
 
     # RSI (14일)
     rsi = ta.rsi(df["close"], length=14)
-    rsi_val = float(rsi.iloc[-1]) if rsi is not None and not rsi.empty else None
+    rsi_val = _clean(rsi.iloc[-1]) if rsi is not None and not rsi.empty else None
 
     # MACD
     macd_df = ta.macd(df["close"])
-    macd_val = float(macd_df["MACD_12_26_9"].iloc[-1]) if macd_df is not None else None
-    macd_signal = float(macd_df["MACDs_12_26_9"].iloc[-1]) if macd_df is not None else None
-    macd_hist = float(macd_df["MACDh_12_26_9"].iloc[-1]) if macd_df is not None else None
+    macd_val = _clean(macd_df["MACD_12_26_9"].iloc[-1]) if macd_df is not None else None
+    macd_signal = _clean(macd_df["MACDs_12_26_9"].iloc[-1]) if macd_df is not None else None
+    macd_hist = _clean(macd_df["MACDh_12_26_9"].iloc[-1]) if macd_df is not None else None
 
     # 볼린저밴드 (pandas-ta 버전에 따라 컬럼명이 다를 수 있어 동적으로 찾음)
     bb = ta.bbands(df["close"], length=20)
@@ -34,29 +45,30 @@ def calc_technical_indicators(candles: list) -> dict:
         upper_col = next((c for c in cols if c.startswith("BBU_")), None)
         mid_col   = next((c for c in cols if c.startswith("BBM_")), None)
         lower_col = next((c for c in cols if c.startswith("BBL_")), None)
-        if upper_col: bb_upper = float(bb[upper_col].iloc[-1])
-        if mid_col:   bb_mid   = float(bb[mid_col].iloc[-1])
-        if lower_col: bb_lower = float(bb[lower_col].iloc[-1])
+        if upper_col: bb_upper = _clean(bb[upper_col].iloc[-1])
+        if mid_col:   bb_mid   = _clean(bb[mid_col].iloc[-1])
+        if lower_col: bb_lower = _clean(bb[lower_col].iloc[-1])
 
     # 이동평균
-    ma5 = float(ta.sma(df["close"], 5).iloc[-1])
-    ma20 = float(ta.sma(df["close"], 20).iloc[-1])
-    ma60 = float(ta.sma(df["close"], 60).iloc[-1]) if len(df) >= 60 else None
+    ma5 = _clean(ta.sma(df["close"], 5).iloc[-1])
+    ma20 = _clean(ta.sma(df["close"], 20).iloc[-1])
+    ma60 = _clean(ta.sma(df["close"], 60).iloc[-1]) if len(df) >= 60 else None
 
     # 현재가
     curr_price = float(df["close"].iloc[-1])
 
     return {
-        "rsi": round(rsi_val, 2) if rsi_val else None,
-        "macd": round(macd_val, 4) if macd_val else None,
-        "macd_signal": round(macd_signal, 4) if macd_signal else None,
-        "macd_hist": round(macd_hist, 4) if macd_hist else None,
-        "bb_upper": round(bb_upper, 2) if bb_upper else None,
-        "bb_mid": round(bb_mid, 2) if bb_mid else None,
-        "bb_lower": round(bb_lower, 2) if bb_lower else None,
-        "ma5": round(ma5, 2),
-        "ma20": round(ma20, 2),
-        "ma60": round(ma60, 2) if ma60 else None,
+        # 0 도 유효한 값이므로 None 일 때만 비움 (예전엔 0 이 None 으로 사라졌음)
+        "rsi": round(rsi_val, 2) if rsi_val is not None else None,
+        "macd": round(macd_val, 4) if macd_val is not None else None,
+        "macd_signal": round(macd_signal, 4) if macd_signal is not None else None,
+        "macd_hist": round(macd_hist, 4) if macd_hist is not None else None,
+        "bb_upper": round(bb_upper, 2) if bb_upper is not None else None,
+        "bb_mid": round(bb_mid, 2) if bb_mid is not None else None,
+        "bb_lower": round(bb_lower, 2) if bb_lower is not None else None,
+        "ma5": round(ma5, 2) if ma5 is not None else None,
+        "ma20": round(ma20, 2) if ma20 is not None else None,
+        "ma60": round(ma60, 2) if ma60 is not None else None,
         "current_price": curr_price,
     }
 

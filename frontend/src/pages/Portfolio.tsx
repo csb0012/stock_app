@@ -160,7 +160,7 @@ export default function Portfolio() {
             {analysis?.fx_error ? (
               <p style={{ color: "var(--red)", fontSize: 12 }}>환율 조회 실패 — 원화 환산 불가: {analysis.fx_error}</p>
             ) : combined ? (
-              <SummaryRows invested={combined.invested} value={combined.value} pnl={combined.pnl} pnlPct={combined.pnl_pct} cur="KRW" />
+              <SummaryRows invested={combined.invested} value={combined.value} pnl={combined.pnl} pnlPct={combined.pnl_pct} day={combined.day_pnl} cur="KRW" />
             ) : (
               <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{analyzing ? "계산 중..." : "-"}</p>
             )}
@@ -356,7 +356,7 @@ export default function Portfolio() {
                 )}
 
                 {/* 보유 정보 + 수익 */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 12 }}>
                   <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
                     <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>수량</p>
                     {isEditing ? (
@@ -400,6 +400,17 @@ export default function Portfolio() {
                         : `$${Math.abs(item.pnl_amount || 0).toFixed(2)}`}
                     </p>
                   </div>
+                  <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>오늘 손익 · 비중</p>
+                    <p style={{ fontWeight: 600, fontSize: 13, color: (item.day_pnl || 0) >= 0 ? "var(--green)" : "var(--red)" }}>
+                      {item.day_pnl !== undefined
+                        ? `${item.day_pnl >= 0 ? "+" : "-"}${isKR ? "₩" + Math.round(Math.abs(item.day_pnl)).toLocaleString() : "$" + Math.abs(item.day_pnl).toFixed(2)}`
+                        : "-"}
+                      {item.weight !== undefined && (
+                        <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 11, marginLeft: 6 }}>{item.weight}%</span>
+                      )}
+                    </p>
+</div>
                 </div>
 
                 {/* 예측 + 수정 버튼 */}
@@ -464,7 +475,7 @@ function money(v: number, cur: "KRW" | "USD", signed = false): string {
     : `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function SummaryRows({ invested, value, pnl, pnlPct, cur }: { invested: number; value: number; pnl: number; pnlPct: number; cur: "KRW" | "USD" }) {
+function SummaryRows({ invested, value, pnl, pnlPct, day, cur }: { invested: number; value: number; pnl: number; pnlPct: number; day?: number; cur: "KRW" | "USD" }) {
   const color = pnl >= 0 ? "var(--green)" : "var(--red)";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
@@ -477,11 +488,17 @@ function SummaryRows({ invested, value, pnl, pnlPct, cur }: { invested: number; 
         <span style={{ fontWeight: 600 }}>{money(value, cur)}</span>
       </div>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
-        <span style={{ color: "var(--text-muted)" }}>수익/손실</span>
+        <span style={{ color: "var(--text-muted)" }}>총 수익/손실</span>
         <span style={{ fontWeight: 700, color }}>
           {money(pnl, cur, true)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
         </span>
       </div>
+      {day !== undefined && day !== null && (
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <span style={{ color: "var(--text-muted)" }}>오늘 손익</span>
+          <span style={{ fontWeight: 600, color: day >= 0 ? "var(--green)" : "var(--red)" }}>{money(day, cur, true)}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -491,7 +508,7 @@ function SummaryCard({ title, t, cur, loading }: { title: string; t: any; cur: "
     <div className="card">
       <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>{title}</p>
       {t ? (
-        <SummaryRows invested={t.invested} value={t.value} pnl={t.pnl} pnlPct={t.pnl_pct} cur={cur} />
+        <SummaryRows invested={t.invested} value={t.value} pnl={t.pnl} pnlPct={t.pnl_pct} day={t.day_pnl} cur={cur} />
       ) : (
         <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{loading ? "계산 중..." : "-"}</p>
       )}

@@ -142,6 +142,10 @@ export default function Watchlist() {
               </select>
             </div>
 
+            {addMutation.error && (
+              <p style={{ color: "var(--red)", fontSize: 12, marginBottom: 8 }}>추가 실패: {errMsg(addMutation.error)}</p>
+            )}
+
             {/* 검색 결과 */}
             <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
               {debouncedQ.length === 0 ? (

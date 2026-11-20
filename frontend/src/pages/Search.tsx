@@ -1,28 +1,29 @@
 import { useState } from "react";
-import { stockApi } from "../api/client";
+import { stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
-import { Search as SearchIcon } from "lucide-react";
+import StockSearchBox from "../components/common/StockSearchBox";
 
 export default function Search() {
-  const [symbol, setSymbol] = useState("");
+  const [picked, setPicked] = useState<any>(null);
   const [market, setMarket] = useState("KR");
-  const [exchange, setExchange] = useState("NAS");
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const handleSearch = async () => {
-    if (!symbol) return;
+  // 자동완성에서 고른 종목 조회 — 미국은 종목마스터의 거래소(NAS/NYS/AMS)를 그대로 사용
+  const handleSelect = async (item: any) => {
+    setPicked(item);
+    setMarket(item.market);
     setLoading(true);
     setError("");
     setData(null);
     try {
-      const res = market === "KR"
-        ? await stockApi.kr(symbol)
-        : await stockApi.us(symbol, exchange);
+      const res = item.market === "KR"
+        ? await stockApi.kr(item.symbol)
+        : await stockApi.us(item.symbol, item.exchange || "NAS");
       setData(res.data);
     } catch (e: any) {
-      setError(e.response?.data?.detail || "종목 조회 실패. 종목코드를 확인하세요.");
+      setError(errMsg(e));
     } finally {
       setLoading(false);
     }
@@ -37,35 +38,22 @@ export default function Search() {
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>종목 검색</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>종목코드로 상세 분석을 조회하세요</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>종목명 또는 코드로 검색해 상세 분석을 조회하세요</p>
       </div>
 
       {/* Search bar */}
-      <div className="card" style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 24 }}>
-        <select value={market} onChange={(e) => setMarket(e.target.value)}
-          style={{ padding: "9px 12px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 13, outline: "none" }}>
-          <option value="KR">국내</option>
-          <option value="US">미국</option>
-        </select>
-        {market === "US" && (
-          <select value={exchange} onChange={(e) => setExchange(e.target.value)}
-            style={{ padding: "9px 12px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 13, outline: "none" }}>
-            <option value="NAS">나스닥</option>
-            <option value="NYS">뉴욕</option>
-          </select>
-        )}
-        <input
-          value={symbol}
-          onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-          onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-          placeholder={market === "KR" ? "종목코드 (예: 005930)" : "티커 (예: AAPL)"}
-          style={{ flex: 1, padding: "9px 12px", background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 7, color: "var(--text-primary)", fontSize: 14, outline: "none" }}
-        />
-        <button className="btn btn-primary" onClick={handleSearch} disabled={loading}>
-          <SearchIcon size={14} />
-          {loading ? "조회 중..." : "검색"}
-        </button>
+      <div style={{ marginBottom: 16 }}>
+        <StockSearchBox onSelect={handleSelect} />
       </div>
+      {picked && (
+        <p style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>
+          {picked.name}
+          <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 12, marginLeft: 8 }}>
+            {picked.symbol} · {picked.exchange}
+          </span>
+          {loading && <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 12, marginLeft: 8 }}>조회 중...</span>}
+        </p>
+      )}
 
       {error && <p style={{ color: "var(--red)", marginBottom: 16 }}>{error}</p>}
 

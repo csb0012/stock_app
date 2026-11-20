@@ -34,6 +34,10 @@ function IndexCard({ id, data }: { id: string; data: any }) {
       <p style={{ color: "var(--text-muted)", fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
         {meta.label}
       </p>
+      {data?.error ? (
+        // 조회 실패를 0 으로 보여주면 실제 값처럼 보이므로 실패라고 표시
+        <p style={{ color: "var(--red)", fontSize: 12 }} title={data.error}>조회 실패</p>
+      ) : (
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
         <span style={{ fontSize: 20, fontWeight: 700, color: getVixColor(), fontVariantNumeric: "tabular-nums" }}>
           {meta.unit === "₩" ? "₩" : meta.unit === "$" ? "$" : ""}
@@ -42,7 +46,8 @@ function IndexCard({ id, data }: { id: string; data: any }) {
         </span>
         <ChangeTag value={changeRate} />
       </div>
-      {id === "vix" && (
+      )}
+      {id === "vix" && !data?.error && (
         <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
           {price >= 30 ? "⚠ 고위험 구간" : price >= 20 ? "⚡ 경계 구간" : "✓ 안정 구간"}
         </p>
