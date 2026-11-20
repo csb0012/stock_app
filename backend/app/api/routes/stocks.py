@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 import yfinance as yf
 import asyncio
+import json
+import os
 from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.services.kis_api import kis_client
@@ -8,6 +10,16 @@ from app.services.market_data import get_us_stock_history, get_news_naver
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
+
+_STOCK_LIST_PATH = os.path.join(os.path.dirname(__file__), "../../data/stock_list.json")
+_stock_list_cache: list = []
+
+def _load_stock_list() -> list:
+    global _stock_list_cache
+    if not _stock_list_cache:
+        with open(_STOCK_LIST_PATH, encoding="utf-8") as f:
+            _stock_list_cache = json.load(f)
+    return _stock_list_cache
 
 
 async def _get_us_price_yfinance(symbol: str) -> dict:
@@ -32,6 +44,25 @@ async def _get_us_price_yfinance(symbol: str) -> dict:
             "change_rate": round(change_rate, 2),
         }
     return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+
+@router.get("/search")
+async def search_stocks(
+    q: str = Query(..., min_length=1),
+    market: str = Query("ALL", description="KR / US / ALL"),
+):
+    """종목 검색 (인증 불필요) — 한글·영문·종목코드 모두 지원"""
+    stocks = _load_stock_list()
+    q_lower = q.lower()
+    results = []
+    for s in stocks:
+        if market != "ALL" and s["market"] != market:
+            continue
+        if (q_lower in s["name"].lower()
+                or q_lower in s.get("name_en", "").lower()
+                or q_lower in s["symbol"].lower()):
+            results.append(s)
+    return results[:25]
+
 
 @router.get("/test/kis")
 async def test_kis_connection():

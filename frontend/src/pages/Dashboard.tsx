@@ -4,6 +4,8 @@ import ChangeTag from "../components/common/ChangeTag";
 import { RefreshCw, AlertCircle } from "lucide-react";
 
 const INDEX_LABELS: Record<string, { label: string; unit: string }> = {
+  kospi: { label: "코스피 (KOSPI)", unit: "pt" },
+  kosdaq: { label: "코스닥 (KOSDAQ)", unit: "pt" },
   dow: { label: "다우존스", unit: "pt" },
   sp500: { label: "S&P 500", unit: "pt" },
   nasdaq: { label: "나스닥", unit: "pt" },
@@ -128,6 +130,29 @@ export default function Dashboard() {
               ))}
             </div>
           </section>
+
+          {/* 미국 주요 ETF */}
+          {(data?.etfs || []).length > 0 && (
+            <section style={{ marginBottom: 32 }}>
+              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+                미국 주요 ETF
+              </h2>
+              <div className="card" style={{ padding: "4px 16px" }}>
+                {(data.etfs || []).map((item: any) => (
+                  <div key={item.symbol} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+                    <div>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{item.symbol}</span>
+                      <span style={{ color: "var(--text-muted)", fontSize: 12, marginLeft: 8 }}>{item.name}</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>${item.price.toFixed(2)}</span>
+                      <ChangeTag value={item.change_rate} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* VIX 경고 배너 */}
           {data?.indices?.vix?.price >= 25 && (

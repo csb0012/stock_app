@@ -43,6 +43,8 @@ export const stockApi = {
   volumeSurge: () => api.get("/stocks/volume-surge"),
   longterm: () => api.get("/stocks/recommendations/longterm"),
   shortterm: () => api.get("/stocks/recommendations/shortterm"),
+  search: (q: string, market = "ALL") =>
+    api.get(`/stocks/search?q=${encodeURIComponent(q)}&market=${market}`),
 };
 
 // Watchlist

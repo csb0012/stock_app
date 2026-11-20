@@ -1,6 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { marketApi } from "../api/client";
-import { Calendar, AlertCircle } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
 
 const IMPACT_COLOR: Record<string, string> = {
   high: "var(--red)",
@@ -18,6 +19,70 @@ const KNOWN_EVENTS = [
   { event: "옵션 만기일", country: "KR", impact: "medium", description: "매월 둘째 목요일. 3·6·9·12월은 '네 마녀의 날'." },
 ];
 
+function ResultBadge({ result }: { result: string | null }) {
+  if (!result) return null;
+  const color = result.includes("상회") ? "var(--green)" : result.includes("하회") ? "var(--red)" : "var(--text-muted)";
+  return (
+    <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 4, background: "rgba(128,128,128,0.1)", color, fontWeight: 600, whiteSpace: "nowrap" }}>
+      {result}
+    </span>
+  );
+}
+
+function EventRow({ e, isPast }: { e: any; isPast: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasAnalysis = !!e.analysis;
+
+  return (
+    <>
+      <tr
+        style={{ borderBottom: "1px solid var(--border)", background: isPast ? "rgba(255,255,255,0.01)" : "transparent" }}
+        onClick={() => hasAnalysis && setExpanded(!expanded)}
+        onMouseEnter={(el) => hasAnalysis && ((el.currentTarget as HTMLElement).style.background = "var(--bg-hover)")}
+        onMouseLeave={(el) => ((el.currentTarget as HTMLElement).style.background = isPast ? "rgba(255,255,255,0.01)" : "transparent")}
+      >
+        <td style={{ padding: "11px 16px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+          {isPast && <span style={{ marginRight: 4, color: "var(--text-muted)", fontSize: 10 }}>●</span>}
+          {e.date?.slice(0, 10)}
+        </td>
+        <td style={{ padding: "11px 16px" }}>
+          <span className="badge badge-neutral">{e.country}</span>
+        </td>
+        <td style={{ padding: "11px 16px", fontWeight: 500, fontSize: 13 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
+            {e.event}
+          </div>
+        </td>
+        <td style={{ padding: "11px 16px", fontSize: 12 }}>
+          {e.actual
+            ? <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{e.actual}</span>
+            : <span style={{ color: "var(--text-muted)" }}>{e.estimate ?? "-"}</span>}
+        </td>
+        <td style={{ padding: "11px 16px", color: "var(--text-muted)", fontSize: 12 }}>{e.estimate ?? "-"}</td>
+        <td style={{ padding: "11px 16px", color: "var(--text-muted)", fontSize: 12 }}>{e.prev ?? "-"}</td>
+        <td style={{ padding: "11px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <ResultBadge result={e.result} />
+            {hasAnalysis && (
+              <span style={{ color: "var(--text-muted)" }}>{expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
+            )}
+          </div>
+        </td>
+      </tr>
+      {expanded && e.analysis && (
+        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+          <td colSpan={7} style={{ padding: "12px 16px 14px 32px", background: "rgba(79,142,247,0.04)" }}>
+            <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+              💬 {e.analysis}
+            </p>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 export default function CalendarPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["calendar"],
@@ -25,21 +90,25 @@ export default function CalendarPage() {
     staleTime: 60 * 60 * 1000,
   });
 
+  const today = new Date().toISOString().slice(0, 10);
+  const pastEvents = (data || []).filter((e: any) => e.date?.slice(0, 10) < today);
+  const futureEvents = (data || []).filter((e: any) => e.date?.slice(0, 10) >= today);
+
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>경제 캘린더</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>주요 경제 지표 일정 · 발표치 vs 예상치에 주목하세요</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>발표치 vs 예상치 · 행 클릭 시 AI 해설 확인</p>
       </div>
 
       {/* 주요 이벤트 가이드 */}
-      <section style={{ marginBottom: 32 }}>
+      <section style={{ marginBottom: 28 }}>
         <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
           주요 경제 지표 가이드
         </h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {KNOWN_EVENTS.map((e) => (
-            <div key={e.event} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px" }}>
+            <div key={e.event} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px" }}>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: IMPACT_COLOR[e.impact], flexShrink: 0 }} />
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -53,7 +122,7 @@ export default function CalendarPage() {
         </div>
       </section>
 
-      {/* CME FedWatch 안내 */}
+      {/* CME FedWatch */}
       <div className="card" style={{ marginBottom: 24, borderColor: "rgba(79,142,247,0.3)", background: "rgba(79,142,247,0.04)" }}>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
           <AlertCircle size={15} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />
@@ -67,47 +136,61 @@ export default function CalendarPage() {
         </div>
       </div>
 
-      {/* 실시간 캘린더 (Finnhub) */}
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
-      ) : data && data.length > 0 ? (
-        <section>
-          <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-            향후 2주 일정
-          </h2>
-          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["날짜", "국가", "이벤트", "예상", "이전"].map((h) => (
-                    <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((e: any, i: number) => (
-                  <tr key={i} style={{ borderBottom: i < data.length - 1 ? "1px solid var(--border)" : "none" }}>
-                    <td style={{ padding: "11px 16px", fontSize: 12, color: "var(--text-secondary)" }}>{e.date?.slice(0, 10)}</td>
-                    <td style={{ padding: "11px 16px" }}>
-                      <span className="badge badge-neutral">{e.country}</span>
-                    </td>
-                    <td style={{ padding: "11px 16px", fontWeight: 500, fontSize: 13 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
-                        {e.event}
-                      </div>
-                    </td>
-                    <td style={{ padding: "11px 16px", color: "var(--text-secondary)", fontSize: 13 }}>{e.estimate ?? "-"}</td>
-                    <td style={{ padding: "11px 16px", color: "var(--text-muted)", fontSize: 13 }}>{e.prev ?? "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ) : null}
+      ) : (
+        <>
+          {/* 과거 이벤트 */}
+          {pastEvents.length > 0 && (
+            <section style={{ marginBottom: 32 }}>
+              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+                최근 발표 결과 · 행 클릭 시 AI 해설
+              </h2>
+              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {["날짜", "국가", "이벤트", "실제", "예상", "이전", "결과"].map((h) => (
+                        <th key={h} style={{ padding: "11px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pastEvents.map((e: any, i: number) => (
+                      <EventRow key={i} e={e} isPast={true} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
+          {/* 향후 일정 */}
+          {futureEvents.length > 0 && (
+            <section>
+              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+                향후 주요 일정
+              </h2>
+              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {["날짜", "국가", "이벤트", "예상", "이전", "", ""].map((h, i) => (
+                        <th key={i} style={{ padding: "11px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {futureEvents.map((e: any, i: number) => (
+                      <EventRow key={i} e={e} isPast={false} />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </>
+      )}
     </div>
   );
 }
