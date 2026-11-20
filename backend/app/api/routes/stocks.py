@@ -34,8 +34,8 @@ async def _get_us_price_yfinance(symbol: str) -> dict:
     return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
 @router.get("/test/kis")
-async def test_kis_connection(current_user: User = Depends(get_current_user)):
-    """KIS API 연결 테스트"""
+async def test_kis_connection():
+    """KIS API 연결 테스트 (인증 불필요)"""
     try:
         token = await kis_client._get_token()
         return {"status": "ok", "token_preview": token[:20] + "..."}
