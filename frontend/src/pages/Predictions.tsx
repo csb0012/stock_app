@@ -1,10 +1,91 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, ClipboardCheck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { ChevronDown, ChevronUp, ClipboardCheck, History, RefreshCw } from "lucide-react";
 import { predictionApi, errMsg } from "../api/client";
 import { fmtPrice, fmtSigned } from "../components/common/format";
 
 type Filter = "all" | "miss" | "hit" | "pending";
+type Kind = "all" | "live" | "backtest";
+const PAGE = 200;
+
+const KIND_LABEL: Record<Kind, string> = { all: "실제 + 백테스트", live: "실제 예측만", backtest: "백테스트만" };
+
+function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
+  const qc = useQueryClient();
+  // 실행 중이면 2초마다 진행 상황 조회
+  const { data: live } = useQuery({
+    queryKey: ["backtest-status"],
+    queryFn: () => predictionApi.backtestStatus().then((r) => r.data),
+    initialData: bt,
+    refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
+  });
+  const s = live || bt || {};
+  const [wasRunning, setWasRunning] = useState(false);
+  useEffect(() => {
+    if (s.running) setWasRunning(true);
+    else if (wasRunning) {
+      setWasRunning(false);
+      onDone();
+    }
+  }, [s.running]);
+  const run = useMutation({
+    mutationFn: (force: boolean) => predictionApi.runBacktest(force).then((r) => r.data),
+    onSuccess: (d) => qc.setQueryData(["backtest-status"], d),
+  });
+  const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+            <History size={15} /> 과거 90일 백테스트
+          </p>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+            최근 90일의 거래일마다 <strong>그 전날 종가까지의 일봉만</strong> 보고 다음 날을 예측한 뒤 실제 등락과 비교합니다
+            (예: 11/18까지 데이터로 11/19 예측 → 11/19 종가로 채점). 결과는 DB(prediction_backtest)에 저장되고 하루 한 번 새 날짜만 추가됩니다.
+            대상: AI 추천 후보 + 관심종목 + 투자종목 · 뉴스·거시·애널리스트·공시는 과거 시점 기록이 없어 <strong>기술적 지표만</strong> 사용.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-primary" style={{ fontSize: 12, padding: "6px 10px" }} disabled={s.running || run.isPending} onClick={() => run.mutate(false)}>
+            <RefreshCw size={12} className={s.running ? "spin" : undefined} /> {s.running ? "계산 중" : "새 날짜 계산"}
+          </button>
+          <button className="btn btn-ghost" style={{ fontSize: 12, padding: "6px 10px" }} disabled={s.running || run.isPending}
+            onClick={() => { if (confirm("기존 백테스트 기록을 지우고 처음부터 다시 계산할까요?")) run.mutate(true); }}>
+            전체 다시 계산
+          </button>
+        </div>
+      </div>
+      {s.running && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${pct}%`, height: "100%", background: "var(--accent)", transition: "width 0.5s" }} />
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+            {s.done}/{s.total} 종목 ({pct}%) · {s.current} · 새 기록 {s.added}건
+          </p>
+        </div>
+      )}
+      {!s.running && s.finished_at && (
+        <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
+          마지막 실행 {s.finished_at.replace("T", " ")} · {s.total}종목 · 새 기록 {s.added}건
+        </p>
+      )}
+      {!s.running && !s.finished_at && (
+        <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>서버 시작 20초 후 자동으로 계산합니다.</p>
+      )}
+      {run.error && <p style={{ fontSize: 12, color: "var(--red)", marginTop: 6 }}>실행 실패: {errMsg(run.error)}</p>}
+      {s.errors?.length > 0 && (
+        <details style={{ marginTop: 6, fontSize: 12, color: "var(--red)" }}>
+          <summary style={{ cursor: "pointer" }}>실패 {s.errors.length}건 (해당 종목은 빠짐)</summary>
+          <ul style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
+            {s.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
 
 const OUTCOME: Record<string, { label: string; cls: string }> = {
   hit: { label: "적중", cls: "badge-up" },
@@ -28,30 +109,32 @@ function Acc({ title, a, sub }: { title: string; a: any; sub?: string }) {
 }
 
 export default function Predictions() {
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(90);
   const [market, setMarket] = useState("ALL");
+  const [kind, setKind] = useState<Kind>("all");
   const [filter, setFilter] = useState<Filter>("all");
-  const [open, setOpen] = useState<number | null>(null);
+  const [limit, setLimit] = useState(PAGE);
+  const [open, setOpen] = useState<string | null>(null);
+  const qc = useQueryClient();
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["prediction-review", days, market],
-    queryFn: () => predictionApi.review(days, market).then((r) => r.data),
+  useEffect(() => setLimit(PAGE), [days, market, kind, filter]);
+
+  const { data, isLoading, isFetching, error } = useQuery({
+    queryKey: ["prediction-review", days, market, kind, filter, limit],
+    queryFn: () => predictionApi.review(days, market, kind, filter, limit).then((r) => r.data),
     staleTime: 60_000,
+    placeholderData: keepPreviousData,
   });
 
-  const items: any[] = data?.items || [];
-  const shown = items.filter((r) =>
-    filter === "all" ? true
-    : filter === "pending" ? !r.evaluated
-    : r.outcome === filter
-  );
+  const shown: any[] = data?.items || [];
+  const counts = data?.counts || {};
 
   return (
     <div>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>예측 검증</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측을 장 마감 후 실제 등락과 비교해 채점합니다 ·
+          AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측(실제)과 과거 90일 백테스트를 실제 등락과 비교해 채점합니다 ·
           상승 예측 = 확률 {data?.thresholds?.up ?? 55}% 이상, 하락 예측 = {data?.thresholds?.down ?? 45}% 이하
         </p>
       </div>
@@ -68,7 +151,16 @@ export default function Predictions() {
             {l}
           </button>
         ))}
+        <span style={{ width: 12 }} />
+        {(Object.keys(KIND_LABEL) as Kind[]).map((k) => (
+          <button key={k} className={`btn ${kind === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setKind(k)}>
+            {KIND_LABEL[k]}
+          </button>
+        ))}
+        {isFetching && !isLoading && <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>불러오는 중...</span>}
       </div>
+
+      {data && <BacktestPanel bt={data.backtest} onDone={() => qc.invalidateQueries({ queryKey: ["prediction-review"] })} />}
 
       {isLoading && <p style={{ color: "var(--text-muted)" }}>채점 중...</p>}
       {error && <p style={{ color: "var(--red)" }}>예측 검증 조회 실패: {errMsg(error)}</p>}
@@ -80,6 +172,8 @@ export default function Predictions() {
             <Acc title="전체 적중률" a={data.overall} />
             <Acc title="상승 예측 적중률" a={data.up_calls} sub="오른다고 한 것 중 실제 상승" />
             <Acc title="하락 예측 적중률" a={data.down_calls} sub="내린다고 한 것 중 실제 하락" />
+            {kind === "all" && <Acc title="실제 예측 적중률" a={data.by_kind?.live} />}
+            {kind === "all" && <Acc title="백테스트 적중률" a={data.by_kind?.backtest} sub="기술적 지표만" />}
             <div className="card" style={{ padding: "14px 16px" }}>
               <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>채점 대기 / 중립</p>
               <p style={{ fontSize: 22, fontWeight: 700 }}>{data.pending_count} / {data.neutral_count}</p>
@@ -135,11 +229,29 @@ export default function Predictions() {
             </div>
           )}
 
+          {/* 종목별 적중률 */}
+          {data.by_symbol?.length > 0 && (
+            <div className="card" style={{ marginBottom: 20 }}>
+              <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>종목별 적중률</p>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12 }}>채점 5건 이상 종목 · 예측이 잘 맞는 종목과 안 맞는 종목</p>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "6px 24px", fontSize: 12 }}>
+                {data.by_symbol.map((s: any) => (
+                  <div key={`${s.market}-${s.symbol}`} style={{ display: "grid", gridTemplateColumns: "1fr 150px", gap: 8, alignItems: "center" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {s.name || s.symbol} <span style={{ color: "var(--text-muted)" }}>{s.symbol}</span>
+                    </span>
+                    <RateBar rate={s.accuracy} n={s.hit + s.miss} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 기록 목록 */}
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             {([["all", "전체"], ["miss", "틀린 것"], ["hit", "맞은 것"], ["pending", "채점 대기"]] as [Filter, string][]).map(([k, l]) => (
               <button key={k} className={`btn ${filter === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setFilter(k)}>
-                {l} ({items.filter((r) => k === "all" ? true : k === "pending" ? !r.evaluated : r.outcome === k).length})
+                {l} ({counts[k] ?? 0})
               </button>
             ))}
           </div>
@@ -149,6 +261,7 @@ export default function Predictions() {
               <ClipboardCheck size={32} style={{ color: "var(--border)", margin: "0 auto 10px" }} />
               <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
                 기록이 없습니다. AI 추천·투자종목·관심종목 화면을 열면 예측이 기록되고, 다음 거래일 장 마감 후 채점됩니다.
+                과거 기록은 위의 백테스트가 끝나면 채워집니다.
               </p>
             </div>
           ) : (
@@ -166,6 +279,7 @@ export default function Predictions() {
                       <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{r.target_date.slice(5)}</span>
                       <span>
                         <strong>{r.name || r.symbol}</strong>
+                        {r.kind === "backtest" && <span className="badge badge-neutral" style={{ marginLeft: 6, fontSize: 10 }}>백테스트</span>}
                         <span style={{ color: "var(--text-muted)", fontSize: 11, marginLeft: 6 }}>{r.symbol} · {r.market === "KR" ? "국내" : "미국"}</span>
                       </span>
                       <span>
@@ -183,7 +297,7 @@ export default function Predictions() {
                         <div style={{ color: "var(--text-secondary)" }}>
                           <span style={{ color: "var(--text-muted)" }}>예측 당시 ({r.base_date}, {fmtPrice(r.base_price, r.market)}): </span>
                           {r.summary}
-                          <span style={{ color: "var(--text-muted)" }}> · 출처: {r.sources}</span>
+                          <span style={{ color: "var(--text-muted)" }}> · 출처: {r.sources}{r.kind === "backtest" ? " (기술적 지표만, 대상일 전날 종가까지의 데이터)" : ""}</span>
                         </div>
                         {r.evaluated && r.review?.length > 0 && (
                           <div>
@@ -210,6 +324,13 @@ export default function Predictions() {
                   </div>
                 );
               })}
+              {data.items_total > shown.length && (
+                <div style={{ padding: 12, textAlign: "center", borderTop: "1px solid var(--border)" }}>
+                  <button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={isFetching} onClick={() => setLimit(limit + PAGE)}>
+                    더 보기 ({shown.length} / {data.items_total})
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>

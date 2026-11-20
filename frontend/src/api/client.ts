@@ -68,7 +68,10 @@ export const watchlistApi = {
 
 // 예측 검증
 export const predictionApi = {
-  review: (days = 30, market = "ALL") => api.get(`/predictions/review?days=${days}&market=${market}`),
+  review: (days = 90, market = "ALL", kind = "all", outcome = "all", limit = 200) =>
+    api.get(`/predictions/review`, { params: { days, market, kind, outcome, limit } }),
+  runBacktest: (force = false) => api.post(`/predictions/backtest`, null, { params: { force } }),
+  backtestStatus: () => api.get(`/predictions/backtest/status`),
 };
 
 // Portfolio

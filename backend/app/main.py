@@ -5,7 +5,7 @@ from app.core.database import init_db
 from app.core.config import settings
 from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions
 import asyncio
-from app.services import stock_master, prediction_log, extras
+from app.services import stock_master, prediction_log, extras, backtest
 from app.services.repair import repair_symbols
 
 
@@ -21,9 +21,12 @@ async def lifespan(app: FastAPI):
     # FRED·Finnhub·DART 추가 데이터는 호출 제한 때문에 백그라운드 큐로 수집 (.env 에 키가 있을 때만)
     extras_task = asyncio.create_task(extras.worker())
     asyncio.get_event_loop().call_later(1.0, _warm_extras)
+    # 최근 90일 과거 예측 백테스트 — 하루 한 번 (이미 계산한 날짜는 건너뜀)
+    bt_task = asyncio.create_task(_backtest_loop())
     yield
     task.cancel()
     extras_task.cancel()
+    bt_task.cancel()
 
 
 def _warm_extras():
@@ -38,6 +41,14 @@ async def _evaluate_loop():
             await prediction_log.evaluate_pending()
         except Exception as e:
             print(f"[prediction] 채점 실패: {e}")
+        await asyncio.sleep(1800)
+
+
+async def _backtest_loop():
+    await asyncio.sleep(20)  # 시작 직후 KIS 호출이 몰리지 않게
+    while True:
+        if backtest.due():
+            await backtest.run()
         await asyncio.sleep(1800)
 
 

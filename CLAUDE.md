@@ -68,7 +68,7 @@ models/
   user.py        — User (username, hashed_password, totp_secret, totp_enabled)
   watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
-  prediction.py  — PredictionLog (종목·대상일별 예측 + 채점 결과·틀린 이유)
+  prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
 services/
   kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
                    국내 현재가·일봉(get_kr_chart, 오름차순)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
@@ -79,7 +79,9 @@ services/
   extras.py      — 외부 데이터 요인: FRED 거시환경 / Finnhub 애널리스트·실적(미국) / DART 공시(국내).
                    호출 제한 때문에 백그라운드 큐(worker)로 수집, get_extra() 는 기다리지 않고 캐시값 또는 pending 반환
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨
-  prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점 · 적중률/틀린 이유 집계
+  prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점(grade) · 적중률/틀린 이유 집계 (review: 실제+백테스트 합산, 실제 우선)
+  backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 일봉 130개만으로 예측 → 채점 → prediction_backtest 저장 (증분, 하루 1회)
+                   뉴스·외부 데이터는 과거 기록이 없어 기술적 지표만 사용. 미래 데이터를 쓰지 않는 것이 핵심 규칙
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — yfinance: 지수/매크로/빅테크; Finnhub: 경제 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
@@ -91,10 +93,10 @@ api/routes/
   market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
-  predictions.py — /review (채점 후 적중률·기록 반환)
+  predictions.py — /review (채점 후 적중률·기록, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, extras.worker (추천 후보 종목 미리 수집 예약).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행), extras.worker (추천 후보 종목 미리 수집 예약).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 

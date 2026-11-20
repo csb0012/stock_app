@@ -77,9 +77,14 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
 
       {/* 다음 거래일 상승 확률 */}
       <div>
-        <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
-          {sessionLabel(pred)} 상승 확률
-          <Delta now={pred.probability} prev={item.prev_probability} />
+        <p style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+          <span>
+            {sessionLabel(pred)} 상승 확률
+            <Delta now={pred.probability} prev={item.prev_probability} />
+          </span>
+          <span>
+            하락 확률 <strong style={{ color: "var(--red)" }}>{100 - (pred.probability || 50)}%</strong>
+          </span>
         </p>
         <ProbabilityBar value={pred.probability || 50} />
         {pred.signal && (
@@ -149,7 +154,7 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
 }
 
 type Group = "KR" | "US" | "SPAC" | "ETF";
-type Sort = "default" | "prob_desc" | "prob_asc";
+type Sort = "default" | "prob_desc" | "prob_asc" | "down_desc" | "down_asc";
 
 const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
   { key: "KR", label: "🇰🇷 국내 주식", match: (x) => x.market === "KR" && x.category === "stock" },
@@ -193,8 +198,8 @@ export default function Recommendations() {
   const items = all
     .filter(g.match)
     .sort((a, b) =>
-      sort === "prob_desc" ? prob(b) - prob(a)
-      : sort === "prob_asc" ? prob(a) - prob(b)
+      sort === "prob_desc" || sort === "down_asc" ? prob(b) - prob(a)
+      : sort === "prob_asc" || sort === "down_desc" ? prob(a) - prob(b)
       : tab === "long" ? (b.long_term_score || 0) - (a.long_term_score || 0)
       : prob(b) - prob(a)
     );
@@ -238,11 +243,13 @@ export default function Recommendations() {
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {([
             ["default", tab === "long" ? "장기 적합도순" : "추천순"],
             ["prob_desc", "상승확률 높은 순"],
             ["prob_asc", "상승확률 낮은 순"],
+            ["down_desc", "하락확률 높은 순"],
+            ["down_asc", "하락확률 낮은 순"],
           ] as [Sort, string][]).map(([k, label]) => (
             <button key={k} className={`btn ${sort === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setSort(k)}>
               {label}

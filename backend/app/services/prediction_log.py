@@ -6,12 +6,12 @@
 """
 import asyncio
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import select
 
 from app.core.database import AsyncSessionLocal
-from app.models.prediction import PredictionLog
+from app.models.prediction import PredictionLog, BacktestLog
 from app.services import stock_master
 from app.services.market_calendar import market_today, is_market_open, _after_close
 
@@ -121,11 +121,56 @@ def _reasons(log: PredictionLog, change: float, gap: float | None, vol_ratio: fl
     return out
 
 
-def _index_key(log: PredictionLog) -> str:
-    if log.market == "US":
+def index_key(market: str, symbol: str) -> str:
+    if market == "US":
         return "US"
-    m = stock_master.get("KR", log.symbol) or {}
+    m = stock_master.get("KR", symbol) or {}
     return "KOSDAQ" if m.get("exchange") == "KOSDAQ" else "KOSPI"
+
+
+def index_change_fn(idx_hist: dict):
+    """{지수티커: 일봉} → (지수키, 날짜) 의 지수 등락률(%) 조회 함수"""
+    def f(key: str, date: str):
+        cs = idx_hist.get(_INDEX[key][0], [])
+        for i, c in enumerate(cs):
+            if c["date"][:10] == date and i > 0:
+                return round((c["close"] / cs[i - 1]["close"] - 1) * 100, 2)
+        return None
+    return f
+
+
+def measure(candles: list, ti: int) -> tuple:
+    """대상일(candles[ti]) 등락률·시가 갭·20일 평균 대비 거래량 배수"""
+    t, prev = candles[ti], candles[ti - 1]
+    change = round((t["close"] / prev["close"] - 1) * 100, 2)
+    gap = round((t["open"] / prev["close"] - 1) * 100, 2) if t.get("open") else None
+    vols = [c["volume"] for c in candles[max(0, ti - 20):ti] if c["volume"]]
+    vol_ratio = round(t["volume"] / (sum(vols) / len(vols)), 2) if vols and t["volume"] else None
+    return change, gap, vol_ratio
+
+
+def grade(log, candles: list, ti: int, idx_change, news: dict | None = None):
+    """log(PredictionLog/BacktestLog)에 대상일 실제 결과·적중 여부·이유를 채움"""
+    change, gap, vol_ratio = measure(candles, ti)
+    key = index_key(log.market, log.symbol)
+    ic = idx_change(key, log.target_date)
+    pred_dir = direction(log.probability)
+    if pred_dir == "neutral":
+        hit, outcome = False, "neutral"
+    else:
+        hit = (change > 0) if pred_dir == "up" else (change < 0)
+        outcome = "hit" if hit else "miss"
+    log.actual_close = candles[ti]["close"]
+    log.actual_change = change
+    log.gap_pct = gap
+    log.volume_ratio = vol_ratio
+    log.index_name = _INDEX[key][1]
+    log.index_change = ic
+    log.outcome = outcome
+    log.review = json.dumps(_reasons(log, change, gap, vol_ratio, _INDEX[key][1], ic, hit, pred_dir, news),
+                            ensure_ascii=False)
+    log.evaluated = True
+    log.evaluated_at = datetime.now()
 
 
 async def evaluate_pending() -> int:
@@ -143,12 +188,7 @@ async def evaluate_pending() -> int:
         us_syms = sorted({p.symbol for p in pending if p.market == "US"})
         us_hist = await batch_yf_history(us_syms, "3mo") if us_syms else {}
 
-        def idx_change(key: str, date: str):
-            cs = idx_hist.get(_INDEX[key][0], [])
-            for i, c in enumerate(cs):
-                if c["date"][:10] == date and i > 0:
-                    return round((c["close"] / cs[i - 1]["close"] - 1) * 100, 2)
-            return None
+        idx_change = index_change_fn(idx_hist)
 
         done = 0
         for log in pending:
@@ -164,33 +204,8 @@ async def evaluate_pending() -> int:
                     log.evaluated_at = datetime.now()
                     done += 1
                 continue
-            t, prev = candles[ti], candles[ti - 1]
-            change = round((t["close"] / prev["close"] - 1) * 100, 2)
-            gap = round((t["open"] / prev["close"] - 1) * 100, 2) if t.get("open") else None
-            vols = [c["volume"] for c in candles[max(0, ti - 20):ti] if c["volume"]]
-            vol_ratio = round(t["volume"] / (sum(vols) / len(vols)), 2) if vols and t["volume"] else None
-            key = _index_key(log)
-            ic = idx_change(key, log.target_date)
-
-            pred_dir = direction(log.probability)
-            if pred_dir == "neutral":
-                hit, outcome = False, "neutral"
-            else:
-                hit = (change > 0) if pred_dir == "up" else (change < 0)
-                outcome = "hit" if hit else "miss"
-
-            log.actual_close = t["close"]
-            log.actual_change = change
-            log.gap_pct = gap
-            log.volume_ratio = vol_ratio
-            log.index_name = _INDEX[key][1]
-            log.index_change = ic
-            log.outcome = outcome
-            news = await get_news_tone(log.market, log.symbol) if outcome != "neutral" else None
-            log.review = json.dumps(_reasons(log, change, gap, vol_ratio, _INDEX[key][1], ic, hit, pred_dir, news),
-                                    ensure_ascii=False)
-            log.evaluated = True
-            log.evaluated_at = datetime.now()
+            news = await get_news_tone(log.market, log.symbol) if direction(log.probability) != "neutral" else None
+            grade(log, candles, ti, idx_change, news)
             done += 1
         await db.commit()
         return done
@@ -202,28 +217,39 @@ def _acc(rows: list) -> dict:
     return {"hit": hit, "miss": miss, "accuracy": round(hit / (hit + miss) * 100, 1) if hit + miss else None}
 
 
-async def review(days: int = 30, market: str = "ALL") -> dict:
-    async with AsyncSessionLocal() as db:
-        q = select(PredictionLog).order_by(PredictionLog.target_date.desc(), PredictionLog.probability.desc())
-        logs = (await db.execute(q)).scalars().all()
+def _row(l, kind: str) -> dict:
+    return {
+        "id": f"{kind[0]}{l.id}", "kind": kind, "market": l.market, "symbol": l.symbol, "name": l.name,
+        "sources": l.sources, "base_date": l.base_date, "target_date": l.target_date, "base_price": l.base_price,
+        "probability": l.probability, "direction": direction(l.probability), "signal": l.signal,
+        "summary": l.summary, "factors": json.loads(l.factors or "[]"),
+        "evaluated": l.evaluated, "outcome": l.outcome, "actual_close": l.actual_close,
+        "actual_change": l.actual_change, "gap_pct": l.gap_pct, "volume_ratio": l.volume_ratio,
+        "index_name": l.index_name, "index_change": l.index_change,
+        "review": json.loads(l.review or "[]"),
+    }
 
-    cutoff = (datetime.now().date().toordinal() - days)
-    rows = []
-    for l in logs:
-        if market != "ALL" and l.market != market:
-            continue
-        if datetime.fromisoformat(l.target_date).date().toordinal() < cutoff:
-            continue
-        rows.append({
-            "id": l.id, "market": l.market, "symbol": l.symbol, "name": l.name, "sources": l.sources,
-            "base_date": l.base_date, "target_date": l.target_date, "base_price": l.base_price,
-            "probability": l.probability, "direction": direction(l.probability), "signal": l.signal,
-            "summary": l.summary, "factors": json.loads(l.factors or "[]"),
-            "evaluated": l.evaluated, "outcome": l.outcome, "actual_close": l.actual_close,
-            "actual_change": l.actual_change, "gap_pct": l.gap_pct, "volume_ratio": l.volume_ratio,
-            "index_name": l.index_name, "index_change": l.index_change,
-            "review": json.loads(l.review or "[]"),
-        })
+
+async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome: str = "all",
+                 limit: int = 200) -> dict:
+    """적중률 통계 + 기록 목록
+
+    kind: live = 실제로 화면에서 낸 예측만 / backtest = 과거 백테스트만 /
+          all = 둘 다 (같은 종목·대상일이면 실제 예측 우선)
+    outcome: all / hit / miss / pending — 목록만 거름 (통계는 전체 기준)
+    """
+    cutoff = date.fromordinal(datetime.now().date().toordinal() - days).isoformat()
+    rows: dict = {}
+    async with AsyncSessionLocal() as db:
+        for model, k in ((BacktestLog, "backtest"), (PredictionLog, "live")):
+            if kind not in ("all", k):
+                continue
+            q = select(model).where(model.target_date >= cutoff)
+            if market != "ALL":
+                q = q.where(model.market == market)
+            for l in (await db.execute(q)).scalars().all():
+                rows[(l.market, l.symbol, l.target_date)] = _row(l, k)  # live 가 나중에 덮어씀
+    rows = sorted(rows.values(), key=lambda r: (r["target_date"], r["probability"]), reverse=True)
 
     scored = [r for r in rows if r["outcome"] in ("hit", "miss")]
     buckets = []
@@ -265,16 +291,45 @@ async def review(days: int = 30, market: str = "ALL") -> dict:
         by_date.setdefault(r["target_date"], []).append(r)
     daily = [{"date": d, **_acc(v)} for d, v in sorted(by_date.items())]
 
+    # 종목별 적중률 (채점 5건 이상)
+    by_sym: dict = {}
+    for r in scored:
+        by_sym.setdefault((r["market"], r["symbol"]), []).append(r)
+    by_symbol = [{"market": m, "symbol": s, "name": v[0]["name"], **_acc(v)}
+                 for (m, s), v in by_sym.items() if len(v) >= 5]
+    by_symbol.sort(key=lambda x: (-(x["accuracy"] or 0), -(x["hit"] + x["miss"])))
+
+    def match(r):
+        return (outcome == "all" or (outcome == "pending" and not r["evaluated"])
+                or r["outcome"] == outcome)
+
+    counts = {
+        "all": len(rows),
+        "hit": sum(1 for r in rows if r["outcome"] == "hit"),
+        "miss": sum(1 for r in rows if r["outcome"] == "miss"),
+        "pending": sum(1 for r in rows if not r["evaluated"]),
+    }
+    listed = [r for r in rows if match(r)]
+    items = []
+    for r in listed[:limit]:
+        r = dict(r)
+        r.pop("factors")  # 목록에선 안 씀 (응답 크기 줄임)
+        items.append(r)
+
     return {
         "overall": _acc(scored),
         "up_calls": _acc([r for r in scored if r["direction"] == "up"]),
         "down_calls": _acc([r for r in scored if r["direction"] == "down"]),
         "by_market": {m: _acc([r for r in scored if r["market"] == m]) for m in ("KR", "US")},
+        "by_kind": {k: _acc([r for r in scored if r["kind"] == k]) for k in ("live", "backtest")},
         "neutral_count": sum(1 for r in rows if r["outcome"] == "neutral"),
-        "pending_count": sum(1 for r in rows if not r["evaluated"]),
+        "pending_count": counts["pending"],
         "calibration": buckets,
         "factor_accuracy": factor_accuracy,
+        "by_symbol": by_symbol,
         "daily": daily,
-        "items": rows,
+        "counts": counts,
+        "items": items,
+        "items_total": len(listed),
         "thresholds": {"up": UP_TH, "down": DOWN_TH},
     }
