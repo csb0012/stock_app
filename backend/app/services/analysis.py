@@ -26,11 +26,17 @@ def calc_technical_indicators(candles: list) -> dict:
     macd_signal = float(macd_df["MACDs_12_26_9"].iloc[-1]) if macd_df is not None else None
     macd_hist = float(macd_df["MACDh_12_26_9"].iloc[-1]) if macd_df is not None else None
 
-    # 볼린저밴드
+    # 볼린저밴드 (pandas-ta 버전에 따라 컬럼명이 다를 수 있어 동적으로 찾음)
     bb = ta.bbands(df["close"], length=20)
-    bb_upper = float(bb["BBU_20_2.0"].iloc[-1]) if bb is not None else None
-    bb_mid = float(bb["BBM_20_2.0"].iloc[-1]) if bb is not None else None
-    bb_lower = float(bb["BBL_20_2.0"].iloc[-1]) if bb is not None else None
+    bb_upper = bb_mid = bb_lower = None
+    if bb is not None:
+        cols = bb.columns.tolist()
+        upper_col = next((c for c in cols if c.startswith("BBU_")), None)
+        mid_col   = next((c for c in cols if c.startswith("BBM_")), None)
+        lower_col = next((c for c in cols if c.startswith("BBL_")), None)
+        if upper_col: bb_upper = float(bb[upper_col].iloc[-1])
+        if mid_col:   bb_mid   = float(bb[mid_col].iloc[-1])
+        if lower_col: bb_lower = float(bb[lower_col].iloc[-1])
 
     # 이동평균
     ma5 = float(ta.sma(df["close"], 5).iloc[-1])
