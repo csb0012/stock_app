@@ -1,9 +1,35 @@
 from fastapi import APIRouter, Depends, Query
+import yfinance as yf
+import asyncio
 from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.services.kis_api import kis_client
 from app.services.market_data import get_us_stock_history, get_news_naver
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
+
+
+async def _get_us_price_yfinance(symbol: str) -> dict:
+    """yfinance로 미국 주식 현재가 조회 (KIS 실패시 fallback)"""
+    def _fetch():
+        t = yf.Ticker(symbol)
+        hist = t.history(period="2d")
+        if len(hist) >= 2:
+            prev = float(hist["Close"].iloc[-2])
+            curr = float(hist["Close"].iloc[-1])
+            change = curr - prev
+            change_rate = (change / prev) * 100
+        elif len(hist) == 1:
+            curr = float(hist["Close"].iloc[-1])
+            change, change_rate = 0, 0
+        else:
+            return {"symbol": symbol, "market": "US", "price": 0, "change": 0, "change_rate": 0}
+        return {
+            "symbol": symbol, "market": "US",
+            "price": round(curr, 2),
+            "change": round(change, 2),
+            "change_rate": round(change_rate, 2),
+        }
+    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -77,7 +103,10 @@ async def get_longterm_recommendations(current_user: User = Depends(get_current_
                 change_rate = price_data.get("change_rate", 0)
             else:
                 candles = await get_us_stock_history(c["symbol"], period="6mo")
-                price_data = await kis_client.get_us_stock_price(c["symbol"], c["exchange"])
+                try:
+                    price_data = await kis_client.get_us_stock_price(c["symbol"], c["exchange"])
+                except Exception:
+                    price_data = await _get_us_price_yfinance(c["symbol"])
                 per, pbr = 0, 0
                 price = price_data.get("price", 0)
                 change_rate = price_data.get("change_rate", 0)

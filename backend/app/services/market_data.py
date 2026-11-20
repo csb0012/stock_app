@@ -200,10 +200,64 @@ async def get_economic_calendar() -> list:
 
 
 def _get_mock_calendar() -> list:
-    """Finnhub 키 없을 때 주요 일정 샘플"""
-    return [
-        {"date": "2024-12-18", "event": "FOMC 금리결정", "country": "US", "impact": "high"},
-        {"date": "2024-12-13", "event": "미국 CPI (소비자물가)", "country": "US", "impact": "high"},
-        {"date": "2024-12-06", "event": "미국 고용보고서 (비농업)", "country": "US", "impact": "high"},
-        {"date": "2024-12-12", "event": "한국은행 금통위", "country": "KR", "impact": "high"},
-    ]
+    """Finnhub 키 없을 때 주요 일정 (현재 날짜 기준 동적 생성)"""
+    from datetime import timedelta
+    today = datetime.now()
+
+    def next_weekday(d, weekday):
+        days_ahead = weekday - d.weekday()
+        if days_ahead <= 0:
+            days_ahead += 7
+        return d + timedelta(days=days_ahead)
+
+    def nth_weekday_of_month(year, month, weekday, n):
+        import calendar
+        first_day = datetime(year, month, 1)
+        days_ahead = weekday - first_day.weekday()
+        if days_ahead < 0:
+            days_ahead += 7
+        first_occurrence = first_day + timedelta(days=days_ahead)
+        return first_occurrence + timedelta(weeks=n - 1)
+
+    # 이번달 / 다음달 주요 일정 계산
+    y, m = today.year, today.month
+    next_m = m + 1 if m < 12 else 1
+    next_y = y if m < 12 else y + 1
+
+    events = []
+
+    # 매월 첫째 금요일 - 미국 고용보고서
+    for yr, mo in [(y, m), (next_y, next_m)]:
+        d = nth_weekday_of_month(yr, mo, 4, 1)  # 4=금요일
+        if d >= today:
+            events.append({"date": d.strftime("%Y-%m-%d"), "event": "미국 고용보고서 (비농업)", "country": "US", "impact": "high", "estimate": None, "prev": None})
+
+    # 매월 둘째 목요일 - 옵션만기일
+    for yr, mo in [(y, m), (next_y, next_m)]:
+        d = nth_weekday_of_month(yr, mo, 3, 2)  # 3=목요일
+        if d >= today:
+            events.append({"date": d.strftime("%Y-%m-%d"), "event": "옵션 만기일", "country": "KR", "impact": "medium", "estimate": None, "prev": None})
+
+    # CPI - 보통 매월 10~15일 사이
+    for yr, mo in [(y, m), (next_y, next_m)]:
+        d = datetime(yr, mo, 12)
+        if d >= today:
+            events.append({"date": d.strftime("%Y-%m-%d"), "event": "미국 CPI (소비자물가)", "country": "US", "impact": "high", "estimate": None, "prev": None})
+
+    # FOMC - 연 8회 (대략 6~7주 간격, 간략히 다음 예상일 표시)
+    fomc_dates_2026 = ["2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17", "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16"]
+    fomc_dates_2027 = ["2027-01-27", "2027-03-17", "2027-05-05", "2027-06-16"]
+    for ds in fomc_dates_2026 + fomc_dates_2027:
+        d = datetime.strptime(ds, "%Y-%m-%d")
+        if today <= d <= today + timedelta(days=90):
+            events.append({"date": ds, "event": "FOMC 금리결정", "country": "US", "impact": "high", "estimate": None, "prev": None})
+
+    # 한국은행 금통위
+    bok_dates_2026 = ["2026-01-16", "2026-02-27", "2026-04-17", "2026-05-29", "2026-07-17", "2026-08-28", "2026-10-16", "2026-11-27"]
+    for ds in bok_dates_2026:
+        d = datetime.strptime(ds, "%Y-%m-%d")
+        if today <= d <= today + timedelta(days=90):
+            events.append({"date": ds, "event": "한국은행 금통위", "country": "KR", "impact": "high", "estimate": None, "prev": None})
+
+    events.sort(key=lambda x: x["date"])
+    return events[:10]
