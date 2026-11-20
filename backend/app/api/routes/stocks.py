@@ -7,6 +7,8 @@ from app.services.kis_api import kis_client
 from app.services.market_data import get_us_stock_history, get_news_naver
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
 
+router = APIRouter(prefix="/stocks", tags=["stocks"])
+
 
 async def _get_us_price_yfinance(symbol: str) -> dict:
     """yfinance로 미국 주식 현재가 조회 (KIS 실패시 fallback)"""
@@ -31,7 +33,14 @@ async def _get_us_price_yfinance(symbol: str) -> dict:
         }
     return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
-router = APIRouter(prefix="/stocks", tags=["stocks"])
+@router.get("/test/kis")
+async def test_kis_connection(current_user: User = Depends(get_current_user)):
+    """KIS API 연결 테스트"""
+    try:
+        token = await kis_client._get_token()
+        return {"status": "ok", "token_preview": token[:20] + "..."}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "hint": ".env 파일의 KIS_APP_KEY, KIS_APP_SECRET 확인"}
 
 
 @router.get("/kr/{symbol}")
