@@ -15,7 +15,7 @@ SHAPE=VM.Standard.A1.Flex
 OCPUS=1
 MEM_GB=2
 INTERVAL=${INTERVAL:-90}
-KEY=${KEY:-$HOME/.ssh/id_ed25519}
+KEY=${KEY:-$HOME/.ssh/oci_rsa}   # Cloud Shell 은 FIPS 모드라 ed25519 키가 안 됨 → RSA
 
 say() { echo "[$(date +%H:%M:%S)] $*"; }
 q() { oci "$@" --raw-output 2>/dev/null; }
@@ -73,7 +73,7 @@ else
   # --- 3) SSH 키 ---
   if [ ! -f "$KEY.pub" ]; then
     mkdir -p "$(dirname "$KEY")"
-    ssh-keygen -t ed25519 -N "" -f "$KEY" -q || { say "ssh-keygen 실패"; exit 1; }
+    ssh-keygen -t rsa -b 4096 -N "" -f "$KEY" -q || { say "ssh-keygen 실패"; exit 1; }
     say "SSH 키 생성: $KEY (개인키) / $KEY.pub"
   fi
 
