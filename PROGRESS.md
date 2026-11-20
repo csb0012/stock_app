@@ -107,6 +107,10 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 ### 2026-11-20 — 로그인 오류 수정
 - `pip install -r requirements.txt --upgrade` 안내 때문에 bcrypt가 5.x로 올라가 passlib 비밀번호 검증이 `ValueError(password cannot be longer than 72 bytes)` → 로그인 500. requirements.txt에 `bcrypt==4.0.1`, `sqlalchemy[asyncio]` 고정, 갱신 명령에서 `--upgrade` 제거
 
+### 2026-11-20 — 시작 오류 수정
+- `stock_list.json` 삭제로 `backend/app/data/` 폴더가 git에서 사라져 종목마스터 캐시 저장 시 `FileNotFoundError` → 백엔드 시작 실패. 저장 전에 폴더 생성하도록 수정
+- 확인됨: 회사 PC에서 KIS 종목마스터 다운로드·파싱은 정상 (저장 단계까지 도달)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류

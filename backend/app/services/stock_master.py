@@ -137,6 +137,8 @@ async def load(force: bool = False):
                 return
             raise MasterError(f"종목마스터 다운로드 실패 ({_BASE}): {e}") from e
         ts = time.time()
+        # data/ 폴더는 git에 빈 폴더로 남지 않으므로 없으면 만든다
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         _CACHE_PATH.write_text(json.dumps({"ts": ts, "items": items}, ensure_ascii=False), encoding="utf-8")
         _set(items, ts)
 
