@@ -1,0 +1,53 @@
+import { useState } from "react";
+import { ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight, Minus } from "lucide-react";
+
+type Factor = { name: string; short: string; detail: string; impact: "up" | "down" | "neutral"; score: number; max: number };
+
+const IMPACT = {
+  up: { color: "var(--green)", Icon: ArrowUpRight },
+  down: { color: "var(--red)", Icon: ArrowDownRight },
+  neutral: { color: "var(--text-muted)", Icon: Minus },
+};
+
+/** 내일 전망 근거: 한 줄 요약 + 펼치면 지표별 상세 */
+export default function PredictionReasons({ pred, defaultOpen = false }: { pred: any; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!pred) return null;
+  const factors: Factor[] = pred.factors || [];
+  const ups = factors.filter((f) => f.impact === "up").length;
+  const downs = factors.filter((f) => f.impact === "down").length;
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      {pred.summary && (
+        <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{pred.summary}</p>
+      )}
+      {factors.length > 0 && (
+        <button
+          onClick={() => setOpen(!open)}
+          style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 4, background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", fontSize: 11 }}
+        >
+          {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          근거 {open ? "접기" : "자세히"} (상승 {ups} · 하락 {downs} · 중립 {factors.length - ups - downs})
+        </button>
+      )}
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+          {factors.map((f) => {
+            const { color, Icon } = IMPACT[f.impact] || IMPACT.neutral;
+            return (
+              <div key={f.name} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, background: "var(--bg-secondary)", borderRadius: 6, padding: "6px 8px" }}>
+                <Icon size={13} style={{ color, flexShrink: 0, marginTop: 1 }} />
+                <div style={{ flex: 1 }}>
+                  <span style={{ fontWeight: 600, color }}>{f.name}</span>
+                  <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>{f.detail}</span>
+                </div>
+                <span style={{ color: "var(--text-muted)", fontSize: 11, flexShrink: 0 }}>{f.score}/{f.max}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}

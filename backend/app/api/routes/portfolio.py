@@ -4,14 +4,13 @@ from sqlalchemy import select, delete
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
-import yfinance as yf
 
 from app.core.database import get_db
 from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.models.portfolio import PortfolioItem
-from app.services.kis_api import kis_client
-from app.services.analysis import calc_technical_indicators, predict_next_day
+from app.services import stock_master
+from app.services.quote import analyze_items, get_usdkrw
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -65,13 +64,17 @@ async def add_to_portfolio(
         )
     )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Already in portfolio")
+        raise HTTPException(status_code=400, detail="이미 투자종목에 있습니다")
+
+    master = stock_master.get(req.market, req.symbol)
+    if not master:
+        raise HTTPException(status_code=400, detail=f"종목마스터에 없는 종목입니다: {req.market} {req.symbol}")
 
     item = PortfolioItem(
         user_id=current_user.id,
         symbol=req.symbol,
         market=req.market,
-        name=req.name,
+        name=master["name"],
         quantity=req.quantity,
         avg_price=req.avg_price,
     )
@@ -140,65 +143,36 @@ async def remove_from_portfolio(
     return {"message": "Removed"}
 
 
-async def _fetch_price_and_predict(item: dict) -> dict:
-    """보유 종목 현재가 + 예측 조회"""
-    symbol = item["symbol"]
-    market = item["market"]
+def _norm(s: str) -> str:
+    return (s or "").replace(" ", "").lower()
 
-    def _yf_fetch():
-        yf_sym = f"{symbol}.KS" if market == "KR" else symbol
-        t = yf.Ticker(yf_sym)
-        hist = t.history(period="6mo")
-        if market == "KR" and len(hist) < 20:
-            t2 = yf.Ticker(f"{symbol}.KQ")
-            hist2 = t2.history(period="6mo")
-            if len(hist2) >= 20:
-                hist = hist2
-        return hist
 
-    try:
-        hist = await asyncio.get_event_loop().run_in_executor(None, _yf_fetch)
-        if len(hist) < 20:
-            return {**item, "current_price": 0, "change_rate": 0, "prediction": None, "error": "데이터 부족"}
+def _code_warning(item: dict) -> str | None:
+    """저장된 종목코드가 실제로 그 종목인지 공식 종목마스터로 확인"""
+    m = stock_master.get(item["market"], item["symbol"])
+    if not m:
+        return f"종목코드 {item['symbol']} 는 공식 종목마스터에 없습니다. 삭제 후 검색해서 다시 추가하세요."
+    if item.get("name") and _norm(item["name"]) != _norm(m["name"]):
+        return (f"종목코드 {item['symbol']} 의 실제 종목은 '{m['name']}' 입니다 (저장된 이름: '{item['name']}'). "
+                f"삭제 후 검색해서 다시 추가하세요.")
+    return None
 
-        candles = []
-        for ts, row in hist.iterrows():
-            import pandas as pd
-            c = float(row["Close"])
-            if pd.isna(c) or c <= 0:
-                continue
-            candles.append({
-                "date": str(ts.date()),
-                "open": float(row["Open"]) if not pd.isna(row["Open"]) else c,
-                "high": float(row["High"]) if not pd.isna(row["High"]) else c,
-                "low": float(row["Low"]) if not pd.isna(row["Low"]) else c,
-                "close": c,
-                "volume": int(row["Volume"]) if not pd.isna(row["Volume"]) else 0,
-            })
 
-        current_price = candles[-1]["close"] if candles else 0
-        prev_price = candles[-2]["close"] if len(candles) >= 2 else current_price
-        change_rate = ((current_price - prev_price) / prev_price * 100) if prev_price > 0 else 0
-
-        indicators = calc_technical_indicators(candles)
-        prediction = predict_next_day(candles, indicators)
-
-        # 수익/손실 계산
-        avg_price = item.get("avg_price", 0)
-        quantity = item.get("quantity", 0)
-        pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
-        pnl_amount = (current_price - avg_price) * quantity if avg_price > 0 and quantity > 0 else 0
-
-        return {
-            **item,
-            "current_price": current_price,
-            "change_rate": round(change_rate, 2),
-            "pnl_pct": round(pnl_pct, 2),
-            "pnl_amount": round(pnl_amount, 2),
-            "prediction": prediction,
-        }
-    except Exception as e:
-        return {**item, "current_price": 0, "change_rate": 0, "prediction": None, "error": str(e)}
+def _with_pnl(item: dict, r: dict) -> dict:
+    price = r["price"]
+    avg, qty = item.get("avg_price", 0), item.get("quantity", 0)
+    invested = avg * qty
+    value = price * qty
+    return {
+        **item,
+        "current_price": price,
+        "change_rate": r["change_rate"],
+        "invested": round(invested, 2),
+        "value": round(value, 2),
+        "pnl_pct": round((price - avg) / avg * 100, 2) if avg > 0 else 0,
+        "pnl_amount": round(value - invested, 2) if avg > 0 else 0,
+        "prediction": r["prediction"],
+    }
 
 
 @router.get("/analysis")
@@ -206,19 +180,65 @@ async def analyze_portfolio(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """보유 종목별 현재가 + 예측"""
+    """보유 종목별 현재가·손익·내일 전망 + 통화별 합계 + 원화 환산 총합"""
     result = await db.execute(
         select(PortfolioItem).where(PortfolioItem.user_id == current_user.id)
     )
-    items = result.scalars().all()
-    if not items:
-        return []
-
-    item_dicts = [
+    items = [
         {"id": i.id, "symbol": i.symbol, "market": i.market, "name": i.name,
          "quantity": i.quantity, "avg_price": i.avg_price}
-        for i in items
+        for i in result.scalars().all()
     ]
 
-    results = await asyncio.gather(*[_fetch_price_and_predict(item) for item in item_dicts])
-    return list(results)
+    has_us = any(i["market"] == "US" for i in items)
+
+    async def fx():
+        if not has_us:
+            return None, None
+        try:
+            return await get_usdkrw(), None
+        except Exception as e:
+            return None, str(e)
+
+    analyzed, (usdkrw, fx_error) = await asyncio.gather(analyze_items(items), fx())
+
+    rows = []
+    totals = {cur: {"invested": 0.0, "value": 0.0, "pnl": 0.0, "count": 0} for cur in ("KRW", "USD")}
+    for item in items:
+        r = analyzed.get((item["market"], item["symbol"]), {"error": "분석 결과 없음"})
+        warning = _code_warning(item)
+        if "error" in r:
+            rows.append({**item, "error": r["error"], "warning": warning, "prediction": None})
+            continue
+        row = _with_pnl(item, r)
+        row["warning"] = warning
+        rows.append(row)
+        t = totals["KRW" if item["market"] == "KR" else "USD"]
+        t["invested"] += row["invested"]
+        t["value"] += row["value"]
+        t["pnl"] += row["pnl_amount"]
+        t["count"] += 1
+
+    for t in totals.values():
+        t["pnl_pct"] = round(t["pnl"] / t["invested"] * 100, 2) if t["invested"] > 0 else 0
+        for k in ("invested", "value", "pnl"):
+            t[k] = round(t[k], 2)
+
+    combined = None
+    if usdkrw or not has_us:
+        rate = usdkrw or 0
+        k, u = totals["KRW"], totals["USD"]
+        inv = k["invested"] + u["invested"] * rate
+        val = k["value"] + u["value"] * rate
+        combined = {
+            "invested": round(inv), "value": round(val), "pnl": round(val - inv),
+            "pnl_pct": round((val - inv) / inv * 100, 2) if inv > 0 else 0,
+        }
+
+    return {
+        "items": rows,
+        "totals": totals,
+        "usdkrw": round(usdkrw, 2) if usdkrw else None,
+        "fx_error": fx_error,
+        "combined_krw": combined,
+    }

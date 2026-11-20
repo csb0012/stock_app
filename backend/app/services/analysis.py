@@ -67,11 +67,18 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
     - 완벽한 예측은 없으며, 참고용 확률입니다
     """
     if not indicators or not candles:
-        return {"probability": 50, "signal": "중립", "confidence": "낮음", "reasons": []}
+        return {"probability": 50, "signal": "중립", "confidence": "낮음", "reasons": [], "factors": [],
+                "summary": "분석에 필요한 가격 데이터가 부족함"}
 
     score = 0
     max_score = 0
-    reasons = []
+    factors = []  # {name, short, detail, impact(up/down/neutral), score, max}
+
+    def add(name: str, short: str, detail: str, got: int, full: int):
+        ratio = got / full if full else 0.5
+        impact = "up" if ratio >= 0.6 else "down" if ratio <= 0.3 else "neutral"
+        factors.append({"name": name, "short": short, "detail": detail,
+                        "impact": impact, "score": got, "max": full})
 
     curr = indicators.get("current_price", 0)
 
@@ -80,20 +87,17 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
     if rsi is not None:
         max_score += 30
         if rsi < 30:
-            score += 30
-            reasons.append(f"RSI {rsi:.1f} → 과매도 구간 (반등 가능성)")
+            got, short, detail = 30, "RSI 과매도", f"RSI {rsi:.1f} → 과매도 구간 (반등 가능성)"
         elif rsi < 45:
-            score += 20
-            reasons.append(f"RSI {rsi:.1f} → 약세권 하단")
+            got, short, detail = 20, "RSI 약세권 하단", f"RSI {rsi:.1f} → 약세권 하단 (추가 하락 여력 적음)"
         elif rsi < 55:
-            score += 15
-            reasons.append(f"RSI {rsi:.1f} → 중립")
+            got, short, detail = 15, "RSI 중립", f"RSI {rsi:.1f} → 중립"
         elif rsi < 70:
-            score += 10
-            reasons.append(f"RSI {rsi:.1f} → 강세권")
+            got, short, detail = 10, "RSI 강세권", f"RSI {rsi:.1f} → 강세권 (상승 여력 줄어드는 중)"
         else:
-            score += 0
-            reasons.append(f"RSI {rsi:.1f} → 과매수 구간 (조정 주의)")
+            got, short, detail = 0, "RSI 과매수", f"RSI {rsi:.1f} → 과매수 구간 (조정 주의)"
+        score += got
+        add("RSI", short, detail, got, 30)
 
     # 2. MACD 분석 (25점)
     macd = indicators.get("macd")
@@ -102,40 +106,35 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
     if macd is not None and macd_signal is not None:
         max_score += 25
         if macd > macd_signal and macd_hist and macd_hist > 0:
-            score += 25
-            reasons.append("MACD 골든크로스 / 상승 모멘텀")
+            got, short, detail = 25, "MACD 상승 모멘텀", "MACD가 시그널선 위 + 히스토그램 플러스 → 상승 모멘텀"
         elif macd > macd_signal:
-            score += 15
-            reasons.append("MACD 양전 (매수신호)")
+            got, short, detail = 15, "MACD 매수신호", "MACD가 시그널선 위 (매수신호)"
         elif macd_hist and macd_hist > 0:
-            score += 10
-            reasons.append("MACD 히스토그램 플러스")
+            got, short, detail = 10, "MACD 혼조", "MACD 히스토그램만 플러스 (방향 불분명)"
         else:
-            score += 0
-            reasons.append("MACD 데드크로스 (매도압력)")
+            got, short, detail = 0, "MACD 데드크로스", "MACD가 시그널선 아래 (매도압력)"
+        score += got
+        add("MACD", short, detail, got, 25)
 
     # 3. 볼린저밴드 (20점)
     bb_lower = indicators.get("bb_lower")
     bb_upper = indicators.get("bb_upper")
-    bb_mid = indicators.get("bb_mid")
     if bb_lower and bb_upper and curr:
         max_score += 20
         bb_pos = (curr - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+        pos_txt = f"밴드 내 위치 {bb_pos * 100:.0f}%"
         if bb_pos < 0.2:
-            score += 20
-            reasons.append(f"볼린저밴드 하단 근처 → 반등 기대")
+            got, short, detail = 20, "볼린저 하단 근처", f"볼린저밴드 하단 근처 ({pos_txt}) → 반등 기대"
         elif bb_pos < 0.4:
-            score += 15
-            reasons.append("볼린저밴드 중하단")
+            got, short, detail = 15, "볼린저 중하단", f"볼린저밴드 중하단 ({pos_txt})"
         elif bb_pos < 0.6:
-            score += 10
-            reasons.append("볼린저밴드 중간")
+            got, short, detail = 10, "볼린저 중간", f"볼린저밴드 중간 ({pos_txt})"
         elif bb_pos < 0.8:
-            score += 5
-            reasons.append("볼린저밴드 중상단")
+            got, short, detail = 5, "볼린저 중상단", f"볼린저밴드 중상단 ({pos_txt}) → 상승 여력 제한"
         else:
-            score += 0
-            reasons.append("볼린저밴드 상단 → 과열 주의")
+            got, short, detail = 0, "볼린저 상단 과열", f"볼린저밴드 상단 ({pos_txt}) → 과열 주의"
+        score += got
+        add("볼린저밴드", short, detail, got, 20)
 
     # 4. 이동평균 배열 (25점)
     ma5 = indicators.get("ma5")
@@ -144,20 +143,21 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
     if ma5 and ma20 and curr:
         max_score += 25
         if curr > ma5 > ma20:
-            score += 25
+            got = 25
             if ma60 and curr > ma60:
-                reasons.append("정배열 (5MA > 20MA, 현재가 위) → 상승 추세")
+                short, detail = "이평선 정배열", "현재가 > 5일선 > 20일선, 60일선 위 → 상승 추세"
             else:
-                reasons.append("단기 정배열 (5MA > 20MA)")
+                short, detail = "단기 정배열", "현재가 > 5일선 > 20일선 (단기 상승 추세)"
         elif curr > ma20:
-            score += 15
-            reasons.append("20일 이평 위 (중기 지지)")
+            got, short, detail = 15, "20일선 지지", "현재가가 20일 이평 위 (중기 지지)"
         elif curr > ma5:
-            score += 10
-            reasons.append("5일 이평 위 (단기 지지)")
+            got, short, detail = 10, "5일선 위", "5일 이평 위지만 20일선 아래 (단기 반등 시도)"
         else:
-            score += 0
-            reasons.append("이동평균 하회 (하락 추세)")
+            got, short, detail = 0, "이평선 하회", "현재가가 5일·20일 이평 아래 (하락 추세)"
+        score += got
+        add("이동평균", short, detail, got, 25)
+
+    reasons = [f["detail"] for f in factors]
 
     # 확률 계산
     probability = int((score / max_score * 60) + 20) if max_score > 0 else 50
@@ -209,6 +209,22 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
 
     confidence = "높음" if max_score >= 80 and len(reasons) >= 3 else "중간" if max_score >= 50 else "낮음"
 
+    ups = [f["short"] for f in factors if f["impact"] == "up"]
+    downs = [f["short"] for f in factors if f["impact"] == "down"]
+    up_txt, down_txt = ", ".join(ups), ", ".join(downs)
+    if probability >= 55:
+        summary = f"상승 우세 — 근거: {up_txt or '지표 종합'}"
+        if downs:
+            summary += f" / 주의: {down_txt}"
+    elif probability < 45:
+        summary = f"하락 우세 — 근거: {down_txt or '지표 종합'}"
+        if ups:
+            summary += f" / 긍정 요인: {up_txt}"
+    else:
+        summary = "방향성 약함 — 상승·하락 신호가 섞여 있음"
+        if ups or downs:
+            summary += f" (긍정: {up_txt or '없음'} / 부정: {down_txt or '없음'})"
+
     return {
         "probability": probability,
         "signal": signal,
@@ -219,6 +235,8 @@ def predict_next_day(candles: list, indicators: dict) -> dict:
         "entry_price": entry_price,
         "entry_comment": entry_comment,
         "reasons": reasons,
+        "factors": factors,
+        "summary": summary,
         "disclaimer": "이 분석은 참고용이며 투자 손실에 대한 책임을 지지 않습니다.",
     }
 

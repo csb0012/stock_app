@@ -21,6 +21,11 @@ api.interceptors.response.use(
 
 export default api;
 
+/** 백엔드가 보낸 오류 메시지(detail)를 꺼낸다 — 화면에 그대로 보여주기 위함 */
+export function errMsg(e: any): string {
+  return e?.response?.data?.detail || e?.message || "알 수 없는 오류";
+}
+
 // Auth
 export const authApi = {
   login: (username: string, password: string, totp_code?: string) =>
@@ -43,8 +48,9 @@ export const stockApi = {
   volumeSurge: () => api.get("/stocks/volume-surge"),
   longterm: () => api.get("/stocks/recommendations/longterm"),
   shortterm: () => api.get("/stocks/recommendations/shortterm"),
-  search: (q: string, market = "ALL") =>
-    api.get(`/stocks/search?q=${encodeURIComponent(q)}&market=${market}`),
+  search: (q: string, market = "ALL", limit = 30) =>
+    api.get(`/stocks/search?q=${encodeURIComponent(q)}&market=${market}&limit=${limit}`),
+  quote: (market: string, symbol: string) => api.get(`/stocks/quote/${market}/${encodeURIComponent(symbol)}`),
   screenerKR: (mode: string) => api.get(`/stocks/screener/kr/${mode}`),
   screenerUS: (mode: string) => api.get(`/stocks/screener/us/${mode}`),
 };
@@ -55,6 +61,8 @@ export const watchlistApi = {
   add: (symbol: string, market: string, name: string) =>
     api.post("/watchlist/", { symbol, market, name }),
   remove: (id: number) => api.delete(`/watchlist/${id}`),
+  update: (id: number, data: { memo?: string; target_price?: number }) => api.put(`/watchlist/${id}`, data),
+  analysis: () => api.get("/watchlist/analysis"),
 };
 
 // Portfolio

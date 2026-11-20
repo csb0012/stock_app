@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { stockApi } from "../api/client";
+import { stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
+import PredictionReasons from "../components/common/PredictionReasons";
 import { TrendingUp, Zap, AlertTriangle } from "lucide-react";
 
 function ProbabilityBar({ value }: { value: number }) {
@@ -78,19 +79,9 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
       )}
 
       {/* 근거 */}
-      {pred.reasons && pred.reasons.length > 0 && (
-        <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
-          <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>분석 근거</p>
-          <ul style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            {pred.reasons.map((r: string, i: number) => (
-              <li key={i} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", gap: 6 }}>
-                <span style={{ color: "var(--accent)", flexShrink: 0 }}>•</span>
-                {r}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 2 }}>
+        <PredictionReasons pred={pred} />
+      </div>
 
       {/* 장기 점수 */}
       {type === "long" && item.long_term_score > 0 && (
@@ -108,8 +99,13 @@ function StockCard({ item, type }: { item: any; type: "long" | "short" }) {
   );
 }
 
+type Market = "KR" | "US";
+type Sort = "default" | "prob_desc" | "prob_asc";
+
 export default function Recommendations() {
   const [tab, setTab] = useState<"long" | "short">("long");
+  const [market, setMarket] = useState<Market>("KR");
+  const [sort, setSort] = useState<Sort>("default");
 
   const longQuery = useQuery({
     queryKey: ["longterm"],
@@ -126,6 +122,21 @@ export default function Recommendations() {
   });
 
   const query = tab === "long" ? longQuery : shortQuery;
+  const all: any[] = query.data?.items || [];
+  const errors: any[] = (query.data?.errors || []).filter((e: any) => e.market === market);
+
+  const prob = (x: any) => x.prediction?.probability ?? 0;
+  const items = all
+    .filter((x) => x.market === market)
+    .sort((a, b) =>
+      sort === "prob_desc" ? prob(b) - prob(a)
+      : sort === "prob_asc" ? prob(a) - prob(b)
+      : tab === "long" ? (b.long_term_score || 0) - (a.long_term_score || 0)
+      : prob(b) - prob(a)
+    );
+
+  const countKR = all.filter((x) => x.market === "KR").length;
+  const countUS = all.filter((x) => x.market === "US").length;
 
   return (
     <div>
@@ -143,8 +154,8 @@ export default function Recommendations() {
         </p>
       </div>
 
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+      {/* 장기/단기 탭 */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
         <button className={`btn ${tab === "long" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("long")}>
           <TrendingUp size={14} />
           장기투자 추천
@@ -155,12 +166,48 @@ export default function Recommendations() {
         </button>
       </div>
 
+      {/* 국내/미국 + 정렬 */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {(["KR", "US"] as Market[]).map((m) => (
+            <button key={m} className={`btn ${market === m ? "btn-primary" : "btn-ghost"}`} style={{ minWidth: 90 }} onClick={() => setMarket(m)}>
+              {m === "KR" ? `🇰🇷 국내 (${countKR})` : `🇺🇸 미국 (${countUS})`}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {([
+            ["default", tab === "long" ? "장기 적합도순" : "추천순"],
+            ["prob_desc", "상승확률 높은 순"],
+            ["prob_asc", "상승확률 낮은 순"],
+          ] as [Sort, string][]).map(([k, label]) => (
+            <button key={k} className={`btn ${sort === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setSort(k)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {query.isLoading && (
-        <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>분석 중...</div>
+        <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>분석 중... (국내 종목은 KIS에서 한 종목씩 받아 10초 정도 걸립니다)</div>
+      )}
+      {query.error && (
+        <div className="card" style={{ padding: 20, borderColor: "rgba(248,113,113,0.4)", marginBottom: 16 }}>
+          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>추천 분석 실패</p>
+          <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(query.error)}</p>
+        </div>
+      )}
+      {errors.length > 0 && (
+        <p style={{ color: "var(--yellow)", fontSize: 12, marginBottom: 12 }}>
+          분석 못한 종목 {errors.length}개: {errors.slice(0, 3).map((e) => `${e.symbol}: ${e.error}`).join(" / ")}{errors.length > 3 ? " …" : ""}
+        </p>
+      )}
+      {query.data && items.length === 0 && (
+        <p style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 40 }}>이 시장의 추천 종목이 없습니다</p>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 16 }}>
-        {(query.data || []).map((item: any) => (
+        {items.map((item: any) => (
           <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} />
         ))}
       </div>

@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { portfolioApi, stockApi } from "../api/client";
+import { portfolioApi, stockApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
-import { Briefcase, Plus, Trash2, X, Search, Edit2, Check } from "lucide-react";
+import PredictionReasons from "../components/common/PredictionReasons";
+import { probLabel } from "../components/common/format";
+import { Briefcase, Plus, Trash2, X, Search, Edit2, Check, AlertTriangle } from "lucide-react";
 
 function useDebounce(value: string, delay: number) {
   const [debounced, setDebounced] = useState(value);
@@ -15,7 +17,7 @@ function useDebounce(value: string, delay: number) {
 
 function ProbBadge({ value }: { value: number }) {
   const color = value >= 65 ? "var(--green)" : value >= 45 ? "var(--yellow)" : "var(--red)";
-  const label = value >= 65 ? "상승 유력" : value >= 55 ? "약상승" : value >= 45 ? "중립" : "하락 주의";
+  const label = probLabel(value);
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       <div style={{ width: 50, height: 5, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
@@ -46,7 +48,7 @@ export default function Portfolio() {
     queryFn: () => portfolioApi.list().then((r) => r.data),
   });
 
-  const { data: analysis = [], isFetching: analyzing } = useQuery({
+  const { data: analysis, isFetching: analyzing, error: analysisError } = useQuery({
     queryKey: ["portfolio-analysis"],
     queryFn: () => portfolioApi.analysis().then((r) => r.data),
     enabled: (items as any[]).length > 0,
@@ -114,19 +116,19 @@ export default function Portfolio() {
     addMutation.mutate({ ...selectedStock, qty: quantity, price: avgPrice || "0" });
   }
 
-  // Merge base list with analysis data
+  // Merge base list with analysis data (id 기준)
   const portfolioSymbols = new Set((items as any[]).map((i: any) => i.symbol));
-  const analysisMap = new Map((analysis as any[]).map((a: any) => [a.symbol, a]));
+  const analysisMap = new Map(((analysis?.items || []) as any[]).map((a: any) => [a.id, a]));
 
   const enriched = (items as any[]).map((item: any) => ({
     ...item,
-    ...(analysisMap.get(item.symbol) || {}),
+    ...(analysisMap.get(item.id) || {}),
   }));
 
-  const totalInvested = enriched.reduce((sum, i) => sum + (i.avg_price || 0) * (i.quantity || 0), 0);
-  const totalValue = enriched.reduce((sum, i) => sum + (i.current_price || i.avg_price || 0) * (i.quantity || 0), 0);
-  const totalPnl = totalValue - totalInvested;
-  const totalPnlPct = totalInvested > 0 ? (totalPnl / totalInvested * 100) : 0;
+  const totals = analysis?.totals;
+  const combined = analysis?.combined_krw;
+  const hasKR = enriched.some((i) => i.market === "KR");
+  const hasUS = enriched.some((i) => i.market === "US");
 
   return (
     <div>
@@ -141,29 +143,32 @@ export default function Portfolio() {
         </button>
       </div>
 
-      {/* 종합 수익 카드 */}
+      {/* 종합 수익 카드: 국내(원) / 미국(달러) / 총합(원화 환산) */}
       {enriched.length > 0 && (
-        <div className="card" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 20, marginBottom: 24 }}>
-          <div>
-            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>총 투자금액</p>
-            <p style={{ fontWeight: 700, fontSize: 18 }}>
-              {totalInvested > 0 ? `₩${totalInvested.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-"}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 24 }}>
+          {hasKR && <SummaryCard title="🇰🇷 국내 (원)" t={totals?.KRW} cur="KRW" loading={analyzing && !totals} />}
+          {hasUS && <SummaryCard title="🇺🇸 미국 (달러)" t={totals?.USD} cur="USD" loading={analyzing && !totals} />}
+          <div className="card" style={{ borderColor: "rgba(79,142,247,0.4)" }}>
+            <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>
+              총합 (원화 환산)
+              {analysis?.usdkrw && (
+                <span style={{ fontWeight: 400, fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>
+                  환율 $1 = ₩{analysis.usdkrw.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </span>
+              )}
             </p>
-          </div>
-          <div>
-            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>평가금액</p>
-            <p style={{ fontWeight: 700, fontSize: 18 }}>
-              {totalValue > 0 ? `₩${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "-"}
-            </p>
-          </div>
-          <div>
-            <p style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>총 수익/손실</p>
-            <p style={{ fontWeight: 700, fontSize: 18, color: totalPnl >= 0 ? "var(--green)" : "var(--red)" }}>
-              {totalPnl >= 0 ? "+" : ""}{totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-              <span style={{ fontSize: 13, marginLeft: 6 }}>({totalPnlPct >= 0 ? "+" : ""}{totalPnlPct.toFixed(2)}%)</span>
-            </p>
+            {analysis?.fx_error ? (
+              <p style={{ color: "var(--red)", fontSize: 12 }}>환율 조회 실패 — 원화 환산 불가: {analysis.fx_error}</p>
+            ) : combined ? (
+              <SummaryRows invested={combined.invested} value={combined.value} pnl={combined.pnl} pnlPct={combined.pnl_pct} cur="KRW" />
+            ) : (
+              <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{analyzing ? "계산 중..." : "-"}</p>
+            )}
           </div>
         </div>
+      )}
+      {analysisError && (
+        <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 12 }}>시세 조회 실패: {errMsg(analysisError)}</p>
       )}
 
       {/* Add Modal */}
@@ -214,7 +219,7 @@ export default function Portfolio() {
                   <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                     {(searchResults as any[]).filter((s) => !portfolioSymbols.has(s.symbol)).map((item: any) => (
                       <div
-                        key={item.symbol}
+                        key={`${item.market}-${item.symbol}`}
                         onClick={() => handleSelectStock(item)}
                         style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 7, background: "var(--bg-secondary)", cursor: "pointer" }}
                         onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.background = "var(--bg-hover)")}
@@ -269,6 +274,9 @@ export default function Portfolio() {
               </div>
             )}
 
+            {addMutation.error && (
+              <p style={{ color: "var(--red)", fontSize: 12, marginBottom: 8 }}>{errMsg(addMutation.error)}</p>
+            )}
             {selectedStock && (
               <button
                 className="btn btn-primary"
@@ -337,6 +345,16 @@ export default function Portfolio() {
                   </button>
                 </div>
 
+                {item.warning && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 7, padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "var(--red)" }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                    {item.warning}
+                  </div>
+                )}
+                {item.error && (
+                  <p style={{ color: "var(--red)", fontSize: 12, marginBottom: 10 }}>시세 조회 실패: {item.error}</p>
+                )}
+
                 {/* 보유 정보 + 수익 */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
                   <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
@@ -385,8 +403,8 @@ export default function Portfolio() {
                 </div>
 
                 {/* 예측 + 수정 버튼 */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12 }}>
+                  <div style={{ flex: 1, maxWidth: 560 }}>
                     {pred.probability ? (
                       <div>
                         <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>내일 전망</p>
@@ -396,6 +414,7 @@ export default function Portfolio() {
                             {pred.signal} · {pred.confidence} 신뢰도
                           </p>
                         )}
+                        <PredictionReasons pred={pred} />
                       </div>
                     ) : (
                       <p style={{ fontSize: 12, color: "var(--text-muted)" }}>분석 데이터 없음</p>
@@ -432,6 +451,49 @@ export default function Portfolio() {
             );
           })}
         </div>
+      )}
+    </div>
+  );
+}
+
+function money(v: number, cur: "KRW" | "USD", signed = false): string {
+  const sign = signed ? (v >= 0 ? "+" : "-") : v < 0 ? "-" : "";
+  const abs = Math.abs(v);
+  return cur === "KRW"
+    ? `${sign}₩${Math.round(abs).toLocaleString()}`
+    : `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function SummaryRows({ invested, value, pnl, pnlPct, cur }: { invested: number; value: number; pnl: number; pnlPct: number; cur: "KRW" | "USD" }) {
+  const color = pnl >= 0 ? "var(--green)" : "var(--red)";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span style={{ color: "var(--text-muted)" }}>투자금액</span>
+        <span style={{ fontWeight: 600 }}>{money(invested, cur)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span style={{ color: "var(--text-muted)" }}>평가금액</span>
+        <span style={{ fontWeight: 600 }}>{money(value, cur)}</span>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <span style={{ color: "var(--text-muted)" }}>수익/손실</span>
+        <span style={{ fontWeight: 700, color }}>
+          {money(pnl, cur, true)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function SummaryCard({ title, t, cur, loading }: { title: string; t: any; cur: "KRW" | "USD"; loading: boolean }) {
+  return (
+    <div className="card">
+      <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>{title}</p>
+      {t ? (
+        <SummaryRows invested={t.invested} value={t.value} pnl={t.pnl} pnlPct={t.pnl_pct} cur={cur} />
+      ) : (
+        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{loading ? "계산 중..." : "-"}</p>
       )}
     </div>
   );

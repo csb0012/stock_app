@@ -10,7 +10,7 @@ python-multipart
 httpx
 websockets
 apscheduler
-yfinance
+yfinance>=0.2.54   # yf.screen (미국 스크리너) 필요
 pandas
 pandas-ta
 numpy

@@ -1,7 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { watchlistApi, stockApi } from "../api/client";
-import { Star, Plus, Trash2, X, Search } from "lucide-react";
+import { watchlistApi, stockApi, errMsg } from "../api/client";
+import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw } from "lucide-react";
+import ChangeTag from "../components/common/ChangeTag";
+import PredictionReasons from "../components/common/PredictionReasons";
+import { fmtPrice, fmtSigned, probColor, probLabel } from "../components/common/format";
+
+type Sort = "added" | "change" | "prob" | "target";
 
 function useDebounce(value: string, delay: number) {
   const [debounced, setDebounced] = useState(value);
@@ -31,17 +36,51 @@ export default function Watchlist() {
     enabled: debouncedQ.length >= 1,
   });
 
+  const { data: analysis = [], isFetching: analyzing, error: analysisError, refetch } = useQuery({
+    queryKey: ["watchlist-analysis"],
+    queryFn: () => watchlistApi.analysis().then((r) => r.data),
+    enabled: (watchlist as any[]).length > 0,
+    staleTime: 60_000,
+  });
+
+  const [sort, setSort] = useState<Sort>("added");
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editMemo, setEditMemo] = useState("");
+  const [editTarget, setEditTarget] = useState("");
+
   const watchlistSymbols = new Set((watchlist as any[]).map((w: any) => w.symbol));
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["watchlist"] });
+    qc.invalidateQueries({ queryKey: ["watchlist-analysis"] });
+  };
 
   const addMutation = useMutation({
     mutationFn: (item: any) => watchlistApi.add(item.symbol, item.market, item.name),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist"] }),
+    onSuccess: refresh,
   });
 
   const removeMutation = useMutation({
     mutationFn: (id: number) => watchlistApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["watchlist"] }),
+    onSuccess: refresh,
   });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, memo, target }: { id: number; memo: string; target: string }) =>
+      watchlistApi.update(id, { memo, target_price: target ? parseFloat(target) : 0 }),
+    onSuccess: () => { setEditId(null); refresh(); },
+  });
+
+  const analysisMap = new Map((analysis as any[]).map((a: any) => [a.id, a]));
+  const rows = (watchlist as any[]).map((w: any) => ({ ...w, ...(analysisMap.get(w.id) || {}) }));
+  const prob = (x: any) => x.prediction?.probability ?? -1;
+  const sorted = [...rows].sort((a, b) =>
+    sort === "change" ? (b.change_rate ?? -999) - (a.change_rate ?? -999)
+    : sort === "prob" ? prob(b) - prob(a)
+    : sort === "target" ? (a.target_gap_pct ?? 999) - (b.target_gap_pct ?? 999)
+    : a.id - b.id
+  );
+  const reachedCount = rows.filter((r) => r.target_reached).length;
 
   function openModal() {
     setShowAdd(true);
@@ -59,7 +98,7 @@ export default function Watchlist() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>관심종목</h1>
-          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>관심 있는 종목을 모아보세요</p>
+          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>현재가 · 내일 전망 · 메모 · 목표 매수가 알림</p>
         </div>
         <button className="btn btn-primary" onClick={openModal}>
           <Plus size={14} />
@@ -117,7 +156,7 @@ export default function Watchlist() {
                     const inList = watchlistSymbols.has(item.symbol);
                     return (
                       <div
-                        key={item.symbol}
+                        key={`${item.market}-${item.symbol}`}
                         style={{
                           display: "flex", alignItems: "center", justifyContent: "space-between",
                           padding: "10px 12px", borderRadius: 8,
@@ -162,32 +201,151 @@ export default function Watchlist() {
       {/* 관심종목 목록 */}
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
-      ) : (watchlist as any[]).length === 0 ? (
+      ) : rows.length === 0 ? (
         <div style={{ textAlign: "center", paddingTop: 60 }}>
           <Star size={40} style={{ color: "var(--border)", margin: "0 auto 12px" }} />
           <p style={{ color: "var(--text-muted)" }}>관심종목을 추가해보세요</p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {(watchlist as any[]).map((item: any) => (
-            <div key={item.id} className="card" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <Star size={16} style={{ color: "var(--yellow)" }} />
-                <div>
-                  <p style={{ fontWeight: 600, fontSize: 14 }}>{item.name || item.symbol}</p>
-                  <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{item.symbol} · {item.market === "KR" ? "국내" : "미국"}</p>
-                </div>
-              </div>
-              <button
-                className="btn btn-ghost"
-                style={{ padding: "6px 10px", color: "var(--red)" }}
-                onClick={() => removeMutation.mutate(item.id)}
-              >
-                <Trash2 size={14} />
+        <>
+          {/* 정렬 + 새로고침 */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {([["added", "추가순"], ["change", "등락률순"], ["prob", "상승확률순"], ["target", "목표가 근접순"]] as [Sort, string][]).map(([k, label]) => (
+                <button key={k} className={`btn ${sort === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setSort(k)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {reachedCount > 0 && (
+                <span className="badge badge-up"><Target size={11} style={{ marginRight: 4 }} />목표가 도달 {reachedCount}종목</span>
+              )}
+              <button className="btn btn-ghost" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => refetch()} disabled={analyzing}>
+                <RefreshCw size={13} />
+                {analyzing ? "분석 중..." : "새로고침"}
               </button>
             </div>
-          ))}
-        </div>
+          </div>
+          {analysisError && (
+            <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 10 }}>시세 조회 실패: {errMsg(analysisError)}</p>
+          )}
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {sorted.map((item: any) => {
+              const pred = item.prediction;
+              const isEditing = editId === item.id;
+              const range = item.high_period && item.low_period ? item.high_period - item.low_period : 0;
+              const pos = range > 0 ? ((item.current_price - item.low_period) / range) * 100 : null;
+              return (
+                <div key={item.id} className="card" style={{ padding: "14px 16px", borderColor: item.target_reached ? "rgba(52,211,153,0.5)" : undefined }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                    {/* 종목 + 시세 */}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <Star size={14} style={{ color: "var(--yellow)" }} />
+                        <span style={{ fontWeight: 700, fontSize: 15 }}>{item.name || item.symbol}</span>
+                        <span className="badge badge-neutral">{item.symbol}</span>
+                        <span className="badge badge-neutral">{item.market === "KR" ? "국내" : "미국"}</span>
+                        {item.target_reached && <span className="badge badge-up">목표가 도달</span>}
+                      </div>
+                      {item.error ? (
+                        <p style={{ color: "var(--red)", fontSize: 12 }}>시세 조회 실패: {item.error}</p>
+                      ) : item.current_price !== undefined ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", fontSize: 12, color: "var(--text-secondary)" }}>
+                          <strong style={{ fontSize: 16, color: "var(--text-primary)" }}>{fmtPrice(item.current_price, item.market)}</strong>
+                          <ChangeTag value={item.change_rate} />
+                          {item.change_5d != null && <span>5일 {fmtSigned(item.change_5d)}%</span>}
+                          {item.change_20d != null && <span>20일 {fmtSigned(item.change_20d)}%</span>}
+                          {item.rsi != null && <span>RSI {item.rsi}</span>}
+                        </div>
+                      ) : (
+                        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>{analyzing ? "시세 불러오는 중..." : "-"}</p>
+                      )}
+                      {pos !== null && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+                          <span>{item.period_days}일 저가 {fmtPrice(item.low_period, item.market)}</span>
+                          <div style={{ width: 90, height: 4, background: "var(--bg-secondary)", borderRadius: 2, position: "relative" }}>
+                            <div style={{ position: "absolute", left: `calc(${pos}% - 3px)`, top: -2, width: 6, height: 8, borderRadius: 2, background: "var(--accent)" }} />
+                          </div>
+                          <span>고가 {fmtPrice(item.high_period, item.market)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* 내일 전망 */}
+                    <div style={{ minWidth: 220, maxWidth: 360 }}>
+                      {pred && (
+                        <>
+                          <p style={{ fontSize: 11, color: "var(--text-muted)" }}>내일 전망</p>
+                          <p style={{ fontWeight: 700, fontSize: 13, color: probColor(pred.probability) }}>
+                            상승 확률 {pred.probability}% · {probLabel(pred.probability)}
+                          </p>
+                          <PredictionReasons pred={pred} />
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 메모 / 목표가 */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                    {isEditing ? (
+                      <div style={{ display: "flex", gap: 8, flex: 1, flexWrap: "wrap" }}>
+                        <input
+                          value={editMemo}
+                          onChange={(e) => setEditMemo(e.target.value)}
+                          placeholder="메모 (관심 이유, 매수 조건 등)"
+                          style={{ flex: 2, minWidth: 180, padding: "6px 10px", background: "var(--bg-secondary)", border: "1px solid var(--accent)", borderRadius: 6, color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+                        />
+                        <input
+                          type="number"
+                          value={editTarget}
+                          onChange={(e) => setEditTarget(e.target.value)}
+                          placeholder={`목표 매수가 (${item.market === "KR" ? "원" : "$"})`}
+                          style={{ flex: 1, minWidth: 120, padding: "6px 10px", background: "var(--bg-secondary)", border: "1px solid var(--accent)", borderRadius: 6, color: "var(--text-primary)", fontSize: 13, outline: "none" }}
+                        />
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: 14, flex: 1, fontSize: 12, color: "var(--text-secondary)", flexWrap: "wrap" }}>
+                        <span>{item.memo ? `📝 ${item.memo}` : <span style={{ color: "var(--text-muted)" }}>메모 없음</span>}</span>
+                        {item.target_price ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <Target size={12} />
+                            목표 매수가 {fmtPrice(item.target_price, item.market)}
+                            {item.target_gap_pct != null && !item.target_reached && (
+                              <span style={{ color: "var(--text-muted)" }}> (현재가가 {fmtSigned(item.target_gap_pct)}% 위)</span>
+                            )}
+                          </span>
+                        ) : null}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {isEditing ? (
+                        <>
+                          <button className="btn btn-primary" style={{ padding: "5px 12px", fontSize: 12 }}
+                            onClick={() => updateMutation.mutate({ id: item.id, memo: editMemo, target: editTarget })}>
+                            <Check size={13} />저장
+                          </button>
+                          <button className="btn btn-ghost" style={{ padding: "5px 10px" }} onClick={() => setEditId(null)}>
+                            <X size={13} />
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 12 }}
+                          onClick={() => { setEditId(item.id); setEditMemo(item.memo || ""); setEditTarget(item.target_price ? String(item.target_price) : ""); }}>
+                          <Edit2 size={13} />메모·목표가
+                        </button>
+                      )}
+                      <button className="btn btn-ghost" style={{ padding: "5px 10px", color: "var(--red)" }} onClick={() => removeMutation.mutate(item.id)}>
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
