@@ -38,6 +38,17 @@ cp .env.example .env
 python create_admin.py <아이디> <비밀번호>   # 이미 계정이 있으면 UNIQUE 에러 → 재실행 불필요
 ```
 
+### 다른 PC로 옮기기
+git으로 안 넘어가는 파일(.gitignore 대상)은 직접 복사해야 한다:
+- `backend\.env` — KIS 키·계좌번호·SECRET_KEY. **절대 커밋 금지**
+- `backend\stock_app.db` — 로그인 계정, 관심종목, 투자종목 데이터 (안 옮기면 `create_admin.py`로 계정 새로 생성)
+- `.venv`, `node_modules` — 복사하지 말고 새 PC에서 "최초 설치" 절차로 재설치
+```powershell
+cd C:\claude
+git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git
+# 이후 .env, stock_app.db 를 backend\ 에 복사 → 최초 설치 절차 진행
+```
+
 ### 점검용
 - KIS 연결 테스트: `http://localhost:8000/api/stocks/test/kis`
 - 헬스체크: `http://localhost:8000/api/health`
@@ -66,6 +77,10 @@ python create_admin.py <아이디> <비밀번호>   # 이미 계정이 있으면
 - **종목탐색 개편**: 국내/미국 탭 × 거래량급증/거래대금/급등/급하향
   - KR: KIS API 우선 → 실패 시 yfinance 상위 30종목 fallback
   - US: yfinance 상위 50종목
+
+### 2026-11-20 — 문서
+- PROGRESS.md 추가, CLAUDE.md에 pull 방법·절대경로 실행 명령 추가 (`47a03c7`, `ab4bdd6`, `0f1e9d0`)
+- PROGRESS.md에 "다른 PC로 옮기기" 절차 추가 (.env, stock_app.db 수동 복사)
 
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 급등/급하향 API(`FHPST01700000`, `/ranking/fluctuation`) 및 거래대금(`FID_DIV_CLS_CODE=1`) 파라미터 실서버 검증 안 됨 — 실패 시 yfinance fallback으로 동작
