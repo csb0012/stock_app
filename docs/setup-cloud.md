@@ -7,7 +7,7 @@ PC를 켜두지 않아도 앱이 계속 돌아가게 한다. 예를 들어 08:20
 
 | 항목 | 서비스 | 비용 |
 |---|---|---|
-| 서버 | **Oracle Cloud Always Free** — Ampere(ARM) VM, 한국(서울·춘천) 리전 | 무료 한도 안에서 0원 |
+| 서버 | **Oracle Cloud Always Free** — Ampere(ARM) VM, 일본(오사카·도쿄) 리전 | 무료 한도 안에서 0원 |
 | 주소 + HTTPS | **DuckDNS** 무료 서브도메인 + Caddy 자동 인증서(Let's Encrypt) | 0원 |
 | 실행 | 이 저장소의 `docker-compose.cloud.yml` + `deploy/` 스크립트 | — |
 
@@ -31,11 +31,17 @@ PC를 켜두지 않아도 앱이 계속 돌아가게 한다. 예를 들어 08:20
   - 업그레이드했다면 **예산 알림**(Billing → Budgets, 예: 1달러)을 꼭 걸어둔다.
   - 회수돼도 DB 를 매일 백업하므로(아래 "백업"), PC 로 받아 두면 다시 만들 수 있다.
 - **홈 리전은 가입할 때 한 번 정하면 못 바꾼다.** 무료 VM 은 홈 리전에만 만들 수 있다.
-  - **South Korea Central (Seoul)** 또는 **South Korea North (Chuncheon)** 을 고른다. KIS API 를 국내 IP 에서 부르는 게 안전하다.
+  - 2026-11 현재 무료 가입 목록에 한국(서울·춘천) 리전이 없다(무료 자리 부족으로 막혀 있는 것으로 보임).
+  - 한국에서 가장 가까운 **Japan Central (Osaka)** 를 고른다. 도쿄는 무료 자리 부족 사례가 더 많이 보고되어 있어서 오사카를 먼저 권장한다.
+    오사카가 안 되면 **Japan East (Tokyo)** 를 고른다.
+  - 한국과의 지연은 약 30ms 로, 화면을 쓰는 데 체감 차이는 없다.
+  - **KIS API 를 해외 IP 에서 부르는 것은 실서버로 확인 전.** 설치 후 서버에서 아래 명령으로 바로 확인한다:
+    `sudo docker compose -f docker-compose.cloud.yml exec backend python -c "import asyncio;from app.services.kis_api import kis_client;print(asyncio.run(kis_client.get_kr_stock_price('005930')))"`
+    삼성전자 현재가가 나오면 정상이다.
   - Ampere 자리가 없으면 "Out of capacity" 오류가 날 수 있다. 시간을 두고 다시 시도한다.
 
 ## 1. Oracle Cloud 가입·VM 만들기
-1. https://www.oracle.com/cloud/free/ → 가입 (홈 리전: 서울 또는 춘천)
+1. https://www.oracle.com/cloud/free/ → 가입 (홈 리전: Japan Central (Osaka), 안 되면 Japan East (Tokyo))
 2. 콘솔 → **Compute → Instances → Create instance**
    - Image: **Canonical Ubuntu 24.04**
    - Shape: **Ampere → VM.Standard.A1.Flex, OCPU 1, Memory 2GB** (메모리를 늘리지 말 것 — 위 "유휴 회수" 참고)
