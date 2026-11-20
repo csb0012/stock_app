@@ -224,7 +224,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - CPU 를 일부러 돌리는 방식은 하루 한 번으로는 95퍼센타일 기준을 못 넘고(하루 약 72분 이상 필요) 자원 낭비라 채택 안 함
 - `setup-server.sh` 마지막에 현재 메모리 사용률 출력
 
-### 2026-11-20 — Oracle Ampere 자리 부족 대응 (commit `COMMIT_HASH`)
+### 2026-11-20 — Oracle Ampere 자리 부족 대응 (commit `68d9f0f`)
 - 증상: VM 생성 시 `Out of capacity for shape VM.Standard.A1.Flex in availability domain AD-1` (오사카)
 - `deploy/oci-launch-retry.sh` (Oracle Cloud Shell 에서 실행): 공개 서브넷 없으면 VCN·인터넷 게이트웨이·서브넷 생성 → 80/443(+UDP 443) 허용 보안 목록 `stock-web` 생성·연결 → SSH 키 생성 → A1.Flex 1 OCPU/2GB Ubuntu 24.04 생성을 90초마다 재시도(429 면 5분 대기, 한도 초과·기타 오류는 중단) → 공인 IP 출력. 이미 VM 이 있으면 건너뜀
 - 가짜 oci 명령으로 흐름 검증 (자리 없음 2회 → 3번째 성공, 보안 목록·서브넷 연결 호출 확인). 실제 Oracle 에서는 미검증
