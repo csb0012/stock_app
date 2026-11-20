@@ -21,3 +21,4 @@ Thumbs.db
 backend/app/data/master_cache.json
 backend/.kis_token.json
 backend/.secret_key
+*.log
