@@ -114,6 +114,10 @@ Python 3.13 / Node 22 가 이미지 안에 고정되어 PC마다 버전 맞출 �
 winget install --id Docker.DockerDesktop -e
 winget install --id Git.Git -e
 ```
+`winget` 을 찾을 수 없다고 나오면 (구버전 Windows 에는 없음) 직접 설치:
+- Docker Desktop: https://www.docker.com/products/docker-desktop/ → Download for Windows (Windows 10 22H2 이상 / Windows 11, BIOS 가상화 켜져 있어야 함)
+- Git: https://git-scm.com/download/win → 설치 화면 기본값으로 Next
+- 또는 Microsoft Store 에서 "앱 설치 관리자(App Installer)" 업데이트 → winget 사용 가능
 2. 코드 받기 + 파일 복사 — 위 "새 PC 설치" 의 1)·2) 와 동일 (Python·Node 설치, 3)~5) 는 건너뜀)
 
 **실행 / 끄기** (Docker Desktop 이 켜져 있어야 함)
