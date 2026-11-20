@@ -228,6 +228,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 증상: VM 생성 시 `Out of capacity for shape VM.Standard.A1.Flex in availability domain AD-1` (오사카)
 - `deploy/oci-launch-retry.sh` (Oracle Cloud Shell 에서 실행): 공개 서브넷 없으면 VCN·인터넷 게이트웨이·서브넷 생성 → 80/443(+UDP 443) 허용 보안 목록 `stock-web` 생성·연결 → SSH 키 생성 → A1.Flex 1 OCPU/2GB Ubuntu 24.04 생성을 90초마다 재시도(429 면 5분 대기, 한도 초과·기타 오류는 중단) → 공인 IP 출력. 이미 VM 이 있으면 건너뜀
 - 가짜 oci 명령으로 흐름 검증 (자리 없음 2회 → 3번째 성공, 보안 목록·서브넷 연결 호출 확인). 실제 Oracle 에서는 미검증
+- 실제 Cloud Shell 실행: 네트워크·80/443 규칙 생성까지 성공, SSH 키 생성에서 `ED25519 keys are not allowed in FIPS mode` → RSA 4096 키(`~/.ssh/oci_rsa`)로 변경 (commit `eaee55c`)
 
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
