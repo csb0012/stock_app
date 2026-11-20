@@ -229,6 +229,8 @@ pull 후 패키지 목록이 바뀌었을 때:
 - `deploy/oci-launch-retry.sh` (Oracle Cloud Shell 에서 실행): 공개 서브넷 없으면 VCN·인터넷 게이트웨이·서브넷 생성 → 80/443(+UDP 443) 허용 보안 목록 `stock-web` 생성·연결 → SSH 키 생성 → A1.Flex 1 OCPU/2GB Ubuntu 24.04 생성을 90초마다 재시도(429 면 5분 대기, 한도 초과·기타 오류는 중단) → 공인 IP 출력. 이미 VM 이 있으면 건너뜀
 - 가짜 oci 명령으로 흐름 검증 (자리 없음 2회 → 3번째 성공, 보안 목록·서브넷 연결 호출 확인). 실제 Oracle 에서는 미검증
 - 실제 Cloud Shell 실행: 네트워크·80/443 규칙 생성까지 성공, SSH 키 생성에서 `ED25519 keys are not allowed in FIPS mode` → RSA 4096 키(`~/.ssh/oci_rsa`)로 변경 (commit `eaee55c`)
+- 첫 시도가 "요청이 너무 잦음(429)" 으로 분류됨 → 오류 응답의 opc-request-id 안에 '429' 글자가 있어도 잘못 걸릴 수 있어 `TooManyRequests` 또는 `"status": 429` 일 때만 429 로 판단하도록 수정, 시도마다 Oracle 오류 메시지 표시
+- 저장소가 공개(public)임을 확인 → setup-cloud.md: 서버는 https 로 clone(배포 키 불필요), Cloud Shell 은 curl 로 스크립트 받기
 
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸

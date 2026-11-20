@@ -95,17 +95,12 @@ ssh -i $env:USERPROFILE\.ssh\oracle.key ubuntu@서버IP
 이후 `ubuntu@...:~$` 로 시작하는 줄은 서버에서 치는 명령이다.
 
 ## 4. 코드 받기 (서버)
-저장소가 비공개여도 받을 수 있게 **읽기 전용 배포 키**를 쓴다. 이 키는 이 저장소 읽기만 가능하다.
-```bash
-ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
-cat ~/.ssh/id_ed25519.pub
-```
-출력된 한 줄을 GitHub 저장소 → **Settings → Deploy keys → Add deploy key** 에 붙여넣는다. **Allow write access 는 체크하지 않는다.**
+저장소가 공개(public)라서 바로 받을 수 있다. KIS 키 같은 비밀 파일은 저장소에 없다.
 ```bash
 sudo apt-get update && sudo apt-get install -y git
-git clone -b claude/dazzling-darwin-et76zj git@github.com:csb0012/stock_app.git ~/stock_app
+git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.git ~/stock_app
 ```
-(처음 접속 시 `Are you sure you want to continue connecting` → `yes`)
+(저장소를 비공개로 바꾸면 이 방법이 막힌다. 그때는 서버에서 `ssh-keygen` 으로 키를 만들어 GitHub **Settings → Deploy keys** 에 읽기 전용으로 등록하고, `git@github.com:csb0012/stock_app.git` 로 받는다.)
 
 ## 5. 파일 옮기기 (PC → 서버, PC 의 PowerShell)
 KIS 키(`.env`)는 git 에 없으므로 직접 복사한다.
@@ -163,8 +158,8 @@ bash deploy/setup-server.sh
   - 로그 확인: `sudo docker compose -f docker-compose.cloud.yml logs web`
 - **KIS 오류**: 로그 `logs backend` 를 본다. `backend/.env` 가 PC 와 같은지 확인한다(`KIS_IS_REAL` 포함).
 - **Out of capacity (VM 생성 실패)** — Ampere 무료 자리가 꽉 찬 것이다. 수시로 자리가 나므로 **자동 재시도 스크립트**를 쓴다.
-  1. PC 브라우저에서 GitHub 저장소의 `deploy/oci-launch-retry.sh` 를 연다 → 오른쪽 위 **Download raw file**
-  2. Oracle 콘솔 오른쪽 위 **>_ (Cloud Shell)** 아이콘 → 터미널이 열리면 터미널의 ⚙ 메뉴 → **Upload** → 받은 파일 선택
+  1. Oracle 콘솔 오른쪽 위 **>_ (Cloud Shell)** 아이콘 → 터미널을 연다
+  2. 스크립트를 받는다: `curl -fsSLO https://raw.githubusercontent.com/csb0012/stock_app/claude/dazzling-darwin-et76zj/deploy/oci-launch-retry.sh`
   3. Cloud Shell 에서 `bash oci-launch-retry.sh` 를 실행한다. 스크립트가 하는 일:
      - 네트워크를 만든다.
      - 80/443 을 연다 (= 1단계 4번을 대신함).

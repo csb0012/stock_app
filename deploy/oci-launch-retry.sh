@@ -93,15 +93,16 @@ else
       --image-id "$IMG" --subnet-id "$SUBNET" --assign-public-ip true \
       --display-name "$NAME" --ssh-authorized-keys-file "$KEY.pub" \
       --query data.id --raw-output 2>&1)
+    msg=$(echo "$out" | grep -o '"message": *"[^"]*"' | head -1 | sed 's/"message": *//')
     if [[ "$out" == ocid1.instance* ]]; then
       INSTANCE=$out
       say "성공! ($n 번째 시도) $INSTANCE"
       break
     elif echo "$out" | grep -qi "capacity"; then
-      say "$n 번째: 자리 없음 — ${INTERVAL}초 후 다시"
+      say "$n 번째: 자리 없음 ${msg} — ${INTERVAL}초 후 다시"
       sleep "$INTERVAL"
-    elif echo "$out" | grep -qi "TooManyRequests\|429"; then
-      say "$n 번째: 요청이 너무 잦음 — 5분 쉼"
+    elif echo "$out" | grep -qi 'TooManyRequests\|"status": *429'; then
+      say "$n 번째: 요청이 너무 잦음 ${msg} — 5분 쉼"
       sleep 300
     elif echo "$out" | grep -qi "LimitExceeded\|limit"; then
       say "무료 한도 초과 오류 — 이미 다른 Ampere VM 이 있는지 콘솔에서 확인:"; echo "$out" | tail -5; exit 1
