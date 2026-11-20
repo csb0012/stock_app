@@ -54,8 +54,8 @@ npm install
 
 | 변수 | 필수 | 용도 |
 |---|---|---|
-| `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 |
-| `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 |
+| `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 — 없거나 예시값이면 서버가 시작되지 않음 |
+| `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `SECRET_KEY` | 필수 | JWT 서명 키 |
 | `FINNHUB_API_KEY` | 선택 | 실제 경제 캘린더 (없으면 목업 사용) |
@@ -66,30 +66,40 @@ npm install
 
 ```
 core/
-  config.py      — Pydantic Settings (.env 읽기)
-  database.py    — async SQLAlchemy + aiosqlite; 시작 시 init_db() 호출
+  config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증)
+  database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
 models/
   user.py        — User (username, hashed_password, totp_secret, totp_enabled)
-  watchlist.py   — WatchlistItem (user_id, symbol, market, name)
+  watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
+  portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
 services/
-  kis_api.py     — KISClient: 토큰 캐시 + 국내/미국 주가·일봉·거래량급증 API
+  kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
+                   국내 현재가·일봉(get_kr_chart, 오름차순)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
+  stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
+  quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치, USD/KRW 환율
   market_data.py — yfinance: 지수/매크로/빅테크; BeautifulSoup: 네이버 뉴스; Finnhub: 캘린더
-  analysis.py    — calc_technical_indicators(), predict_next_day(), classify_investment_style()
+  analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
-  stocks.py      — /kr/{symbol}, /us/{symbol}, /volume-surge, /recommendations/{longterm,shortterm}
+  stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
+                   /recommendations/{longterm,shortterm} ({items, errors}), /screener/{kr,us}/{mode}
   market.py      — /overview (지수 + 빅테크), /calendar
-  watchlist.py   — 관심종목 CRUD
+  watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
+  portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
 ```
+
+**오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다.
+
+**종목코드:** 종목을 손으로 적은 코드표로 관리하지 않는다. 검색·추가·검증은 모두 `stock_master` (KIS 공식 파일, `backend/app/data/master_cache.json` 에 하루 단위 캐시)로 한다.
 
 모든 라우트는 `main.py`에서 `/api` 접두사로 마운트.
 
 ### 주식 분석 데이터 흐름
 
-1. `kis_api.py` 에서 KIS로 OHLCV 캔들 조회 (미국 주식은 KIS 실패 시 `yfinance` 폴백).
+1. `quote.py` 에서 캔들 조회 — 국내는 KIS 일봉(최대 100개씩 기간을 나눠 받아 날짜 오름차순 정렬), 미국은 yfinance.
 2. `analysis.calc_technical_indicators()` — RSI, MACD, 볼린저밴드, MA20/60 계산.
-3. `analysis.predict_next_day()` — 룰 기반 점수 → 확률(15~85% 클램프), ATR 기반 목표가·손절가.
+3. `analysis.predict_next_day()` — 룰 기반 점수 → 확률(15~85% 클램프), ATR 기반 목표가·손절가, 지표별 근거(`factors`)와 요약(`summary`).
 4. `analysis.classify_investment_style()` — `long_term_score`, `short_term_score` 반환.
 
 ### 프론트엔드 (`frontend/src/`)
@@ -97,8 +107,9 @@ api/routes/
 ```
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
 store/auth.ts      — Zustand: token + user 상태
-pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Calendar, Login
-components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner
+pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Portfolio, Calendar, Login
+components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,
+                     PredictionReasons (전망 근거), StockSearchBox (자동완성), StockQuoteCard, format.ts
 index.css          — CSS 변수: --bg-primary, --bg-secondary, --bg-card,
                      --accent (#4f8ef7), --green (#34d399), --red (#f87171), --text-muted
 ```
