@@ -41,6 +41,18 @@ def session_hours(market: str, d: date) -> tuple:
     return 9 * 60 + 30, 16 * 60
 
 
+def last_session_date(market: str) -> date:
+    """지금 화면에 보이는 시세가 어느 거래일 것인지 (장 시작 전·휴장이면 직전 거래일)"""
+    now = datetime.now(_TZ[market])
+    d = now.date()
+    if is_trading_day(market, d) and now.hour * 60 + now.minute >= session_hours(market, d)[0]:
+        return d
+    d -= timedelta(days=1)
+    while not is_trading_day(market, d):
+        d -= timedelta(days=1)
+    return d
+
+
 def market_today(market: str) -> date:
     return datetime.now(_TZ[market]).date()
 

@@ -18,7 +18,7 @@ export function applyTheme(t: Theme) {
 }
 
 /** 다크 ↔ 화이트 모드 전환 버튼 */
-export default function ThemeToggle({ compact = false }: { compact?: boolean }) {
+export default function ThemeToggle({ compact = false, pill = false }: { compact?: boolean; pill?: boolean }) {
   const [theme, setTheme] = useState<Theme>(currentTheme());
   useEffect(() => applyTheme(theme), [theme]);
   const next: Theme = theme === "dark" ? "light" : "dark";
@@ -28,9 +28,10 @@ export default function ThemeToggle({ compact = false }: { compact?: boolean }) 
       className="btn btn-ghost"
       onClick={() => setTheme(next)}
       title={next === "light" ? "화이트 모드로" : "다크 모드로"}
-      style={compact ? { padding: "6px 10px" } : { width: "100%", justifyContent: "flex-start", gap: 10 }}
+      style={pill ? { padding: "5px 12px", fontSize: 12, borderRadius: 999 }
+        : compact ? { padding: "6px 10px" } : { width: "100%", justifyContent: "flex-start", gap: 10 }}
     >
-      <Icon size={15} />
+      <Icon size={pill ? 13 : 15} />
       {!compact && (next === "light" ? "화이트 모드" : "다크 모드")}
     </button>
   );

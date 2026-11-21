@@ -253,11 +253,31 @@ async def refresh_ctx():
         missing = [t for t, cs in hist.items() if len(cs) < 10]
         if missing:
             raise RuntimeError(f"지수 일봉 부족: {', '.join(missing)}")
+        hist = {t: list(cs) for t, cs in hist.items()}
+        await _patch_kr_index(hist)
         _ctx.update(ts=time.time(), idx={t: index_returns(cs) for t, cs in hist.items()},
                     raw={t: cs for t, cs in hist.items()}, error=None)
     except Exception as e:
         _ctx["error"] = str(e)
         print(f"[model] 지수 데이터 조회 실패: {e}")
+
+
+async def _patch_kr_index(hist: dict):
+    """Yahoo 의 코스피·코스닥 일봉은 하루 늦게 갱신되는 경우가 있어, 최신 거래일 값은 KIS 실시간 지수로 채움
+    (KIS 실패 시 Yahoo 값 그대로 — 그 날짜가 없으면 live_predict 가 '특징값 부족'으로 규칙 점수를 씀)"""
+    from app.services.kis_api import kis_client
+    from app.services.market_calendar import last_session_date
+    day = last_session_date("KR").isoformat()
+    for code, ticker in (("0001", IDX_TICKERS["KOSPI"]), ("1001", IDX_TICKERS["KOSDAQ"])):
+        try:
+            v = await kis_client.get_kr_index(code)
+        except Exception as e:
+            print(f"[model] KIS 지수({code}) 조회 실패 — Yahoo 값 사용: {e}")
+            continue
+        cs = [c for c in hist.get(ticker, []) if c["date"][:10] != day]
+        cs.append({"date": day, "open": v["price"], "high": v["price"], "low": v["price"],
+                   "close": v["price"], "volume": 0})
+        hist[ticker] = cs
 
 
 def _us_session_closed(d: str) -> bool:

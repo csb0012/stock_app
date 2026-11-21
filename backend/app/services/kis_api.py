@@ -390,6 +390,21 @@ class KISClient:
         }
 
 
+    async def get_kr_index(self, code: str) -> dict:
+        """국내 업종 현재지수 (FHPUP02100000) — code: 0001 코스피, 1001 코스닥, 2001 코스피200"""
+        data = await self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-index-price", "FHPUP02100000",
+            {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+        )
+        o = data.get("output") or {}
+        price = _float(o.get("bstp_nmix_prpr"))
+        if price <= 0:
+            raise KISError(f"KIS 지수({code}) 응답에 현재지수(bstp_nmix_prpr)가 없음: {str(o)[:150]}")
+        change, rate = _float(o.get("bstp_nmix_prdy_vrss")), _float(o.get("bstp_nmix_prdy_ctrt"))
+        if o.get("prdy_vrss_sign") in ("4", "5"):  # 하한·하락인데 부호 없이 오는 경우
+            change, rate = -abs(change), -abs(rate)
+        return {"price": price, "change": change, "change_rate": rate}
+
     async def get_us_valuation(self, symbol: str, exchange: str = "NAS") -> dict:
         """해외주식 현재가상세(HHDFS76200200) — PER·PBR·시가총액 (미국 종목은 yfinance 에 PER 이 없어서)"""
         data = await self._get(

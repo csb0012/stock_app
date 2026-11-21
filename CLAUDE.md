@@ -88,7 +88,8 @@ services/
                    변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base. 결과 app/data/model_*.json (gitignore)
   scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET) + AI 추천 기본 데이터 14분마다 미리 계산
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
-  market_data.py — yfinance: 지수/매크로/빅테크; Finnhub: 경제 캘린더
+  market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
+                   (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext); Finnhub: 경제 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
@@ -123,6 +124,7 @@ api/routes/
 
 ```
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
+Layout.tsx         — 사이드바(메뉴·장 운영 상태) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
 components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,

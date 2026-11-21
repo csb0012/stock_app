@@ -41,89 +41,130 @@ US_ETF_TICKERS = {
 }
 
 
+# 국내 지수는 KIS 공식 실시간 지수 (Yahoo 의 ^KS11·^KQ11 은 하루 늦게 갱신되는 경우가 있어 쓰지 않음)
+KIS_INDEX = {"kospi": ("0001", "^KS11"), "kosdaq": ("1001", "^KQ11")}
+# 24시간 거래(환율·원유)는 거래일 개념이 없어 날짜 지연 검사를 하지 않음
+_NO_SESSION = {"usdkrw", "wti", "dxy"}
+
+
+def _yf_closes(data, ticker):
+    """yf.download 결과에서 한 종목의 종가 시리즈"""
+    try:
+        return data["Close"][ticker].dropna()
+    except KeyError:
+        return data["Close"].dropna() if "Close" in data else None
+
+
+def _daily_item(closes, expect_date=None) -> dict:
+    """마지막 두 종가로 등락 계산 + 기준일. expect_date 보다 오래된 날짜면 stale 표시"""
+    if closes is None or len(closes) < 2:
+        raise ValueError("데이터 부족")
+    prev_close, curr_close = float(closes.iloc[-2]), float(closes.iloc[-1])
+    as_of = closes.index[-1].date()
+    item = {
+        "price": round(curr_close, 2),
+        "change": round(curr_close - prev_close, 2),
+        "change_rate": round((curr_close - prev_close) / prev_close * 100, 2),
+        "as_of": as_of.isoformat(),
+        "source": "Yahoo Finance",
+    }
+    if expect_date and as_of < expect_date:
+        item["stale"] = f"Yahoo 데이터가 {as_of.month}/{as_of.day} 기준 — 최신 거래일({expect_date.month}/{expect_date.day}) 아님"
+    return item
+
+
 async def get_index_data() -> dict:
-    """주요 지수/매크로 데이터 조회 (yfinance 배치 1회)"""
+    """주요 지수/매크로: 국내 지수 = KIS 실시간, 나머지 = Yahoo Finance(yfinance) 일봉"""
+    from app.services.kis_api import kis_client
+    from app.services.market_calendar import last_session_date
+
+    us_day = last_session_date("US")
+    kr_day = last_session_date("KR")
+
     def _fetch():
-        tickers = list(INDEX_TICKERS.values())
-        data = yf.download(tickers, period="5d", progress=False, auto_adjust=True, threads=True)
+        keys = [k for k in INDEX_TICKERS if k not in KIS_INDEX]
+        data = yf.download([INDEX_TICKERS[k] for k in keys], period="5d", progress=False, auto_adjust=True, threads=True)
         results = {}
-        for key, ticker in INDEX_TICKERS.items():
+        for key in keys:
+            ticker = INDEX_TICKERS[key]
             try:
-                closes = data["Close"][ticker].dropna()
-                if len(closes) < 2:
-                    raise ValueError("데이터 부족")
-                prev_close, curr_close = float(closes.iloc[-2]), float(closes.iloc[-1])
-                change = curr_close - prev_close
-                results[key] = {
-                    "ticker": ticker,
-                    "price": round(curr_close, 2),
-                    "change": round(change, 2),
-                    "change_rate": round(change / prev_close * 100, 2),
-                }
+                item = _daily_item(_yf_closes(data, ticker), None if key in _NO_SESSION else us_day)
+                results[key] = {"ticker": ticker, **item}
             except Exception as e:
                 results[key] = {"ticker": ticker, "price": 0, "change": 0, "change_rate": 0, "error": str(e)}
         return results
 
-    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    async def kr(key, code):
+        try:
+            v = await kis_client.get_kr_index(code)
+            return key, {"ticker": KIS_INDEX[key][1], **v, "as_of": kr_day.isoformat(), "source": "KIS 실시간"}
+        except Exception as e:  # Yahoo 로 대체하지 않고 오류를 그대로 표시
+            return key, {"ticker": KIS_INDEX[key][1], "price": 0, "change": 0, "change_rate": 0,
+                         "error": f"KIS 지수 조회 실패: {e}"}
+
+    yf_res, *kr_res = await asyncio.gather(
+        asyncio.get_event_loop().run_in_executor(None, _fetch),
+        *[kr(k, code) for k, (code, _) in KIS_INDEX.items()],
+    )
+    out = {}
+    for key in INDEX_TICKERS:  # 화면 순서 유지
+        out[key] = dict(kr_res)[key] if key in KIS_INDEX else yf_res[key]
+    return out
+
+
+def _extended_prices(tickers: list) -> dict:
+    """미국 시간외(프리마켓·애프터마켓) 마지막 가격 — 5분봉 prepost. 정규장 시간이면 빈 값"""
+    from zoneinfo import ZoneInfo
+    try:
+        data = yf.download(tickers, period="1d", interval="5m", prepost=True, progress=False, auto_adjust=False)
+    except Exception as e:
+        return {"_error": str(e)}
+    out = {}
+    ny = ZoneInfo("America/New_York")
+    for t in tickers:
+        s = _yf_closes(data, t)
+        if s is None or s.empty:
+            continue
+        ts = s.index[-1]
+        ts = ts.tz_convert(ny) if ts.tzinfo else ts.tz_localize("UTC").tz_convert(ny)
+        hm = ts.hour * 60 + ts.minute
+        if hm >= 16 * 60 or hm < 9 * 60 + 30:
+            out[t] = {"price": round(float(s.iloc[-1]), 2), "label": "애프터마켓" if hm >= 16 * 60 else "프리마켓",
+                      "time": ts.strftime("%m/%d %H:%M") + " ET"}
+    return out
+
+
+def _us_rows(names: dict) -> list:
+    """미국 종목: 정규장 종가(기준일) + 시간외 가격"""
+    from app.services.market_calendar import last_session_date
+    us_day = last_session_date("US")
+    tickers = list(names)
+    data = yf.download(tickers, period="5d", progress=False, auto_adjust=True)
+    ext = _extended_prices(tickers)
+    results = []
+    for symbol, name in names.items():
+        row = {"symbol": symbol, "name": name}
+        try:
+            row.update(_daily_item(_yf_closes(data, symbol), us_day))
+        except Exception as e:
+            row.update({"price": 0, "change": 0, "change_rate": 0, "error": str(e)})
+        x = ext.get(symbol)
+        if x and row.get("price"):
+            row["ext"] = {**x, "change_rate": round((x["price"] / row["price"] - 1) * 100, 2)}
+        if "_error" in ext:
+            row["ext_error"] = ext["_error"]
+        results.append(row)
+    return results
 
 
 async def get_bigtech_data() -> list:
-    """빅테크 종목 현재가"""
-    def _fetch():
-        results = []
-        tickers = list(BIGTECH_TICKERS.keys())
-        data = yf.download(tickers, period="2d", progress=False, auto_adjust=True)
-        for symbol, name in BIGTECH_TICKERS.items():
-            try:
-                closes = data["Close"][symbol].dropna()
-                if len(closes) >= 2:
-                    prev = float(closes.iloc[-2])
-                    curr = float(closes.iloc[-1])
-                    change = curr - prev
-                    change_rate = (change / prev) * 100
-                else:
-                    curr, change, change_rate = 0, 0, 0
-                results.append({
-                    "symbol": symbol,
-                    "name": name,
-                    "price": round(curr, 2),
-                    "change": round(change, 2),
-                    "change_rate": round(change_rate, 2),
-                })
-            except Exception:
-                results.append({"symbol": symbol, "name": name, "price": 0, "change": 0, "change_rate": 0})
-        return results
-
-    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    """빅테크: 정규장 종가 + 시간외 (Yahoo Finance)"""
+    return await asyncio.get_event_loop().run_in_executor(None, _us_rows, BIGTECH_TICKERS)
 
 
 async def get_us_etf_data() -> list:
-    """주요 미국 ETF 현재가"""
-    def _fetch():
-        results = []
-        tickers = list(US_ETF_TICKERS.keys())
-        data = yf.download(tickers, period="2d", progress=False, auto_adjust=True)
-        for symbol, name in US_ETF_TICKERS.items():
-            try:
-                closes = data["Close"][symbol].dropna()
-                if len(closes) >= 2:
-                    prev = float(closes.iloc[-2])
-                    curr = float(closes.iloc[-1])
-                    change = curr - prev
-                    change_rate = (change / prev) * 100
-                else:
-                    curr, change, change_rate = 0, 0, 0
-                results.append({
-                    "symbol": symbol, "name": name,
-                    "price": round(curr, 2),
-                    "change": round(change, 2),
-                    "change_rate": round(change_rate, 2),
-                })
-            except Exception:
-                results.append({"symbol": symbol, "name": name, "price": 0, "change": 0, "change_rate": 0})
-        return results
-
-    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    """주요 미국 ETF: 정규장 종가 + 시간외 (Yahoo Finance)"""
+    return await asyncio.get_event_loop().run_in_executor(None, _us_rows, US_ETF_TICKERS)
 
 
 async def get_us_stock_history(symbol: str, period: str = "6mo") -> list:
