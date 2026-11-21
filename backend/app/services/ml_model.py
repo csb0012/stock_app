@@ -129,6 +129,10 @@ def samples(candles: list, feats: pd.DataFrame) -> pd.DataFrame:
 # ---------------- 로지스틱 회귀 (numpy, L2) ----------------
 
 def fit(X: np.ndarray, y: np.ndarray, l2: float = 5.0) -> dict:
+    # 학습 데이터의 1~99% 범위를 기억 → 예측 때 이 범위 밖의 값(예: 간밤 나스닥 -5%)은 끝값으로 잘라서
+    # 직선 모델이 처음 보는 극단값을 끝없이 키워 모든 종목이 15%(하한)에 몰리는 것을 막음
+    lo, hi = np.percentile(X, 1, axis=0), np.percentile(X, 99, axis=0)
+    X = np.clip(X, lo, hi)
     mean, std = X.mean(axis=0), X.std(axis=0)
     std[std == 0] = 1
     Z = np.hstack([np.ones((len(X), 1)), (X - mean) / std])
@@ -143,10 +147,13 @@ def fit(X: np.ndarray, y: np.ndarray, l2: float = 5.0) -> dict:
         w -= step
         if np.abs(step).max() < 1e-6:
             break
-    return {"mean": mean.tolist(), "std": std.tolist(), "intercept": float(w[0]), "coef": w[1:].tolist()}
+    return {"mean": mean.tolist(), "std": std.tolist(), "intercept": float(w[0]), "coef": w[1:].tolist(),
+            "lo": lo.tolist(), "hi": hi.tolist()}
 
 
 def predict(m: dict, X: np.ndarray) -> np.ndarray:
+    if "lo" in m:
+        X = np.clip(X, np.array(m["lo"]), np.array(m["hi"]))
     z = (X - np.array(m["mean"])) / np.array(m["std"])
     return 1 / (1 + np.exp(-np.clip(m["intercept"] + z @ np.array(m["coef"]), -30, 30)))
 
@@ -377,7 +384,8 @@ def live_predict(market: str, symbol: str, candles: list) -> dict:
         return {"status": f"특징값 부족 ({', '.join(miss[:3])})", "variant": variant}
     x = row[m["features"]].to_numpy(dtype=float)
     p = float(predict(m, x[None, :])[0])
-    z = (x - np.array(m["mean"])) / np.array(m["std"])
+    xc = np.clip(x, np.array(m["lo"]), np.array(m["hi"])) if "lo" in m else x
+    z = (xc - np.array(m["mean"])) / np.array(m["std"])
     contrib = np.array(m["coef"]) * z
     order = np.argsort(-np.abs(contrib))[:3]
     drivers = []

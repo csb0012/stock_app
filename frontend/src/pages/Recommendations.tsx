@@ -17,8 +17,11 @@ function Delta({ now, prev }: { now: number; prev?: number | null }) {
   );
 }
 
-function ProbabilityBar({ value }: { value: number }) {
-  const color = value >= 65 ? "var(--green)" : value >= 45 ? "var(--yellow)" : "var(--red)";
+function ProbabilityBar({ value, down = false }: { value: number; down?: boolean }) {
+  // 하락 확률 막대: 높을수록 빨강 (상승 확률 막대와 색 의미를 맞춤)
+  const color = down
+    ? (value >= 65 ? "var(--red)" : value >= 45 ? "var(--yellow)" : "var(--green)")
+    : (value >= 65 ? "var(--green)" : value >= 45 ? "var(--yellow)" : "var(--red)");
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <div style={{ flex: 1, height: 6, background: "var(--bg-secondary)", borderRadius: 3, overflow: "hidden" }}>
@@ -51,7 +54,7 @@ function WatchButton({ item, inList }: { item: any; inList: boolean }) {
   );
 }
 
-function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "short"; inWatchlist: boolean }) {
+function StockCard({ item, type, inWatchlist, downView = false }: { item: any; type: "long" | "short"; inWatchlist: boolean; downView?: boolean }) {
   const pred = item.prediction || {};
   const isKR = item.market === "KR";
 
@@ -77,16 +80,21 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
 
       {/* 다음 거래일 상승 확률 */}
       <div>
+        {/* 하락확률 정렬이면 하락 확률을 크게, 아니면 상승 확률을 크게 (둘의 합은 항상 100) */}
         <p style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
           <span>
-            {sessionLabel(pred)} 상승 확률
-            <Delta now={pred.probability} prev={item.prev_probability} />
+            {sessionLabel(pred)} {downView ? "하락" : "상승"} 확률
+            <Delta now={downView ? 100 - pred.probability : pred.probability}
+              prev={item.prev_probability == null ? item.prev_probability : downView ? 100 - item.prev_probability : item.prev_probability} />
           </span>
           <span>
-            하락 확률 <strong style={{ color: "var(--red)" }}>{100 - (pred.probability || 50)}%</strong>
+            {downView ? "상승" : "하락"} 확률{" "}
+            <strong style={{ color: downView ? "var(--green)" : "var(--red)" }}>
+              {downView ? pred.probability || 50 : 100 - (pred.probability || 50)}%
+            </strong>
           </span>
         </p>
-        <ProbabilityBar value={pred.probability || 50} />
+        <ProbabilityBar value={downView ? 100 - (pred.probability || 50) : pred.probability || 50} down={downView} />
         {pred.signal && (
           <span style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 4, display: "block" }}>
             {pred.signal} · 신뢰도 {pred.confidence}
@@ -153,13 +161,12 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
   );
 }
 
-type Group = "KR" | "US" | "SPAC" | "ETF";
+type Group = "KR" | "US" | "ETF";
 type Sort = "default" | "prob_desc" | "down_desc";
 
 const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
   { key: "KR", label: "🇰🇷 국내 주식", match: (x) => x.market === "KR" && x.category === "stock" },
   { key: "US", label: "🇺🇸 미국", match: (x) => x.market === "US" && x.category !== "etf" },
-  { key: "SPAC", label: "스팩", match: (x) => x.category === "spac" },
   { key: "ETF", label: "ETF·ETN", match: (x) => x.category === "etf" },
 ];
 
@@ -194,7 +201,8 @@ export default function Recommendations() {
   const g = GROUPS.find((x) => x.key === group)!;
   const errors: any[] = (query.data?.errors || []).filter((e: any) => (group === "US" ? e.market === "US" : e.market === "KR"));
 
-  const prob = (x: any) => x.prediction?.probability ?? 0;
+  // 15~85% 로 잘리기 전 값으로 정렬 (같은 85% 끼리도 순서가 정해지도록)
+  const prob = (x: any) => x.prediction?.probability_exact ?? x.prediction?.probability ?? 0;
   const items = all
     .filter(g.match)
     .sort((a, b) =>
@@ -283,13 +291,13 @@ export default function Recommendations() {
       )}
       {query.data && items.length === 0 && (
         <p style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 40 }}>
-          {group === "SPAC" || group === "ETF" ? "오늘 거래량 급증 종목 중 해당 분류가 없습니다 (단기/스윙 탭에서 주로 나옵니다)" : "추천 종목이 없습니다"}
+          {group === "ETF" ? "오늘 거래량 급증 종목 중 해당 분류가 없습니다 (단기/스윙 탭에서 주로 나옵니다)" : "추천 종목이 없습니다"}
         </p>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 16 }}>
         {items.map((item: any) => (
-          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} inWatchlist={watchSet.has(`${item.market}-${item.symbol}`)} />
+          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} inWatchlist={watchSet.has(`${item.market}-${item.symbol}`)} downView={sort === "down_desc"} />
         ))}
       </div>
     </div>

@@ -15,7 +15,9 @@ from app.models.prediction import PredictionLog, BacktestLog
 from app.services import stock_master
 from app.services.market_calendar import market_today, is_market_open, _after_close
 
-UP_TH, DOWN_TH = 55, 45
+# 채점: 50% 초과 = 상승 예측, 50% 미만 = 하락 예측 (정확히 50% 만 중립). 모든 예측을 상승/하락 둘 중 하나로 채점
+UP_TH, DOWN_TH = 50, 50
+CONF_UP, CONF_DOWN = 55, 45   # '확신 예측' (방식별 비교용)
 
 # AI 추천(15초 갱신)·투자종목·관심종목이 동시에 같은 종목을 기록하면 UNIQUE 충돌/SQLite 잠금이 나므로 직렬화
 _record_lock = asyncio.Lock()  # 이 이상이면 '상승 예측', 이 이하면 '하락 예측', 사이는 중립(채점 제외)
@@ -24,7 +26,17 @@ _INDEX = {"KOSPI": ("^KS11", "코스피"), "KOSDAQ": ("^KQ11", "코스닥"), "US
 
 
 def direction(prob: int) -> str:
-    return "up" if prob >= UP_TH else "down" if prob <= DOWN_TH else "neutral"
+    return "up" if prob > UP_TH else "down" if prob < DOWN_TH else "neutral"
+
+
+def outcome_of(prob: int, change: float | None) -> str | None:
+    """현재 기준으로 다시 채점 (예전 55/45 기준으로 저장된 기록도 화면에선 50 기준으로)"""
+    if change is None:
+        return None
+    d = direction(prob)
+    if d == "neutral":
+        return "neutral"
+    return "hit" if (change > 0 if d == "up" else change < 0) else "miss"
 
 
 async def record(results: list, source: str):
@@ -236,7 +248,9 @@ def _row(l, kind: str) -> dict:
         "rule_probability": l.rule_probability, "model_probability": l.model_probability,
         "preopen_probability": l.preopen_probability, "combo_probability": l.combo_probability,
         "preopen_combo_probability": l.preopen_combo_probability,
-        "evaluated": l.evaluated, "outcome": l.outcome, "actual_close": l.actual_close,
+        "evaluated": l.evaluated,
+        "outcome": l.outcome if l.outcome == "no_data" or not l.evaluated else outcome_of(l.probability, l.actual_change),
+        "actual_close": l.actual_close,
         "actual_change": l.actual_change, "gap_pct": l.gap_pct, "volume_ratio": l.volume_ratio,
         "index_name": l.index_name, "index_change": l.index_change,
         "review": json.loads(l.review or "[]"),
@@ -312,8 +326,8 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
                        ("preopen_probability", "학습 모델 · 간밤 미국장 반영 (국내, 장 시작 전)"),
                        ("preopen_combo_probability", "결합 · 간밤 미국장 반영 (국내, 장 시작 전)")):
         rs = [r for r in rows if r[key] is not None and r["actual_change"] is not None and r["evaluated"]]
-        up = [r for r in rs if r[key] >= UP_TH]
-        dn = [r for r in rs if r[key] <= DOWN_TH]
+        up = [r for r in rs if r[key] >= CONF_UP]
+        dn = [r for r in rs if r[key] <= CONF_DOWN]
         hit = sum(1 for r in up if r["actual_change"] > 0) + sum(1 for r in dn if r["actual_change"] < 0)
         dirs = [r for r in rs if r[key] != 50]
         dir_hit = sum(1 for r in dirs if (r[key] > 50) == (r["actual_change"] > 0) and r["actual_change"] != 0)
@@ -367,5 +381,5 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
         "counts": counts,
         "items": items,
         "items_total": len(listed),
-        "thresholds": {"up": UP_TH, "down": DOWN_TH},
+        "thresholds": {"up": UP_TH, "down": DOWN_TH, "confident_up": CONF_UP, "confident_down": CONF_DOWN},
     }

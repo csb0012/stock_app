@@ -131,7 +131,9 @@ async def _build_longterm() -> dict:
 
 
 async def _build_shortterm() -> dict:
-    surge = (await kis_client.get_volume_surge_kr())[:30]
+    # 스팩(기업인수목적회사)은 추천에서 제외
+    surge = [c for c in await kis_client.get_volume_surge_kr()
+             if stock_master.category({"market": "KR", **(stock_master.get("KR", c["symbol"]) or {})}) != "spac"][:30]
     extra = {c["symbol"]: {"volume": c["volume"], "volume_ratio": c["volume_ratio"]} for c in surge}
     kr, us = await asyncio.gather(
         analyze_kr_many([c["symbol"] for c in surge], count=100),
@@ -184,7 +186,7 @@ def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
     for sym, r in raw.items():
         if "error" in r:
             errors.append({"market": r.get("market"), "symbol": sym, "error": r["error"]})
-        else:
+        elif r.get("category") != "spac":
             rows.append(_rec_row(r, extra.get(sym, {})))
     key = (lambda x: x["long_term_score"]) if kind == "longterm" else (lambda x: x["prediction"].get("probability", 0))
     rows.sort(key=key, reverse=True)

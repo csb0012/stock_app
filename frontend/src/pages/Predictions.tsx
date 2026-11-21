@@ -104,7 +104,7 @@ function Acc({ title, a, sub }: { title: string; a: any; sub?: string }) {
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{title}</p>
       <p style={{ fontSize: 22, fontWeight: 700, color }}>{v == null ? "-" : `${v}%`}</p>
       <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-        {a ? `맞음 ${a.hit} · 틀림 ${a.miss}` : ""}{sub ? ` · ${sub}` : ""}
+        {a ? `맞음 ${a.hit}건 · 틀림 ${a.miss}건${a.hit + a.miss ? ` (틀림 ${(100 - (a.accuracy ?? 0)).toFixed(1)}%)` : ""}` : ""}{sub ? ` · ${sub}` : ""}
       </p>
     </div>
   );
@@ -137,7 +137,7 @@ export default function Predictions() {
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>예측 검증</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
           AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측(실제)과 과거 90일 백테스트를 실제 등락과 비교해 채점합니다 ·
-          상승 예측 = 확률 {data?.thresholds?.up ?? 55}% 이상, 하락 예측 = {data?.thresholds?.down ?? 45}% 이하
+          모든 예측을 상승(확률 50% 초과)·하락(50% 미만) 둘 중 하나로 채점 (정확히 50% 만 제외)
         </p>
       </div>
 
@@ -172,12 +172,12 @@ export default function Predictions() {
           {/* 적중률 요약 */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
             <Acc title="전체 적중률" a={data.overall} />
-            <Acc title="상승 예측 적중률" a={data.up_calls} sub="오른다고 한 것 중 실제 상승" />
-            <Acc title="하락 예측 적중률" a={data.down_calls} sub="내린다고 한 것 중 실제 하락" />
+            <Acc title="상승 예측 적중률" a={data.up_calls} sub="오른다고 한 것 중 실제 상승 (나머지는 하락)" />
+            <Acc title="하락 예측 적중률" a={data.down_calls} sub="내린다고 한 것 중 실제 하락 (나머지는 상승)" />
             {kind === "all" && <Acc title="실제 예측 적중률" a={data.by_kind?.live} />}
             {kind === "all" && <Acc title="백테스트 적중률" a={data.by_kind?.backtest} sub="가격·지수 데이터만" />}
             <div className="card" style={{ padding: "14px 16px" }}>
-              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>채점 대기 / 중립</p>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>채점 대기 / 정확히 50%</p>
               <p style={{ fontSize: 22, fontWeight: 700 }}>{data.pending_count} / {data.neutral_count}</p>
               <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>대상일 장이 끝나면 자동 채점 (30분 주기)</p>
             </div>
@@ -357,11 +357,11 @@ function MethodCard({ methods, model }: { methods: any[]; model: any }) {
     <div className="card" style={{ marginBottom: 20 }}>
       <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>예측 방식별 적중률</p>
       <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.6 }}>
-        같은 기록을 방식별로 채점한 결과 · 판정 적중률 = 55% 이상(상승)/45% 이하(하락)로 판정한 것 중 맞은 비율 ·
-        방향 적중률 = 50% 기준으로 전부 판정했을 때 · 판정 비율 = 전체 중 상승/하락으로 판정한 비율
+        같은 기록을 방식별로 채점한 결과 · 전체 방향 적중률 = 50% 기준으로 전부 상승/하락 채점 (위 카드와 같은 기준) ·
+        확신 예측 = 55% 이상·45% 이하로 강하게 말한 것만 · 확신 예측 비율 = 전체 중 그 비율
       </p>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 2fr) repeat(5, 1fr)", gap: "8px 12px", fontSize: 12, alignItems: "center" }}>
-        {["방식", "판정 적중률", "상승 판정", "하락 판정", "방향 적중률", "판정 비율"].map((h) => (
+        {["방식", "확신 예측 적중률", "확신 상승", "확신 하락", "전체 방향 적중률", "확신 예측 비율"].map((h) => (
           <span key={h} style={{ color: "var(--text-muted)" }}>{h}</span>
         ))}
         {methods.map((m) => (

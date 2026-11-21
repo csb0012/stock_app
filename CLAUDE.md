@@ -83,6 +83,7 @@ services/
                    호출 제한 때문에 백그라운드 큐(worker)로 수집, get_extra() 는 기다리지 않고 캐시값 또는 pending 반환
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨
   prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점(grade) · 적중률/틀린 이유 집계 (review: 실제+백테스트 합산, 실제 우선)
+                   채점 기준: 50% 초과 상승 / 50% 미만 하락 (정확히 50 만 제외), 55/45 는 '확신 예측' 비교용
   backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 데이터만으로 규칙 점수·학습 모델(walk-forward) 예측 → 채점 →
                    prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
   ml_model.py    — 학습 모델(numpy 로지스틱 회귀): feature_frame(특징값), walk_forward, adoption(채택 조건), live_predict(실시간),

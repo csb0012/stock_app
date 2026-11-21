@@ -105,7 +105,7 @@ def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
                        "impact": impact, "score": round(p), "max": 100})
     head = "상승 우세" if prob >= 55 else "하락 우세" if prob <= 45 else "방향성 약함"
     summary = f"{name} {head} ({prob}%) — 주요 근거: {drivers or '-'} · 지표 점수 기준 {rule_prob}%"
-    return prob, summary, (round(p) if model.get("use") == "stack" else None)
+    return prob, summary, (round(p) if model.get("use") == "stack" else None), p + shift
 
 
 def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None,
@@ -242,8 +242,8 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     reasons = [f["detail"] for f in factors]
 
     # 확률 계산
-    probability = int((score / max_score * 60) + 20) if max_score > 0 else 50
-    probability = max(15, min(85, probability))  # 15~85% 범위
+    exact = (score / max_score * 60) + 20 if max_score > 0 else 50.0   # 정렬용 (15~85 로 자르기 전 값)
+    probability = max(15, min(85, int(exact)))  # 15~85% 범위
     rule_probability = probability
 
     # 학습 모델 (백테스트에서 규칙보다 잘 맞았을 때만 채택됨 — ml_model.py)
@@ -252,7 +252,7 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     combo_probability = None
     method = "rules"
     if model and "prob" in model and model.get("use"):
-        probability, model_summary, combo_probability = _apply_model(model, factors, rule_probability)
+        probability, model_summary, combo_probability, exact = _apply_model(model, factors, rule_probability)
         method = f"{'combo' if model.get('use') == 'stack' else 'model'}:{model.get('variant')}"
     elif model and "prob" in model:
         model_status = (f"학습 모델 미사용 ({model.get('reason')} / {model.get('stack_reason')}) → 규칙 점수 사용 "
@@ -315,6 +315,7 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
 
     return {
         "probability": probability,
+        "probability_exact": round(float(exact), 3),
         "rule_probability": rule_probability,
         "model_probability": round(model["prob"] * 100) if model and "prob" in model else None,
         "combo_probability": combo_probability,
