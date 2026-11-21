@@ -13,6 +13,7 @@
 import asyncio
 import json
 
+import numpy as np
 import pandas as pd
 from datetime import date, datetime
 
@@ -118,17 +119,23 @@ def _model_stage(stocks: list, data: dict, idx: dict, cutoff: str) -> dict:
             feats = ml_model.VARIANT_FEATURES[v]
             wf = ml_model.walk_forward(df, feats, cutoff)
             test = df.loc[wf.dropna().index]
-            test = test[test["rule_p"].notna()]
+            test = test[test["rule_p"].notna()].copy()
+            test["rule_p"] = test["rule_p"].astype(float)
             m_acc = ml_model._acc(wf.loc[test.index], test["change"])
-            r_acc = ml_model._acc(test["rule_p"].astype(float), test["change"])
-            final = ml_model.train_final(df, v, m_acc, r_acc)
+            r_acc = ml_model._acc(test["rule_p"], test["change"])
+            # 모델 + 규칙 결합·보정 (앞 구간으로 결합 → 다음 구간 예측)
+            combo, stack, s_acc = ml_model.stack_fit(test, wf)
+            final = ml_model.train_final(df, v, m_acc, r_acc, stack, s_acc)
             if final:
                 ml_model.save(final)
-            report[v] = {"model": m_acc, "rules": r_acc, "adopted": bool(final and final["adopted"]),
-                         "trained": bool(final)}
+            report[v] = {"model": m_acc, "rules": r_acc, "combo": s_acc, "adopted": bool(final and final["adopted"]),
+                         "combo_usable": bool(final and final["stack_usable"]), "trained": bool(final)}
             for i, p in wf.dropna().items():
                 r = df.loc[i]
-                probs.setdefault((market, r["symbol"], r["target_date"]), {})[v] = float(p)
+                d = probs.setdefault((market, r["symbol"], r["target_date"]), {})
+                d[v] = float(p)
+                if i in combo.index and not np.isnan(combo.loc[i]):
+                    d[v + "_combo"] = float(combo.loc[i])
     return {"probs": probs, "report": report}
 
 
@@ -219,7 +226,8 @@ async def _run(force: bool):
 
     async with AsyncSessionLocal() as db:
         # 학습 모델 도입 전 기록(method 없음)은 비교 정보가 없으므로 지우고 다시 계산
-        q = delete(BacktestLog) if force else delete(BacktestLog).where(BacktestLog.method.is_(None))
+        q = delete(BacktestLog) if force else delete(BacktestLog).where(
+            BacktestLog.method.is_(None) | (BacktestLog.combo_probability.is_(None) & BacktestLog.model_probability.isnot(None)))
         await db.execute(q)
         await db.commit()
         existing = {(m, s, t) for m, s, t in (await db.execute(
@@ -251,6 +259,7 @@ async def _run(force: bool):
 
     _status["phase"] = "저장 중"
     adopted = {v: r["adopted"] for v, r in report.items()}
+    combo_ok = {v: r["combo_usable"] for v, r in report.items()}
     async with AsyncSessionLocal() as db:
         for st in stocks:
             d = data.get((st["market"], st["symbol"]))
@@ -264,19 +273,30 @@ async def _run(force: bool):
                 rule_p = int(p["probability"])
                 # 화면에 보일 확률: 실시간과 같은 순서 — 국내는 장 시작 전 자동 갱신(간밤 미국장 반영) 모델 우선
                 order = ("KR", "KR_base") if st["market"] == "KR" else ("US",)
-                main_v = next((v for v in order if v in mp and adopted.get(v)), None)
+                # 실시간과 같은 순서: 결합(검증 통과) → 학습 모델(엄격한 채택) → 규칙 점수
+                main_v, shown_p = None, rule_p
+                for v in order:
+                    if combo_ok.get(v) and v + "_combo" in mp:
+                        main_v, shown_p = v + "_combo", round(mp[v + "_combo"] * 100)
+                        break
+                    if adopted.get(v) and v in mp:
+                        main_v, shown_p = v, round(mp[v] * 100)
+                        break
                 use_model = main_v is not None
                 base_v = "KR_base" if st["market"] == "KR" else "US"
                 model_p = round(mp[base_v] * 100) if base_v in mp else None
-                shown_p = round(mp[main_v] * 100) if use_model else rule_p
+                pct = lambda k: round(mp[k] * 100) if k in mp else None  # noqa: E731
                 log = BacktestLog(
                     market=st["market"], symbol=st["symbol"], name=st["name"], sources="백테스트",
                     base_date=d["candles"][ti - 1]["date"][:10], target_date=t,
                     base_price=float(d["candles"][ti - 1]["close"]),
                     probability=shown_p,
-                    method=f"model:{main_v}" if use_model else "rules",
+                    method=(f"combo:{main_v[:-6]}" if main_v and main_v.endswith("_combo") else
+                            f"model:{main_v}" if use_model else "rules"),
                     rule_probability=rule_p, model_probability=model_p,
-                    preopen_probability=round(mp["KR"] * 100) if "KR" in mp else None,
+                    preopen_probability=pct("KR"),
+                    combo_probability=pct(base_v + "_combo"),
+                    preopen_combo_probability=pct("KR_combo"),
                     signal=p.get("signal"),
                     summary=(f"학습 모델({main_v}) {shown_p}% · 지표 점수 {rule_p}% — {p.get('summary')}" if use_model
                              else p.get("summary")),

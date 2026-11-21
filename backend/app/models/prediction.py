@@ -22,6 +22,8 @@ class _PredictionColumns:
     rule_probability = Column(Integer, nullable=True)      # 규칙 점수(RSI·MACD·볼린저·이평…) 확률
     model_probability = Column(Integer, nullable=True)     # 학습 모델 확률 (국내는 간밤 미국장 반영 전 KR_base)
     preopen_probability = Column(Integer, nullable=True)   # 국내: 간밤 미국장 반영 후(장 시작 전) 학습 모델 확률
+    combo_probability = Column(Integer, nullable=True)     # 학습 모델 + 규칙 점수 결합·보정 확률 (국내는 KR_base 기준)
+    preopen_combo_probability = Column(Integer, nullable=True)  # 국내: 장 시작 전 모델 + 규칙 결합·보정 확률
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

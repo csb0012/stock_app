@@ -67,7 +67,14 @@ async def _record(rows: list, source: str):
             existing.factors = json.dumps(p.get("factors", []), ensure_ascii=False)
             existing.method = p.get("method")
             existing.rule_probability = p.get("rule_probability")
-            existing.model_probability = p.get("model_probability")
+            # 국내 장 시작 전(간밤 미국장 반영, method …:KR) 값은 preopen 쪽에 기록 → 방식별 적중률 비교
+            pre = (p.get("method") or "").endswith(":KR")
+            if pre:
+                existing.preopen_probability = p.get("model_probability")
+                existing.preopen_combo_probability = p.get("combo_probability")
+            else:
+                existing.model_probability = p.get("model_probability")
+                existing.combo_probability = p.get("combo_probability")
         await db.commit()
 
 
@@ -227,7 +234,8 @@ def _row(l, kind: str) -> dict:
         "probability": l.probability, "direction": direction(l.probability), "signal": l.signal,
         "summary": l.summary, "factors": json.loads(l.factors or "[]"), "method": l.method,
         "rule_probability": l.rule_probability, "model_probability": l.model_probability,
-        "preopen_probability": l.preopen_probability,
+        "preopen_probability": l.preopen_probability, "combo_probability": l.combo_probability,
+        "preopen_combo_probability": l.preopen_combo_probability,
         "evaluated": l.evaluated, "outcome": l.outcome, "actual_close": l.actual_close,
         "actual_change": l.actual_change, "gap_pct": l.gap_pct, "volume_ratio": l.volume_ratio,
         "index_name": l.index_name, "index_change": l.index_change,
@@ -300,7 +308,9 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
     method_accuracy = []
     for key, label in (("rule_probability", "규칙 점수 (RSI·MACD·볼린저·이평)"),
                        ("model_probability", "학습 모델"),
-                       ("preopen_probability", "학습 모델 · 간밤 미국장 반영 (국내, 장 시작 전)")):
+                       ("combo_probability", "결합 (모델 + 규칙, 보정)"),
+                       ("preopen_probability", "학습 모델 · 간밤 미국장 반영 (국내, 장 시작 전)"),
+                       ("preopen_combo_probability", "결합 · 간밤 미국장 반영 (국내, 장 시작 전)")):
         rs = [r for r in rows if r[key] is not None and r["actual_change"] is not None and r["evaluated"]]
         up = [r for r in rs if r[key] >= UP_TH]
         dn = [r for r in rs if r[key] <= DOWN_TH]

@@ -72,20 +72,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Main */}
       <main style={{ flex: 1, overflow: "auto", background: "var(--bg-primary)" }}>
-        <div style={{ maxWidth: 1400, margin: "0 auto", padding: "14px 32px 28px" }}>
-          {/* 상단 바: 사용자 · 화이트/다크 모드 · 로그아웃 */}
-          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, marginBottom: 14 }}>
-            {username && (
-              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)", marginRight: 6 }}>
-                <UserCircle size={15} /> {username}
-              </span>
-            )}
-            <ThemeToggle pill />
-            <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}>
-              <LogOut size={13} />
-              로그아웃
-            </button>
-          </div>
+        {/* 상단 바 (창 오른쪽 끝): 사용자 · 화이트/다크 모드 · 로그아웃 */}
+        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, padding: "12px 20px 0" }}>
+          {username && (
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)", marginRight: 6 }}>
+              <UserCircle size={15} /> {username}
+            </span>
+          )}
+          <ThemeToggle pill />
+          <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}>
+            <LogOut size={13} />
+            로그아웃
+          </button>
+        </div>
+        <div style={{ maxWidth: 1400, margin: "0 auto", padding: "8px 32px 28px" }}>
           {children}
         </div>
       </main>

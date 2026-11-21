@@ -390,6 +390,25 @@ class KISClient:
         }
 
 
+    async def get_kr_multi_price(self, symbols: list) -> dict:
+        """관심종목(멀티종목) 시세 (FHKST11300006) — 최대 30종목을 호출 1번에. {코드: {price, change_rate, volume}}"""
+        if not symbols or len(symbols) > 30:
+            raise ValueError("멀티종목 시세는 1~30종목")
+        params = {}
+        for i, s in enumerate(symbols, 1):
+            params[f"FID_COND_MRKT_DIV_CODE_{i}"] = "J"
+            params[f"FID_INPUT_ISCD_{i}"] = s
+        data = await self._get("/uapi/domestic-stock/v1/quotations/intstock-multprice", "FHKST11300006", params)
+        rows = data.get("output") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        out = {}
+        for r in rows:
+            code, price = (r.get("inter_shrn_iscd") or "").strip(), _int(r.get("inter2_prpr"))
+            if code and price > 0:
+                out[code] = {"price": price, "change_rate": _float(r.get("prdy_ctrt")), "volume": _int(r.get("acml_vol"))}
+        return out
+
     async def get_kr_index(self, code: str) -> dict:
         """국내 업종 현재지수 (FHPUP02100000) — code: 0001 코스피, 1001 코스닥, 2001 코스피200"""
         data = await self._get(

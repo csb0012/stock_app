@@ -78,8 +78,13 @@ _SHIFT = {"뉴스": 3, "거시환경": 2, "애널리스트": 3, "실적": 2, "�
 
 
 def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
-    """학습 모델 확률 + 뉴스·외부데이터 소폭 보정 → (최종 확률, 요약 문장)"""
-    p = model["prob"] * 100
+    """학습 모델(또는 모델+규칙 결합) 확률 + 뉴스·외부데이터 소폭 보정 → (최종 확률, 요약 문장)"""
+    raw = model["prob"] * 100
+    if model.get("use") == "stack":
+        from app.services.ml_model import stack_predict
+        p = stack_predict(model["stack"], model["prob"], rule_prob / 100) * 100
+    else:
+        p = raw
     shift = 0.0
     for f in factors:
         if f["name"] in _SHIFT and f.get("max"):
@@ -88,16 +93,19 @@ def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
     drivers = ", ".join(f"{d['label']} {d['value']}({'↑' if d['effect'] > 0 else '↓'})" for d in model.get("drivers", []))
     wf = model.get("walk_forward") or {}
     when = {"KR": " · 간밤 미국장 반영", "KR_base": " · 미국장 결과 반영 전"}.get(model.get("variant"), "")
-    detail = (f"과거 {model.get('n') or 0:,}건으로 학습한 모델 → 상승 {p:.0f}%{when}"
+    combo = (f" · 모델 {raw:.0f}% + 지표 점수 {rule_prob}% 를 백테스트 성적만큼 결합·보정 ({model.get('stack_reason')})"
+             if model.get("use") == "stack" else "")
+    detail = (f"과거 {model.get('n') or 0:,}건으로 학습한 모델 → 상승 {p:.0f}%{when}{combo}"
               f"{f' · 뉴스·외부데이터 보정 {shift:+.1f}%p' if abs(shift) >= 0.5 else ''}"
               f" · 주요 근거: {drivers or '-'}"
               f" · 백테스트 적중률 {wf.get('accuracy')}% (규칙 {(model.get('rules') or {}).get('accuracy')}%)")
     impact = "up" if p >= 55 else "down" if p <= 45 else "neutral"
-    factors.insert(0, {"name": "학습 모델", "short": f"학습 모델 {p:.0f}%", "detail": detail,
+    name = "학습 모델(결합)" if model.get("use") == "stack" else "학습 모델"
+    factors.insert(0, {"name": name, "short": f"{name} {p:.0f}%", "detail": detail,
                        "impact": impact, "score": round(p), "max": 100})
     head = "상승 우세" if prob >= 55 else "하락 우세" if prob <= 45 else "방향성 약함"
-    summary = f"학습 모델 {head} ({prob}%) — 주요 근거: {drivers or '-'} · 지표 점수 기준 {rule_prob}%"
-    return prob, summary
+    summary = f"{name} {head} ({prob}%) — 주요 근거: {drivers or '-'} · 지표 점수 기준 {rule_prob}%"
+    return prob, summary, (round(p) if model.get("use") == "stack" else None)
 
 
 def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None,
@@ -241,12 +249,13 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     # 학습 모델 (백테스트에서 규칙보다 잘 맞았을 때만 채택됨 — ml_model.py)
     model_summary = None
     model_status = None
+    combo_probability = None
     method = "rules"
-    if model and "prob" in model and model.get("adopted"):
-        probability, model_summary = _apply_model(model, factors, rule_probability)
-        method = f"model:{model.get('variant')}"
+    if model and "prob" in model and model.get("use"):
+        probability, model_summary, combo_probability = _apply_model(model, factors, rule_probability)
+        method = f"{'combo' if model.get('use') == 'stack' else 'model'}:{model.get('variant')}"
     elif model and "prob" in model:
-        model_status = (f"학습 모델 미채택 ({model.get('reason')}) → 규칙 점수 사용 "
+        model_status = (f"학습 모델 미사용 ({model.get('reason')} / {model.get('stack_reason')}) → 규칙 점수 사용 "
                         f"(참고: 모델 확률 {model['prob'] * 100:.0f}%)")
     elif model:
         model_status = f"학습 모델 사용 안 함 — {model.get('status')}"
@@ -308,6 +317,7 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
         "probability": probability,
         "rule_probability": rule_probability,
         "model_probability": round(model["prob"] * 100) if model and "prob" in model else None,
+        "combo_probability": combo_probability,
         "method": method,
         "model_status": model_status,
         "signal": signal,

@@ -58,4 +58,8 @@ async def get_bigtech(current_user: User = Depends(get_current_user)):
 
 @router.get("/calendar")
 async def get_calendar(current_user: User = Depends(get_current_user)):
-    return await get_economic_calendar()
+    try:
+        return await get_economic_calendar()
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=502, detail=f"경제 캘린더 조회 실패 — {e}")

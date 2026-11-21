@@ -10,6 +10,7 @@
 """
 import asyncio
 import copy
+import json
 import time
 
 import pandas as pd
@@ -98,8 +99,34 @@ async def kr_chart(symbol: str, count: int = 100) -> dict:
 
 # ---------------- 분석 ----------------
 
+_analysis_memo: dict = {}   # 입력이 같으면 다시 계산하지 않음 (장 마감 후·가격 그대로인 종목은 15초 갱신마다 재계산 불필요)
+
+
+def _memo_key(market, candles, per, pbr, news, extra, symbol):
+    last = tuple((c["date"], c["close"], c["high"], c["low"], c.get("volume")) for c in candles[-2:])
+    n = (news or {})
+    return (market, symbol, len(candles), candles[0]["date"], last, per, pbr,
+            (n.get("pos"), n.get("neg"), n.get("total"), n.get("error")),
+            json.dumps(extra, sort_keys=True, default=str) if extra else None,
+            ml_model._ctx.get("ts"), id(ml_model.load("KR")), id(ml_model.load("KR_base")), id(ml_model.load("US")),
+            market_today(market))  # 날짜가 바뀌면 대상일 라벨이 달라지므로
+
+
 def analyze_candles(market: str, candles: list, per: float = 0, pbr: float = 0, news: dict | None = None,
                     extra: dict | None = None, symbol: str | None = None) -> dict:
+    key = _memo_key(market, candles, per, pbr, news, extra, symbol)
+    hit = _analysis_memo.get(key)
+    if hit is not None:
+        return copy.deepcopy(hit)
+    out = _analyze_candles(market, candles, per, pbr, news, extra, symbol)
+    if len(_analysis_memo) > 2000:
+        _analysis_memo.clear()
+    _analysis_memo[key] = copy.deepcopy(out)
+    return out
+
+
+def _analyze_candles(market: str, candles: list, per: float = 0, pbr: float = 0, news: dict | None = None,
+                     extra: dict | None = None, symbol: str | None = None) -> dict:
     indicators = calc_technical_indicators(candles)
     model = None
     if symbol:
@@ -282,6 +309,20 @@ async def live_prices(items: list) -> dict:
         except Exception as e:
             return ("KR", s), {"error": str(e)}
 
+    async def kr_all():
+        """30종목씩 멀티종목 시세 1번 호출 (종목마다 1번씩 부르던 것보다 KIS 호출 수가 1/30)
+        → 멀티 호출이 실패했거나 응답에 빠진 종목만 같은 KIS 의 종목별 현재가로 다시"""
+        got: dict = {}
+        for i in range(0, len(kr), 30):
+            chunk = kr[i:i + 30]
+            try:
+                for code, v in (await kis_client.get_kr_multi_price(chunk)).items():
+                    got[("KR", code)] = v
+            except Exception as e:
+                print(f"[quote] 멀티종목 시세 실패 → 종목별 조회: {str(e)[:120]}")
+        rest = [s for s in kr if ("KR", s) not in got]
+        return list(got.items()) + list(await asyncio.gather(*[kr_one(s) for s in rest]))
+
     def us_sync():
         if not us:
             return {}
@@ -301,7 +342,7 @@ async def live_prices(items: list) -> dict:
         return out
 
     kr_res, us_res = await asyncio.gather(
-        asyncio.gather(*[kr_one(s) for s in kr]),
+        kr_all(),
         asyncio.get_event_loop().run_in_executor(None, us_sync),
     )
     out = dict(kr_res)

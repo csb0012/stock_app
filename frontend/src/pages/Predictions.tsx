@@ -377,19 +377,28 @@ function MethodCard({ methods, model }: { methods: any[]; model: any }) {
       </div>
       {model && (
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-          <p style={{ color: "var(--text-muted)" }}>학습 모델 사용 여부 (실시간 화면) — 백테스트에서 규칙 점수보다 잘 맞고 우연 수준을 넘을 때만 사용</p>
+          <p style={{ color: "var(--text-muted)" }}>실시간 화면에 쓰는 방식 — ① 결합(모델+규칙을 백테스트 성적만큼 섞고 보정: 방향 50% 초과 + 판정이 50%·규칙보다 좋을 때) → ② 모델 단독(우연 수준을 넘을 때) → ③ 규칙 점수</p>
           {Object.keys(VARIANT_LABEL).map((v) => {
             const m = model[v];
+            const mode = !m ? "학습 전" : m.stack_usable ? "결합 사용 중" : m.adopted ? "모델 사용 중" : "미사용 (규칙 점수)";
             return (
-              <p key={v}>
-                <span className={`badge ${m?.adopted ? "badge-up" : "badge-neutral"}`} style={{ marginRight: 8 }}>
-                  {m ? (m.adopted ? "사용 중" : "미사용") : "학습 전"}
+              <div key={v} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                <span className={`badge ${m && (m.stack_usable || m.adopted) ? "badge-up" : "badge-neutral"}`} style={{ flexShrink: 0, minWidth: 96, justifyContent: "center" }}>
+                  {mode}
                 </span>
-                <strong>{VARIANT_LABEL[v]}</strong>
-                <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>
-                  {m ? `${m.adopt_reason} · 학습 ${m.n?.toLocaleString()}건 (~${m.trained_until})` : "백테스트가 끝나면 학습됩니다"}
-                </span>
-              </p>
+                <div>
+                  <strong>{VARIANT_LABEL[v]}</strong>
+                  {m ? (
+                    <div style={{ color: "var(--text-muted)", lineHeight: 1.6 }}>
+                      <div>모델 단독: {m.adopt_reason}</div>
+                      <div>모델+규칙 결합: {m.stack_reason || "-"}</div>
+                      <div>학습 {m.n?.toLocaleString()}건 (~{m.trained_until})</div>
+                    </div>
+                  ) : (
+                    <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>백테스트가 끝나면 학습됩니다</span>
+                  )}
+                </div>
+              </div>
             );
           })}
           {model.index_data?.error && <p style={{ color: "var(--red)" }}>지수 데이터 조회 실패: {model.index_data.error}</p>}

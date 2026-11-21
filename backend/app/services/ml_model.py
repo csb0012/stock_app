@@ -182,6 +182,65 @@ def walk_forward(data: pd.DataFrame, features: list, test_from: str) -> pd.Serie
     return out
 
 
+# ---------------- 결합(앙상블) + 보정 ----------------
+# 학습 모델 확률과 규칙 점수 확률을, 백테스트에서 '실제로 맞은 정도'만큼만 반영하도록 로지스틱 회귀로 결합.
+# 실력이 없는 쪽은 가중치가 0 근처가 되고, 둘 다 없으면 확률이 50% 근처로 모여 '중립' → 해를 끼치지 않음.
+STACK_BLOCKS = 5     # 백테스트 기간을 시간순 5구간으로 나눠, 앞 구간들로 결합 → 다음 구간 예측 (미래 누설 없음)
+STACK_MIN = 200
+
+
+def stack_features(model_p, rule_p) -> np.ndarray:
+    mp = np.clip(np.asarray(model_p, float), 1e-4, 1 - 1e-4)
+    return np.column_stack([np.log(mp / (1 - mp)), (np.asarray(rule_p, float) - 0.5) * 4])
+
+
+def stack_predict(stack: dict, model_p: float, rule_p: float) -> float:
+    return float(predict(stack, stack_features([model_p], [rule_p]))[0])
+
+
+def stack_fit(test: pd.DataFrame, model_p: pd.Series) -> tuple:
+    """test: target_date·y·change·rule_p, model_p: 같은 행의 walk-forward 모델 확률
+    → (구간별 결합 예측 Series, 최종 결합 계수, 성적)"""
+    dates = sorted(test["target_date"].unique())
+    if len(dates) < STACK_BLOCKS * 2:
+        return pd.Series(np.nan, index=test.index), None, {}
+    bounds = [dates[int(len(dates) * k / STACK_BLOCKS)] for k in range(STACK_BLOCKS)] + ["9999"]
+    X = stack_features(model_p.loc[test.index], test["rule_p"])
+    y = test["y"].to_numpy()
+    out = pd.Series(np.nan, index=test.index)
+    td = test["target_date"].to_numpy()
+    for k in range(1, STACK_BLOCKS):
+        tr = td < bounds[k]
+        te = (td >= bounds[k]) & (td < bounds[k + 1])
+        if tr.sum() < STACK_MIN or not te.any():
+            continue
+        out[te] = predict(fit(X[tr], y[tr], l2=10.0), X[te])
+    ev = out.dropna()
+    acc = _acc(ev, test.loc[ev.index, "change"]) if len(ev) else {}
+    return out, fit(X, y, l2=10.0), acc
+
+
+def stack_usable(acc: dict, stack: dict | None, rule: dict) -> tuple:
+    """결합 사용 조건 (엄격한 채택보다 느슨하지만, 판정이 오히려 나빠지는 경우는 막음):
+    1) 모델 쪽 가중치가 양수 (모델이 높다고 하면 실제로도 더 오름)
+    2) 방향 적중률 50% 초과
+    3) 상승/하락 판정 MIN_CALLS 건 이상이고, 판정 적중률이 50% 와 규칙 점수보다 높음
+    """
+    d, n, calls, a = acc.get("dir_accuracy"), acc.get("n") or 0, acc.get("calls") or 0, acc.get("accuracy")
+    if d is None or n < STACK_MIN or not stack:
+        return False, f"결합 검증 데이터 부족 ({n}건)"
+    if stack["coef"][0] <= 0:
+        return False, "결합 결과 모델 가중치가 0 이하 (모델 신호가 실제 등락과 반대)"
+    if d <= 50:
+        return False, f"결합 방향 적중률 {d}% — 50% 이하"
+    if calls < MIN_CALLS:
+        return False, f"결합 판정이 {calls}건뿐 (최소 {MIN_CALLS}건)"
+    ra = rule.get("accuracy")
+    if a is None or a <= 50 or (ra is not None and a <= ra):
+        return False, f"결합 판정 적중률 {a}%가 50%·규칙 {ra}%보다 높지 않음"
+    return True, f"결합 방향 {d}%·판정 {a}% (규칙 {ra}%, {n}건)"
+
+
 def adoption(wf: dict, rule: dict) -> tuple:
     """채택 조건 (운으로 잘 맞은 것을 걸러냄):
     1) 전체 예측의 방향(50% 기준) 적중률이 동전 던지기보다 통계적으로 높음 (단측 95%)
@@ -199,7 +258,8 @@ def adoption(wf: dict, rule: dict) -> tuple:
     return True, f"판정 적중률 {wf.get('accuracy')}% > 규칙 {rule.get('accuracy')}%, 방향 {d}% (기준 {need:.1f}%)"
 
 
-def train_final(data: pd.DataFrame, variant: str, wf: dict, rule: dict) -> dict | None:
+def train_final(data: pd.DataFrame, variant: str, wf: dict, rule: dict, stack: dict | None = None,
+                stack_acc: dict | None = None) -> dict | None:
     feats = VARIANT_FEATURES[variant]
     data = data.dropna(subset=feats + ["y"])
     if data.empty:
@@ -213,6 +273,8 @@ def train_final(data: pd.DataFrame, variant: str, wf: dict, rule: dict) -> dict 
     m.update({"variant": variant, "features": feats, "n": int(len(tr)), "adopt_reason": reason,
               "trained_until": data["target_date"].max(), "trained_at": datetime.now().isoformat(timespec="seconds"),
               "walk_forward": wf, "rules": rule, "adopted": adopted})
+    usable, sreason = stack_usable(stack_acc or {}, stack, rule) if stack else (False, "결합 계산 안 됨")
+    m.update({"stack": stack, "stack_eval": stack_acc or {}, "stack_usable": usable, "stack_reason": sreason})
     return m
 
 
@@ -237,7 +299,8 @@ def status() -> dict:
     for v in VARIANT_FEATURES:
         m = load(v)
         out[v] = None if not m else {k: m.get(k) for k in ("n", "trained_until", "trained_at", "walk_forward",
-                                                           "rules", "adopted", "adopt_reason")}
+                                                           "rules", "adopted", "adopt_reason", "stack_eval",
+                                                           "stack_usable", "stack_reason")}
     out["index_data"] = {"updated": _ctx["ts"] and datetime.fromtimestamp(_ctx["ts"]).isoformat(timespec="seconds"),
                          "error": _ctx["error"]}
     return out
@@ -303,7 +366,7 @@ def live_predict(market: str, symbol: str, candles: list) -> dict:
         known = (_us_session_closed(base_date) and spx is not None and base_date in spx.index
                  and not math.isnan(spx.loc[base_date, "r1"]))
         full = load("KR")
-        variant = "KR" if known and full and full.get("adopted") else "KR_base"
+        variant = "KR" if known and full and (full.get("stack_usable") or full.get("adopted")) else "KR_base"
     m = load(variant)
     if not m:
         return {"status": "학습 모델 없음 — 백테스트가 끝나면 학습됨"}
@@ -322,6 +385,9 @@ def live_predict(market: str, symbol: str, candles: list) -> dict:
         f = m["features"][i]
         val = f"{x[i] * 100:+.1f}%" if f in _PCT else f"{x[i]:+.2f}"
         drivers.append({"feature": f, "label": LABELS[f], "value": val, "effect": float(contrib[i])})
+    use = "stack" if m.get("stack_usable") and m.get("stack") else "model" if m.get("adopted") else None
     return {"prob": p, "variant": variant, "adopted": bool(m.get("adopted")), "reason": m.get("adopt_reason"),
+            "use": use, "stack": m.get("stack"), "stack_eval": m.get("stack_eval"),
+            "stack_reason": m.get("stack_reason"),
             "drivers": drivers,
             "n": m.get("n"), "walk_forward": m.get("walk_forward"), "rules": m.get("rules")}

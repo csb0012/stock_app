@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { marketApi } from "../api/client";
+import { marketApi, errMsg } from "../api/client";
 import { AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
 
 const IMPACT_COLOR: Record<string, string> = {
@@ -84,21 +84,28 @@ function EventRow({ e, isPast }: { e: any; isPast: boolean }) {
 }
 
 export default function CalendarPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["calendar"],
     queryFn: () => marketApi.calendar().then((r) => r.data),
     staleTime: 60 * 60 * 1000,
   });
 
   const today = new Date().toISOString().slice(0, 10);
-  const pastEvents = (data || []).filter((e: any) => e.date?.slice(0, 10) < today);
-  const futureEvents = (data || []).filter((e: any) => e.date?.slice(0, 10) >= today);
+  const events: any[] = data?.events || [];
+  const pastEvents = events.filter((e: any) => e.date?.slice(0, 10) < today);
+  const futureEvents = events.filter((e: any) => e.date?.slice(0, 10) >= today);
 
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>경제 캘린더</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>발표치 vs 예상치 · 행 클릭 시 AI 해설 확인</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
+          최근 2주 발표 + 앞으로 4주 일정 · 발표치 vs 예상치
+          {data?.source && <span> · 출처: {data.source}</span>}
+        </p>
+        {data?.errors?.length > 0 && (
+          <p style={{ color: "var(--yellow)", fontSize: 12, marginTop: 4 }}>⚠ {data.errors.join(" / ")}</p>
+        )}
       </div>
 
       {/* 주요 이벤트 가이드 */}
@@ -136,15 +143,23 @@ export default function CalendarPage() {
         </div>
       </div>
 
+      {error && (
+        <div className="card" style={{ padding: 20, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)", marginBottom: 16 }}>
+          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>경제 캘린더 조회 실패</p>
+          <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(error)}</p>
+        </div>
+      )}
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
+      ) : error ? null : events.length === 0 ? (
+        <p style={{ color: "var(--text-muted)" }}>이 기간에 해당하는 주요 일정이 없습니다.</p>
       ) : (
         <>
           {/* 과거 이벤트 */}
           {pastEvents.length > 0 && (
             <section style={{ marginBottom: 32 }}>
               <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-                최근 발표 결과 · 행 클릭 시 AI 해설
+                최근 발표 결과
               </h2>
               <div className="card" style={{ padding: 0, overflow: "hidden" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
