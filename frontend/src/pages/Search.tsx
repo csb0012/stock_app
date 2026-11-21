@@ -4,6 +4,7 @@ import ChangeTag from "../components/common/ChangeTag";
 import StockSearchBox from "../components/common/StockSearchBox";
 import BuyPrice from "../components/common/BuyPrice";
 import PredictionReasons from "../components/common/PredictionReasons";
+import { safeUrl } from "../components/common/NewsLink";
 
 export default function Search() {
   const [picked, setPicked] = useState<any>(null);
@@ -159,7 +160,7 @@ export default function Search() {
               </h3>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {data.news.filter((n: any) => n.title).map((n: any, i: number) => (
-                  <a key={i} href={n.url} target="_blank" rel="noopener noreferrer"
+                  <a key={i} href={safeUrl(n.url)} target="_blank" rel="noopener noreferrer" className="news-link"
                     style={{ display: "flex", justifyContent: "space-between", textDecoration: "none", color: "inherit", padding: "8px 0", borderBottom: i < data.news.length - 1 ? "1px solid var(--border)" : "none" }}>
                     <span style={{ fontSize: 13, color: "var(--text-primary)" }}>{n.title}</span>
                     <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0, marginLeft: 12 }}>{n.date}</span>
