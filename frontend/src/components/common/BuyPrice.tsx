@@ -18,7 +18,7 @@ export default function BuyPrice({ pred, market, compact = false, label = "ì¶”ì²
     );
   }
   return (
-    <div style={{ background: "rgba(79,142,247,0.07)", borderRadius: 7, padding: "8px 10px" }}>
+    <div style={{ background: "color-mix(in srgb, var(--accent) 7%, transparent)", borderRadius: 7, padding: "8px 10px" }}>
       <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>{label}</p>
       <p style={{ fontWeight: 700, color: "var(--accent)", fontSize: 13 }}>{fmtPrice(price, market)}</p>
       <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>

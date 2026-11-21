@@ -31,6 +31,16 @@ def next_trading_day(market: str, after: date) -> date:
     return d
 
 
+def session_hours(market: str, d: date) -> tuple:
+    """(개장, 마감) 분 단위. 국내는 새해 첫 거래일 10:00 개장 (한국거래소 개장식)"""
+    if market == "KR":
+        first = date(d.year, 1, 1)
+        while not is_trading_day("KR", first):
+            first += timedelta(days=1)
+        return (10 * 60 if d == first else 9 * 60), 15 * 60 + 30
+    return 9 * 60 + 30, 16 * 60
+
+
 def market_today(market: str) -> date:
     return datetime.now(_TZ[market]).date()
 
@@ -40,9 +50,8 @@ def is_market_open(market: str) -> bool:
     if not is_trading_day(market, now.date()):
         return False
     hm = now.hour * 60 + now.minute
-    if market == "KR":
-        return 9 * 60 <= hm <= 15 * 60 + 30
-    return 9 * 60 + 30 <= hm <= 16 * 60
+    open_hm, close_hm = session_hours(market, now.date())
+    return open_hm <= hm <= close_hm
 
 
 def market_status(market: str) -> dict:
@@ -50,7 +59,7 @@ def market_status(market: str) -> dict:
     now = datetime.now(_TZ[market])
     today = now.date()
     hm = now.hour * 60 + now.minute
-    open_hm, close_hm = (9 * 60, 15 * 60 + 30) if market == "KR" else (9 * 60 + 30, 16 * 60)
+    open_hm, close_hm = session_hours(market, today)
     if not is_trading_day(market, today):
         state, nxt = "휴장", next_trading_day(market, today)
     elif hm < open_hm:
@@ -72,7 +81,7 @@ def market_status(market: str) -> dict:
 
 
 def _kst_open(market: str, d: date) -> str:
-    oh, om = (9, 0) if market == "KR" else (9, 30)
+    oh, om = divmod(session_hours(market, d)[0], 60)
     local = datetime(d.year, d.month, d.day, oh, om, tzinfo=_TZ[market])
     k = local.astimezone(_TZ["KR"])
     return f"{_WEEKDAY[k.weekday()]} {k.month}/{k.day} {k.hour:02d}:{k.minute:02d}"
@@ -107,4 +116,4 @@ def prediction_target(market: str, last_candle_date: str) -> dict:
 def _after_close(market: str) -> bool:
     now = datetime.now(_TZ[market])
     hm = now.hour * 60 + now.minute
-    return hm > (15 * 60 + 30 if market == "KR" else 16 * 60)
+    return hm > session_hours(market, now.date())[1]

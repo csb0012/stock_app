@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
 import { useQuery } from "@tanstack/react-query";
 import { marketApi } from "../../api/client";
+import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
   Search, LogOut, BarChart2, Briefcase, ClipboardCheck,
@@ -30,7 +31,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
       {/* Sidebar */}
-      <aside style={{
+      <aside className="sidebar" style={{
         width: 220, background: "var(--bg-secondary)", borderRight: "1px solid var(--border)",
         display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0,
       }}>
@@ -71,7 +72,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <MarketStatus />
 
         {/* Logout */}
-        <div style={{ padding: "16px 10px", borderTop: "1px solid var(--border)" }}>
+        <div style={{ padding: "16px 10px", borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 4 }}>
+          <ThemeToggle />
           <button onClick={handleLogout} className="btn btn-ghost"
             style={{ width: "100%", justifyContent: "flex-start", gap: 10 }}>
             <LogOut size={15} />

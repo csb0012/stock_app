@@ -147,23 +147,36 @@ _build_locks = {k: asyncio.Lock() for k in _BUILDERS}
 _live_locks = {k: asyncio.Lock() for k in _BUILDERS}
 
 
+async def _build(kind: str) -> dict:
+    try:
+        data = await _BUILDERS[kind]()
+    except Exception as e:
+        _fail(e)
+    ok = [r for r in data["raw"].values() if "error" not in r]
+    if not ok:
+        errs = "; ".join(f"{r['symbol']}: {r['error']}" for r in list(data["raw"].values())[:3])
+        _fail(RuntimeError("추천 분석 실패: " + errs))
+    return data
+
+
 async def _base(kind: str) -> dict:
     """일봉·뉴스 등 무거운 데이터 (15분 캐시)"""
     cache = _rec_cache[kind]
     async with _build_locks[kind]:
         if cache["data"] and (time.time() - cache["ts"]) < _CACHE_TTL:
             return cache["data"]
-        try:
-            data = await _BUILDERS[kind]()
-        except Exception as e:
-            _fail(e)
-        ok = [r for r in data["raw"].values() if "error" not in r]
-        if not ok:
-            errs = "; ".join(f"{r['symbol']}: {r['error']}" for r in list(data["raw"].values())[:3])
-            _fail(RuntimeError("추천 분석 실패: " + errs))
+        data = await _build(kind)
         cache["data"], cache["ts"] = data, time.time()
         cache["live"] = None
         return data
+
+
+async def refresh_base(kind: str):
+    """백그라운드 갱신 (scheduler) — 새로 만드는 동안에도 화면은 기존 캐시를 씀"""
+    data = await _build(kind)
+    cache = _rec_cache[kind]
+    cache["data"], cache["ts"] = data, time.time()
+    cache["live"] = None
 
 
 def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
@@ -373,6 +386,7 @@ async def get_us_stock(
     if "error" in r:
         _fail(RuntimeError(r["error"]))
     n = await get_news_tone("US", symbol)
+    price = {**price, "per": r.get("per", 0), "pbr": r.get("pbr", 0)}
     return {"price": price, "candles": r["candles"], "indicators": r["indicators"],
             "prediction": r["prediction"], "style": r["style"],
             "news": n["headlines"], "news_source": n.get("source"), "news_error": n.get("error")}

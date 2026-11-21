@@ -76,9 +76,9 @@ export default function StockSearchBox({
               >
                 <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{item.name}</span>
                 {item.type !== "stock" && (
-                  <span style={{ fontSize: 10, padding: "2px 5px", borderRadius: 4, background: "rgba(251,191,36,0.15)", color: "var(--yellow)" }}>{item.type.toUpperCase()}</span>
+                  <span style={{ fontSize: 10, padding: "2px 5px", borderRadius: 4, background: "color-mix(in srgb, var(--yellow) 15%, transparent)", color: "var(--yellow)" }}>{item.type.toUpperCase()}</span>
                 )}
-                <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "rgba(79,142,247,0.15)" : "rgba(52,211,153,0.15)", color: item.market === "KR" ? "var(--accent)" : "var(--green)" }}>
+                <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--green) 15%, transparent)", color: item.market === "KR" ? "var(--accent)" : "var(--green)" }}>
                   {item.exchange}
                 </span>
                 <span style={{ color: "var(--text-muted)", fontSize: 12, minWidth: 56, textAlign: "right" }}>{item.symbol}</span>

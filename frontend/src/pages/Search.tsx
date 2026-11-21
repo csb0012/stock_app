@@ -124,13 +124,13 @@ export default function Search() {
                   {pred.target_price && (
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                       <BuyPrice pred={pred} market={market} />
-                      <div style={{ background: "rgba(52,211,153,0.07)", borderRadius: 7, padding: 10 }}>
+                      <div style={{ background: "color-mix(in srgb, var(--green) 7%, transparent)", borderRadius: 7, padding: 10 }}>
                         <p style={{ fontSize: 11, color: "var(--text-muted)" }}>목표가</p>
                         <p style={{ color: "var(--green)", fontWeight: 700 }}>
                           {isKR ? `₩${pred.target_price.toLocaleString()}` : `$${pred.target_price.toFixed(2)}`}
                         </p>
                       </div>
-                      <div style={{ background: "rgba(248,113,113,0.07)", borderRadius: 7, padding: 10 }}>
+                      <div style={{ background: "color-mix(in srgb, var(--red) 7%, transparent)", borderRadius: 7, padding: 10 }}>
                         <p style={{ fontSize: 11, color: "var(--text-muted)" }}>손절가</p>
                         <p style={{ color: "var(--red)", fontWeight: 700 }}>
                           {isKR ? `₩${pred.stop_loss?.toLocaleString()}` : `$${pred.stop_loss?.toFixed(2)}`}

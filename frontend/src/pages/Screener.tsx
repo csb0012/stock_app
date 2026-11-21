@@ -134,7 +134,7 @@ export default function Screener() {
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
       ) : error ? (
-        <div className="card" style={{ padding: 24, borderColor: "rgba(248,113,113,0.4)" }}>
+        <div className="card" style={{ padding: 24, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)" }}>
           <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>스크리너 조회 실패</p>
           <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(error)}</p>
         </div>
@@ -215,7 +215,7 @@ export default function Screener() {
                         style={{
                           display: "flex", alignItems: "center", gap: 4,
                           padding: "5px 10px", borderRadius: 6, border: "none", cursor: isInWatchlist ? "default" : "pointer",
-                          background: isInWatchlist ? "rgba(52,211,153,0.1)" : "rgba(79,142,247,0.1)",
+                          background: isInWatchlist ? "color-mix(in srgb, var(--green) 10%, transparent)" : "color-mix(in srgb, var(--accent) 10%, transparent)",
                           color: isInWatchlist ? "var(--green)" : "var(--accent)",
                           fontSize: 12, fontWeight: 500, transition: "all 0.15s", whiteSpace: "nowrap",
                         }}

@@ -161,7 +161,7 @@ export default function Dashboard() {
 
           {/* VIX 경고 배너 */}
           {data?.indices?.vix?.price >= 25 && (
-            <div className="card" style={{ borderColor: "var(--yellow)", background: "rgba(251, 191, 36, 0.05)" }}>
+            <div className="card" style={{ borderColor: "var(--yellow)", background: "color-mix(in srgb, var(--yellow) 5%, transparent)" }}>
               <p style={{ color: "var(--yellow)", fontWeight: 600 }}>
                 ⚠ VIX {data.indices.vix.price.toFixed(1)} — 시장 불안 구간입니다. 신규 진입 시 주의하세요.
               </p>

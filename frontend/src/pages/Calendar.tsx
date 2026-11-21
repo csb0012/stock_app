@@ -72,7 +72,7 @@ function EventRow({ e, isPast }: { e: any; isPast: boolean }) {
       </tr>
       {expanded && e.analysis && (
         <tr style={{ borderBottom: "1px solid var(--border)" }}>
-          <td colSpan={7} style={{ padding: "12px 16px 14px 32px", background: "rgba(79,142,247,0.04)" }}>
+          <td colSpan={7} style={{ padding: "12px 16px 14px 32px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
             <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
               💬 {e.analysis}
             </p>
@@ -123,7 +123,7 @@ export default function CalendarPage() {
       </section>
 
       {/* CME FedWatch */}
-      <div className="card" style={{ marginBottom: 24, borderColor: "rgba(79,142,247,0.3)", background: "rgba(79,142,247,0.04)" }}>
+      <div className="card" style={{ marginBottom: 24, borderColor: "color-mix(in srgb, var(--accent) 30%, transparent)", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
           <AlertCircle size={15} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />
           <div>

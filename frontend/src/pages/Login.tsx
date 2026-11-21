@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { authApi } from "../api/client";
 import { useAuthStore } from "../store/auth";
 import { TrendingUp, Lock, User, Shield } from "lucide-react";
+import ThemeToggle from "../components/common/ThemeToggle";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -37,6 +38,7 @@ export default function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg-primary)" }}>
+      <div style={{ position: "fixed", top: 16, right: 16 }}><ThemeToggle compact /></div>
       <div style={{ width: 380 }}>
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 mb-3">

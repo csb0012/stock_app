@@ -5,7 +5,7 @@ from app.core.database import init_db
 from app.core.config import settings
 from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions
 import asyncio
-from app.services import stock_master, prediction_log, extras, backtest, ml_model
+from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler
 from app.services.repair import repair_symbols
 
 
@@ -25,11 +25,14 @@ async def lifespan(app: FastAPI):
     bt_task = asyncio.create_task(_backtest_loop())
     # 학습 모델의 실시간 예측에 쓰는 지수 일봉 (10분마다)
     ctx_task = asyncio.create_task(_model_ctx_loop())
-    # 국내: 장 시작 전(08:30경) 간밤 미국장 결과를 반영해 예측을 다시 계산·기록
-    preopen_task = asyncio.create_task(_preopen_loop())
+    # 정해진 시각 자동 예측 기록 (국내 장 시작 전·장 마감 후, 미국 장 마감 후) — scheduler.py
+    preopen_task = asyncio.create_task(scheduler.loop())
+    # AI 추천 기본 데이터 미리 계산 (첫 화면 대기 없애기)
+    warm_task = asyncio.create_task(scheduler.warm_recommendations())
     yield
     ctx_task.cancel()
     preopen_task.cancel()
+    warm_task.cancel()
     task.cancel()
     extras_task.cancel()
     bt_task.cancel()
@@ -54,27 +57,6 @@ async def _model_ctx_loop():
     while True:
         await ml_model.refresh_ctx()
         await asyncio.sleep(600)
-
-
-async def _preopen_loop():
-    from datetime import datetime
-    from app.services.market_calendar import is_trading_day, _TZ
-    from app.services.quote import analyze_kr_many
-    done_day = None
-    while True:
-        now = datetime.now(_TZ["KR"])
-        hm = now.hour * 60 + now.minute
-        if done_day != now.date() and is_trading_day("KR", now.date()) and 8 * 60 + 20 <= hm < 8 * 60 + 58:
-            try:
-                await ml_model.refresh_ctx()
-                stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == "KR"]
-                res = await analyze_kr_many(stocks, count=130, with_news=True)
-                await prediction_log.record(list(res.values()), "장전 자동")
-                done_day = now.date()
-                print(f"[preopen] 국내 {len(stocks)}종목 장 시작 전 예측 갱신")
-            except Exception as e:
-                print(f"[preopen] 장 시작 전 예측 갱신 실패: {e}")
-        await asyncio.sleep(300)
 
 
 async def _backtest_loop():

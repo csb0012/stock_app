@@ -29,3 +29,4 @@ backend/app/data/model_*.json
 deploy/.env
 deploy/auth.caddy
 backups/
+backend/app/data/extras_cache.json

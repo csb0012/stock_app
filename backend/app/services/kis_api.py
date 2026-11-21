@@ -390,4 +390,14 @@ class KISClient:
         }
 
 
+    async def get_us_valuation(self, symbol: str, exchange: str = "NAS") -> dict:
+        """해외주식 현재가상세(HHDFS76200200) — PER·PBR·시가총액 (미국 종목은 yfinance 에 PER 이 없어서)"""
+        data = await self._get(
+            "/uapi/overseas-price/v1/quotations/price-detail", "HHDFS76200200",
+            {"AUTH": "", "EXCD": exchange, "SYMB": symbol},
+        )
+        o = data.get("output", {}) or {}
+        return {"per": _float(o.get("perx")), "pbr": _float(o.get("pbrx")), "market_cap": _float(o.get("tomv"))}
+
+
 kis_client = KISClient()

@@ -42,7 +42,7 @@ function WatchButton({ item, inList }: { item: any; inList: boolean }) {
       disabled={done || m.isPending}
       onClick={() => m.mutate()}
       style={{ display: "flex", alignItems: "center", gap: 3, padding: "3px 8px", borderRadius: 6, border: "none", cursor: done ? "default" : "pointer",
-        background: m.error ? "rgba(248,113,113,0.1)" : done ? "rgba(52,211,153,0.1)" : "rgba(79,142,247,0.1)",
+        background: m.error ? "color-mix(in srgb, var(--red) 10%, transparent)" : done ? "color-mix(in srgb, var(--green) 10%, transparent)" : "color-mix(in srgb, var(--accent) 10%, transparent)",
         color: m.error ? "var(--red)" : done ? "var(--green)" : "var(--accent)", fontSize: 11 }}
     >
       {done ? <Check size={12} /> : <Star size={12} />}
@@ -99,13 +99,13 @@ function StockCard({ item, type, inWatchlist }: { item: any; type: "long" | "sho
         <>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
           <BuyPrice pred={pred} market={item.market} />
-          <div style={{ background: "rgba(52, 211, 153, 0.07)", borderRadius: 7, padding: "8px 10px" }}>
+          <div style={{ background: "color-mix(in srgb, var(--green) 7%, transparent)", borderRadius: 7, padding: "8px 10px" }}>
             <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>목표가 (익절)</p>
             <p style={{ fontWeight: 700, color: "var(--green)", fontSize: 13 }}>
               {isKR ? `₩${Math.round(pred.target_price).toLocaleString()}` : `$${pred.target_price.toFixed(2)}`}
             </p>
           </div>
-          <div style={{ background: "rgba(248, 113, 113, 0.07)", borderRadius: 7, padding: "8px 10px" }}>
+          <div style={{ background: "color-mix(in srgb, var(--red) 7%, transparent)", borderRadius: 7, padding: "8px 10px" }}>
             <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>손절가</p>
             <p style={{ fontWeight: 700, color: "var(--red)", fontSize: 13 }}>
               {isKR ? `₩${Math.round(pred.stop_loss || 0).toLocaleString()}` : `$${(pred.stop_loss || 0).toFixed(2)}`}
@@ -209,12 +209,12 @@ export default function Recommendations() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>AI 주식 추천</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          기술적 분석 + 뉴스 분위기 · {REFRESH_SEC}초마다 현재가·뉴스로 확률 재계산 · 투자 손실에 대한 책임은 본인에게 있습니다
+          학습 모델·기술적 분석 + 뉴스 분위기 · {REFRESH_SEC}초마다 현재가·뉴스로 확률 재계산 · 투자 손실에 대한 책임은 본인에게 있습니다
         </p>
       </div>
 
       {/* Disclaimer */}
-      <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "rgba(251,191,36,0.3)", background: "rgba(251,191,36,0.04)" }}>
+      <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "color-mix(in srgb, var(--yellow) 30%, transparent)", background: "color-mix(in srgb, var(--yellow) 4%, transparent)" }}>
         <AlertTriangle size={15} style={{ color: "var(--yellow)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
           상승 확률은 과거 2년 일봉으로 학습한 모델(백테스트에서 기존 지표 점수보다 잘 맞을 때만 사용, 아니면 RSI·MACD·볼린저·이평 점수)에
@@ -271,7 +271,7 @@ export default function Recommendations() {
         <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>분석 중... (처음엔 KIS·뉴스를 받느라 10~20초 걸립니다)</div>
       )}
       {query.error && (
-        <div className="card" style={{ padding: 20, borderColor: "rgba(248,113,113,0.4)", marginBottom: 16 }}>
+        <div className="card" style={{ padding: 20, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)", marginBottom: 16 }}>
           <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>추천 분석 실패</p>
           <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(query.error)}</p>
         </div>

@@ -110,7 +110,7 @@ export default function Watchlist() {
       {/* Add Modal */}
       {showAdd && (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}
+          style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}
           onClick={(e) => e.target === e.currentTarget && closeModal()}
         >
           <div className="card" style={{ width: 440, maxHeight: "80vh", display: "flex", flexDirection: "column", position: "relative" }}>
@@ -172,11 +172,11 @@ export default function Watchlist() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             <span style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</span>
-                            <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "rgba(79,142,247,0.15)" : "rgba(52,211,153,0.15)", color: item.market === "KR" ? "var(--accent)" : "var(--green)" }}>
+                            <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--green) 15%, transparent)", color: item.market === "KR" ? "var(--accent)" : "var(--green)" }}>
                               {item.market}
                             </span>
                             {item.type === "etf" && (
-                              <span style={{ fontSize: 10, padding: "2px 5px", borderRadius: 4, background: "rgba(251,191,36,0.15)", color: "var(--yellow)" }}>ETF</span>
+                              <span style={{ fontSize: 10, padding: "2px 5px", borderRadius: 4, background: "color-mix(in srgb, var(--yellow) 15%, transparent)", color: "var(--yellow)" }}>ETF</span>
                             )}
                           </div>
                           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{item.symbol}</span>
@@ -187,7 +187,7 @@ export default function Watchlist() {
                           style={{
                             padding: "5px 14px", borderRadius: 6, border: "none", cursor: inList ? "default" : "pointer",
                             background: inList ? "rgba(100,100,100,0.1)" : "var(--accent)",
-                            color: inList ? "var(--text-muted)" : "#fff",
+                            color: inList ? "var(--text-muted)" : "var(--on-accent)",
                             fontSize: 12, fontWeight: 600, flexShrink: 0,
                           }}
                         >
@@ -243,7 +243,7 @@ export default function Watchlist() {
               const range = item.high_period && item.low_period ? item.high_period - item.low_period : 0;
               const pos = range > 0 ? ((item.current_price - item.low_period) / range) * 100 : null;
               return (
-                <div key={item.id} className="card" style={{ padding: "14px 16px", borderColor: item.target_reached ? "rgba(52,211,153,0.5)" : undefined }}>
+                <div key={item.id} className="card" style={{ padding: "14px 16px", borderColor: item.target_reached ? "color-mix(in srgb, var(--green) 50%, transparent)" : undefined }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                     {/* 종목 + 시세 */}
                     <div style={{ minWidth: 0 }}>

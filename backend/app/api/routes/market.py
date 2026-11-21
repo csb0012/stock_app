@@ -39,6 +39,13 @@ async def get_extras_status(current_user: User = Depends(get_current_user)):
     return extras.status()
 
 
+@router.get("/scheduler-status")
+async def get_scheduler_status(current_user: User = Depends(get_current_user)):
+    """점검용: 자동 예측 기록(장 시작 전·장 마감 후) 마지막 실행 결과"""
+    from app.services import scheduler
+    return scheduler.status()
+
+
 @router.get("/indices")
 async def get_indices(current_user: User = Depends(get_current_user)):
     return await get_index_data()

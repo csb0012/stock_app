@@ -149,7 +149,7 @@ export default function Portfolio() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 24 }}>
           {hasKR && <SummaryCard title="🇰🇷 국내 (원)" t={totals?.KRW} cur="KRW" loading={analyzing && !totals} />}
           {hasUS && <SummaryCard title="🇺🇸 미국 (달러)" t={totals?.USD} cur="USD" loading={analyzing && !totals} />}
-          <div className="card" style={{ borderColor: "rgba(79,142,247,0.4)" }}>
+          <div className="card" style={{ borderColor: "color-mix(in srgb, var(--accent) 40%, transparent)" }}>
             <p style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>
               총합 (원화 환산)
               {analysis?.usdkrw && (
@@ -175,7 +175,7 @@ export default function Portfolio() {
       {/* Add Modal */}
       {showAdd && (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}
+          style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}
           onClick={(e) => e.target === e.currentTarget && closeModal()}
         >
           <div className="card" style={{ width: 460, maxHeight: "85vh", display: "flex", flexDirection: "column", position: "relative" }}>
@@ -228,7 +228,7 @@ export default function Portfolio() {
                       >
                         <div style={{ flex: 1 }}>
                           <span style={{ fontWeight: 600, fontSize: 14 }}>{item.name}</span>
-                          <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "rgba(79,142,247,0.15)" : "rgba(52,211,153,0.15)", color: item.market === "KR" ? "var(--accent)" : "var(--green)", marginLeft: 8 }}>{item.market}</span>
+                          <span style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: item.market === "KR" ? "color-mix(in srgb, var(--accent) 15%, transparent)" : "color-mix(in srgb, var(--green) 15%, transparent)", color: item.market === "KR" ? "var(--accent)" : "var(--green)", marginLeft: 8 }}>{item.market}</span>
                         </div>
                         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{item.symbol}</span>
                       </div>
@@ -241,7 +241,7 @@ export default function Portfolio() {
             {/* 선택된 종목 + 수량/단가 입력 */}
             {selectedStock && (
               <div style={{ marginBottom: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, background: "rgba(79,142,247,0.1)", marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, background: "color-mix(in srgb, var(--accent) 10%, transparent)", marginBottom: 14 }}>
                   <div style={{ flex: 1 }}>
                     <span style={{ fontWeight: 600 }}>{selectedStock.name}</span>
                     <span style={{ fontSize: 12, color: "var(--text-muted)", marginLeft: 8 }}>{selectedStock.symbol} · {selectedStock.market}</span>
@@ -347,7 +347,7 @@ export default function Portfolio() {
                 </div>
 
                 {item.warning && (
-                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 7, padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "var(--red)" }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "color-mix(in srgb, var(--red) 8%, transparent)", border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)", borderRadius: 7, padding: "8px 10px", marginBottom: 10, fontSize: 12, color: "var(--red)" }}>
                     <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
                     {item.warning}
                   </div>
@@ -386,13 +386,13 @@ export default function Portfolio() {
                       </p>
                     )}
                   </div>
-                  <div style={{ background: item.pnl_pct >= 0 ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)", borderRadius: 7, padding: "8px 12px" }}>
+                  <div style={{ background: item.pnl_pct >= 0 ? "color-mix(in srgb, var(--green) 7%, transparent)" : "color-mix(in srgb, var(--red) 7%, transparent)", borderRadius: 7, padding: "8px 12px" }}>
                     <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>수익률</p>
                     <p style={{ fontWeight: 700, fontSize: 14, color: pnlColor }}>
                       {(item.pnl_pct || 0) >= 0 ? "+" : ""}{(item.pnl_pct || 0).toFixed(2)}%
                     </p>
                   </div>
-                  <div style={{ background: item.pnl_amount >= 0 ? "rgba(52,211,153,0.07)" : "rgba(248,113,113,0.07)", borderRadius: 7, padding: "8px 12px" }}>
+                  <div style={{ background: item.pnl_amount >= 0 ? "color-mix(in srgb, var(--green) 7%, transparent)" : "color-mix(in srgb, var(--red) 7%, transparent)", borderRadius: 7, padding: "8px 12px" }}>
                     <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>평가손익</p>
                     <p style={{ fontWeight: 700, fontSize: 13, color: pnlColor }}>
                       {(item.pnl_amount || 0) >= 0 ? "+" : ""}

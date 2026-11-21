@@ -138,8 +138,39 @@ def _kr_result(symbol: str, chart: dict, news: dict | None) -> dict:
     }
 
 
-def _us_result(symbol: str, candles: list, news: dict | None) -> dict:
+_US_VAL_TTL = 12 * 3600
+_us_val_cache: dict = {}   # symbol -> {"ts", "data"}
+
+
+async def us_valuations(symbols: list) -> dict:
+    """미국 종목 PER·PBR (KIS 해외주식 현재가상세, 12시간 캐시). ETF 는 건너뜀.
+    부가 정보라 실패하면 그 종목만 빠지고(PER 표시 안 함) 로그를 남긴다."""
+    now = time.time()
+    out, todo = {}, []
+    for s in symbols:
+        m = stock_master.get("US", s) or {}
+        if m.get("type") == "etf":
+            continue
+        hit = _us_val_cache.get(s)
+        if hit and now - hit["ts"] < _US_VAL_TTL:
+            out[s] = hit["data"]
+        else:
+            todo.append((s, m.get("exchange") or "NAS"))
+
+    async def one(s, ex):
+        try:
+            v = await kis_client.get_us_valuation(s, ex)
+            _us_val_cache[s] = {"ts": time.time(), "data": v}
+            out[s] = v
+        except Exception as e:
+            print(f"[quote] {s} PER/PBR 조회 실패: {e}")
+    await asyncio.gather(*[one(s, ex) for s, ex in todo])
+    return out
+
+
+def _us_result(symbol: str, candles: list, news: dict | None, val: dict | None = None) -> dict:
     master = stock_master.get("US", symbol) or {}
+    per, pbr = (val or {}).get("per", 0), (val or {}).get("pbr", 0)
     price = candles[-1]["close"]
     prev = candles[-2]["close"] if len(candles) >= 2 else price
     return {
@@ -151,11 +182,11 @@ def _us_result(symbol: str, candles: list, news: dict | None) -> dict:
         "exchange": master.get("exchange", "NAS"),
         "price": round(price, 2),
         "change_rate": round((price - prev) / prev * 100, 2) if prev > 0 else 0.0,
-        "per": 0, "pbr": 0,
+        "per": per, "pbr": pbr,
         "volume": candles[-1]["volume"],
         "candles": candles,
         "news": _news_brief(news),
-        **analyze_candles("US", candles, news=news, extra=get_extra("US", symbol), symbol=symbol),
+        **analyze_candles("US", candles, per, pbr, news=news, extra=get_extra("US", symbol), symbol=symbol),
     }
 
 
@@ -196,9 +227,10 @@ async def analyze_kr_many(symbols: list, count: int = 100, with_news: bool = Tru
 
 async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = True) -> dict:
     """미국 종목 여러 개 (yfinance 배치 1회) → {symbol: 결과 또는 {"error": ...}}"""
-    hist, news = await asyncio.gather(
+    hist, news, vals = await asyncio.gather(
         batch_yf_history(symbols, period),
         get_news_many([("US", s) for s in symbols]) if with_news and symbols else _none(),
+        us_valuations(symbols),
     )
     out = {}
     for s in symbols:
@@ -206,7 +238,7 @@ async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = 
         if len(candles) < 20:
             out[s] = {"symbol": s, "market": "US", "error": f"yfinance 가격 데이터 부족 ({len(candles)}일)"}
         else:
-            out[s] = _us_result(s, candles, (news or {}).get(("US", s)))
+            out[s] = _us_result(s, candles, (news or {}).get(("US", s)), vals.get(s))
     return out
 
 

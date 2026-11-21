@@ -86,6 +86,7 @@ services/
                    prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
   ml_model.py    — 학습 모델(numpy 로지스틱 회귀): feature_frame(특징값), walk_forward, adoption(채택 조건), live_predict(실시간).
                    변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base. 결과 app/data/model_*.json (gitignore)
+  scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET) + AI 추천 기본 데이터 14분마다 미리 계산
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — yfinance: 지수/매크로/빅테크; Finnhub: 경제 캘린더
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
@@ -94,13 +95,13 @@ api/routes/
   stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /screener/{kr,us}/{mode}
-  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /calendar
+  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), 국내 거래일 08:20~08:58 장 시작 전 예측 갱신(_preopen_loop), extras.worker (추천 후보 종목 미리 수집 예약).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원) (추천 후보 종목 미리 수집 예약).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -126,8 +127,9 @@ store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
 components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,
                      PredictionReasons (전망 근거), BuyPrice (추천 매입가), StockSearchBox (자동완성), StockQuoteCard, format.ts
-index.css          — CSS 변수: --bg-primary, --bg-secondary, --bg-card,
-                     --accent (#4f8ef7), --green (#34d399), --red (#f87171), --text-muted
+index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
+                     색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)
+                     ThemeToggle.tsx 가 <html data-theme> + localStorage("theme") 변경, index.html 인라인 스크립트가 첫 화면 깜빡임 방지
 ```
 
 Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `VITE_PROXY_TARGET=http://backend:8000`).

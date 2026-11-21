@@ -25,6 +25,7 @@ from app.services import stock_master
 
 _DATA = Path(__file__).resolve().parents[1] / "data"
 _DART_CORP_FILE = _DATA / "dart_corp.json"
+_CACHE_FILE = _DATA / "extras_cache.json"   # 재시작해도 다시 수집하지 않도록 (성공한 값만, 유효기간은 TTL 그대로)
 
 TTL = {"macro": 6 * 3600, "analyst": 12 * 3600, "earnings": 12 * 3600, "disclosure": 3 * 3600}
 _cache: dict = {}            # (kind, key) -> {"ts", "data"}  data 는 dict 또는 {"error": ...}
@@ -262,10 +263,38 @@ def warm(items: list):
         get_extra(m, s)
 
 
+def _load_disk():
+    try:
+        saved = json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return
+    n = 0
+    for row in saved:
+        kind, key, ts, data = row["kind"], row["key"], row["ts"], row["data"]
+        if kind in TTL and time.time() - ts < TTL[kind] and (kind, key) not in _cache:
+            _cache[(kind, key)] = {"ts": ts, "data": data}
+            n += 1
+    if n:
+        print(f"[extras] 저장된 수집 결과 {n}건 불러옴")
+
+
+def _save_disk():
+    try:
+        rows = [{"kind": k, "key": key, "ts": v["ts"], "data": v["data"]}
+                for (k, key), v in _cache.items() if "error" not in v["data"]]
+        _DATA.mkdir(parents=True, exist_ok=True)
+        tmp = _CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_CACHE_FILE)
+    except OSError as e:  # 부가 기능 — 저장 실패해도 수집은 계속
+        print(f"[extras] 수집 결과 저장 실패: {e}")
+
+
 async def worker():
     """백그라운드: 큐의 수집 작업을 호출 제한에 맞춰 처리"""
     global _queue
     _queue = asyncio.Queue()
+    _load_disk()
     if enabled()["fred"]:
         _enqueue("macro", "global")
     while True:
@@ -274,6 +303,7 @@ async def worker():
             if _fresh(kind, key) is None:
                 data = await _COLLECTORS[kind](key)
                 _cache[(kind, key)] = {"ts": time.time(), "data": data}
+                _save_disk()
         except Exception as e:
             _cache[(kind, key)] = {"ts": time.time(), "data": {"error": f"{type(e).__name__}: {str(e)[:150]}"}}
             print(f"[extras] {kind} {key} 수집 실패: {e}")
