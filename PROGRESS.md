@@ -297,7 +297,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   - 다음 백테스트(서버 시작 시)에 재학습되어 적용.
 - **AI 추천에서 스팩 제외**: 탭 삭제 + 단기 추천(거래량 급증) 후보에서 스팩 제외
 
-### 2026-11-21 — 뉴스 클릭 시 원문 기사로 이동 (commit `COMMIT_HASH`)
+### 2026-11-21 — 뉴스 클릭 시 원문 기사로 이동 (commit `872170e`)
 - AI 추천 카드의 뉴스 제목을 누르면 새 탭에서 원문 기사가 열림 (`components/common/NewsLink.tsx`)
   - 링크: 네이버 뉴스 / Google 뉴스 / Yahoo.
   - http·https 링크만 허용, `noopener noreferrer`.
