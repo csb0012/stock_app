@@ -5,6 +5,14 @@ export function fmtPrice(v: number | null | undefined, market: string): string {
     : `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** 순매수 수량: +9.0만주 / -2,500주 */
+export function fmtShares(q: number | null | undefined): string {
+  if (q == null) return "-";
+  const sign = q > 0 ? "+" : q < 0 ? "−" : "";
+  const a = Math.abs(q);
+  return a >= 10000 ? `${sign}${(a / 10000).toFixed(1)}만주` : `${sign}${Math.round(a).toLocaleString()}주`;
+}
+
 export function fmtSigned(v: number, digits = 2): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}`;
 }

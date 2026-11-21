@@ -29,7 +29,10 @@ IDX_TICKERS = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "US": "^GSPC", "NDX": "^IXIC
 BASE_FEATURES = ["ret1", "ret5", "ret20", "rsi", "macd", "bbz", "dist5", "dist20", "dist60",
                  "volr", "atr", "clv", "gap", "idx1", "idx5", "rel5"]
 OVERNIGHT = ["ov_spx", "ov_ndx"]
-VARIANT_FEATURES = {"US": BASE_FEATURES, "KR_base": BASE_FEATURES, "KR": BASE_FEATURES + OVERNIGHT}
+FLOW = ["frgn1", "frgn5", "orgn1", "orgn5"]   # 외국인·기관 순매수 (20일 평균 거래량 대비) — 국내만
+VARIANT_FEATURES = {"US": BASE_FEATURES, "KR_base": BASE_FEATURES, "KR": BASE_FEATURES + OVERNIGHT,
+                    # 수급 포함 모델: 수급 데이터가 쌓인 날짜만 학습 가능 (KIS 는 최근 30일만 줘서 매일 쌓아야 함)
+                    "KRF_base": BASE_FEATURES + FLOW, "KRF": BASE_FEATURES + OVERNIGHT + FLOW}
 
 LABELS = {
     "ret1": "전일 등락", "ret5": "5일 등락", "ret20": "20일 등락", "rsi": "RSI", "macd": "MACD 히스토그램",
@@ -37,8 +40,10 @@ LABELS = {
     "volr": "거래량(20일 평균 대비)", "atr": "변동성(ATR)", "clv": "당일 종가 위치(고가~저가)", "gap": "시가 갭",
     "idx1": "지수 전일 등락", "idx5": "지수 5일 등락", "rel5": "지수 대비 5일 초과수익",
     "ov_spx": "간밤 S&P500", "ov_ndx": "간밤 나스닥",
+    "frgn1": "외국인 순매수(전일)", "frgn5": "외국인 순매수(5일)", "orgn1": "기관 순매수(전일)", "orgn5": "기관 순매수(5일)",
 }
-_PCT = {"ret1", "ret5", "ret20", "dist5", "dist20", "dist60", "atr", "gap", "idx1", "idx5", "rel5", "ov_spx", "ov_ndx"}
+_PCT = {"ret1", "ret5", "ret20", "dist5", "dist20", "dist60", "atr", "gap", "idx1", "idx5", "rel5", "ov_spx", "ov_ndx",
+        "frgn1", "frgn5", "orgn1", "orgn5"}
 
 MIN_TRAIN = 800       # 학습 샘플이 이보다 적으면 모델 안 씀
 TRAIN_DAYS = 730      # 최근 2년으로 학습
@@ -62,7 +67,7 @@ def index_returns(idx_candles: list) -> pd.DataFrame:
 
 
 def feature_frame(candles: list, own_idx: pd.DataFrame | None, spx: pd.DataFrame | None = None,
-                  ndx: pd.DataFrame | None = None) -> pd.DataFrame:
+                  ndx: pd.DataFrame | None = None, flows: dict | None = None) -> pd.DataFrame:
     """일봉 → 날짜별 특징값 (각 행은 그날 종가까지의 데이터만 사용)"""
     df = pd.DataFrame(candles)
     df["date"] = df["date"].str[:10]
@@ -106,12 +111,20 @@ def feature_frame(candles: list, own_idx: pd.DataFrame | None, spx: pd.DataFrame
     # 국내: 그날(한국 장 마감 후) 열린 미국장 등락 — 같은 날짜의 미국 일봉
     f["ov_spx"] = dates.map(spx["r1"]).astype(float) if spx is not None else np.nan
     f["ov_ndx"] = dates.map(ndx["r1"]).astype(float) if ndx is not None else np.nan
+    # 수급: 그날 외국인·기관 순매수 수량 ÷ 직전 20일 평균 거래량 (5일은 합계). 수급 기록이 없는 날은 NaN
+    avg_vol = v.rolling(20).mean().shift(1).replace(0, np.nan)
+    for who in ("frgn", "orgn"):
+        q = dates.map(lambda d: (flows or {}).get(d, {}).get(f"{who}_qty")).astype(float)
+        f[f"{who}1"] = q / avg_vol
+        f[f"{who}5"] = q.rolling(5).sum() / avg_vol
     # 극단값 완화 (분할·오류 데이터가 학습을 망치지 않게)
     for col in ("ret1", "ret5", "ret20", "dist5", "dist20", "dist60", "gap", "rel5"):
         f[col] = f[col].clip(-0.4, 0.4)
     f["volr"] = f["volr"].clip(-3, 3)
     f["bbz"] = f["bbz"].clip(-3, 3)
     f["macd"] = f["macd"].clip(-0.1, 0.1)
+    for col in FLOW:
+        f[col] = f[col].clip(-3, 3)
     return f
 
 
@@ -366,19 +379,31 @@ def live_predict(market: str, symbol: str, candles: list) -> dict:
     key = index_key(market, symbol)
     own = _ctx["idx"].get(IDX_TICKERS[key])
     base_date = candles[-1]["date"][:10]
-    variant = "US"
     spx = ndx = None
+    flow = None
     if market == "KR":
+        from app.services import flows as flow_store  # 순환 import 방지
+        flow = flow_store.series(symbol)
         spx, ndx = _ctx["idx"].get(IDX_TICKERS["US"]), _ctx["idx"].get(IDX_TICKERS["NDX"])
         known = (_us_session_closed(base_date) and spx is not None and base_date in spx.index
                  and not math.isnan(spx.loc[base_date, "r1"]))
-        full = load("KR")
-        variant = "KR" if known and full and (full.get("stack_usable") or full.get("adopted")) else "KR_base"
+        # 쓸 수 있는(검증 통과 + 오늘 특징값이 다 있는) 첫 변형: 수급 포함 → 수급 없음
+        order = ["KRF", "KR", "KRF_base", "KR_base"] if known else ["KRF_base", "KR_base"]
+        default = "KR" if known else "KR_base"
+    else:
+        order, default = ["US"], "US"
+    feats = feature_frame(candles[-130:], own, spx, ndx, flow)
+    row = feats.iloc[-1]
+    variant = None
+    for v in order:
+        mv = load(v)
+        if mv and (mv.get("stack_usable") or mv.get("adopted")) and not row[mv["features"]].isna().any():
+            variant = v
+            break
+    variant = variant or default
     m = load(variant)
     if not m:
         return {"status": "학습 모델 없음 — 백테스트가 끝나면 학습됨"}
-    feats = feature_frame(candles[-130:], own, spx, ndx)
-    row = feats.iloc[-1]
     if row[m["features"]].isna().any():
         miss = [LABELS[f] for f in m["features"] if pd.isna(row[f])]
         return {"status": f"특징값 부족 ({', '.join(miss[:3])})", "variant": variant}

@@ -14,7 +14,9 @@
 import asyncio
 from datetime import datetime
 
-from app.services import backtest, ml_model, prediction_log
+import time
+
+from app.services import backtest, ml_model, prediction_log, flows, events
 from app.services.market_calendar import _TZ, is_trading_day
 
 JOBS = [
@@ -22,17 +24,26 @@ JOBS = [
     ("preopen_kr", "KR", 8 * 60 + 20, 8 * 60 + 58, "장전 자동"),
     ("close_kr", "KR", 15 * 60 + 40, 16 * 60 + 20, "장마감 자동"),
     ("close_us", "US", 16 * 60 + 10, 16 * 60 + 50, "장마감 자동"),
+    # 외국인·기관 수급은 장 마감 후 확정치가 늦게 나와 저녁에 수집 (KIS 는 최근 30일만 줘서 매일 쌓음)
+    ("flow_kr", "KR", 18 * 60 + 10, 18 * 60 + 50, None),
 ]
 _done: dict = {}   # 작업 이름 -> 마지막 실행 날짜
 _last: dict = {}   # 작업 이름 -> 결과 문자열 (점검용)
 
 
 def status() -> dict:
-    return {"jobs": {name: {"last_day": str(_done.get(name)), "result": _last.get(name)} for name, *_ in JOBS}}
+    return {"jobs": {name: {"last_day": str(_done.get(name)), "result": _last.get(name)} for name, *_ in JOBS},
+            "flows": flows.status(), "events": events.status()}
 
 
 async def _run_job(name: str, market: str, source: str):
     from app.services.quote import analyze_kr_many, analyze_us_many  # 순환 import 방지
+    if name == "flow_kr":
+        stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == "KR"]
+        r = await flows.collect(stocks)
+        _last[name] = f"수급 {len(stocks)}종목 수집, 새 날짜 {r['added']}건" + (f" · 실패 {len(r['errors'])}건" if r["errors"] else "")
+        print(f"[scheduler] {name}: {_last[name]}")
+        return
     if name == "preopen_kr":
         await ml_model.refresh_ctx()  # 간밤 미국장 마감 지수 반영
     stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == market]
@@ -50,6 +61,8 @@ async def _run_job(name: str, market: str, source: str):
 async def loop():
     await asyncio.sleep(30)
     while True:
+        if time.time() - events.version() > 6 * 3600:   # 미국 지표 발표 일정 (경고용) 6시간마다
+            await events.refresh()
         for name, market, start, end, source in JOBS:
             now = datetime.now(_TZ[market])
             hm = now.hour * 60 + now.minute

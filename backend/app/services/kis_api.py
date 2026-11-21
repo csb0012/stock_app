@@ -390,6 +390,28 @@ class KISClient:
         }
 
 
+    async def get_kr_investor(self, symbol: str) -> list:
+        """주식현재가 투자자 (FHKST01010900) — 최근 약 30거래일 일별 외국인·기관·개인 순매수 수량
+        → [{date, frgn_qty, orgn_qty, prsn_qty}] (오늘 장중처럼 값이 아직 없는 날은 뺌)"""
+        data = await self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-investor", "FHKST01010900",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol},
+        )
+        rows = data.get("output") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        out = []
+        for r in rows:
+            d = (r.get("stck_bsop_date") or "").strip()
+            vals = [r.get(k) for k in ("frgn_ntby_qty", "orgn_ntby_qty", "prsn_ntby_qty")]
+            if len(d) != 8 or all(v in (None, "") for v in vals):
+                continue
+            out.append({"date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "frgn_qty": _float(vals[0]),
+                        "orgn_qty": _float(vals[1]), "prsn_qty": _float(vals[2])})
+        if rows and not out:
+            raise KISError(f"KIS 투자자 응답에 순매수 필드가 없음: {str(rows[0])[:150]}")
+        return out
+
     async def get_kr_multi_price(self, symbols: list) -> dict:
         """관심종목(멀티종목) 시세 (FHKST11300006) — 최대 30종목을 호출 1번에. {코드: {price, change_rate, volume}}"""
         if not symbols or len(symbols) > 30:

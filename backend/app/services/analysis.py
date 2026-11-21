@@ -92,7 +92,8 @@ def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
     prob = int(round(max(15, min(85, p + shift))))
     drivers = ", ".join(f"{d['label']} {d['value']}({'↑' if d['effect'] > 0 else '↓'})" for d in model.get("drivers", []))
     wf = model.get("walk_forward") or {}
-    when = {"KR": " · 간밤 미국장 반영", "KR_base": " · 미국장 결과 반영 전"}.get(model.get("variant"), "")
+    when = {"KR": " · 간밤 미국장 반영", "KR_base": " · 미국장 결과 반영 전",
+            "KRF": " · 간밤 미국장·외국인/기관 수급 반영", "KRF_base": " · 외국인/기관 수급 반영"}.get(model.get("variant"), "")
     combo = (f" · 모델 {raw:.0f}% + 지표 점수 {rule_prob}% 를 백테스트 성적만큼 결합·보정 ({model.get('stack_reason')})"
              if model.get("use") == "stack" else "")
     detail = (f"과거 {model.get('n') or 0:,}건으로 학습한 모델 → 상승 {p:.0f}%{when}{combo}"

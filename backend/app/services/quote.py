@@ -20,7 +20,7 @@ from app.services.kis_api import kis_client
 from app.services import stock_master
 from app.services.news import get_news_many
 from app.services.extras import get_extra
-from app.services import ml_model
+from app.services import ml_model, flows, events
 from app.services.market_calendar import prediction_target, market_today, is_market_open
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
 
@@ -108,7 +108,8 @@ def _memo_key(market, candles, per, pbr, news, extra, symbol):
     return (market, symbol, len(candles), candles[0]["date"], last, per, pbr,
             (n.get("pos"), n.get("neg"), n.get("total"), n.get("error")),
             json.dumps(extra, sort_keys=True, default=str) if extra else None,
-            ml_model._ctx.get("ts"), id(ml_model.load("KR")), id(ml_model.load("KR_base")), id(ml_model.load("US")),
+            ml_model._ctx.get("ts"), tuple(id(ml_model.load(v)) for v in ml_model.VARIANT_FEATURES),
+            len(flows.series(symbol)) if symbol and market == "KR" else 0, events.version(),
             market_today(market))  # 날짜가 바뀌면 대상일 라벨이 달라지므로
 
 
@@ -136,6 +137,12 @@ def _analyze_candles(market: str, candles: list, per: float = 0, pbr: float = 0,
             model = {"status": f"학습 모델 계산 실패: {e}"}
     prediction = predict_next_day(candles, indicators, news, extra, model)
     prediction.update(prediction_target(market, candles[-1]["date"]))
+    # 대상일에 걸린 변동성 이벤트(FOMC·CPI 발표, 옵션 만기일) — 확률은 그대로, 경고만
+    ev = events.warnings_for(market, prediction["target_date"])
+    if ev:
+        prediction["events"] = ev
+        prediction["warnings"] = (prediction.get("warnings") or []) + ev
+        prediction["summary"] = (prediction.get("summary") or "") + "".join(f" · ⚠ {w}" for w in ev)
     prediction["base_date"] = candles[-1]["date"][:10]
     return {
         "indicators": indicators,
@@ -161,6 +168,7 @@ def _kr_result(symbol: str, chart: dict, news: dict | None) -> dict:
         "volume": candles[-1]["volume"],
         "candles": candles,
         "news": _news_brief(news),
+        "flows": flows.summary(symbol),
         **analyze_candles("KR", candles, chart["per"], chart["pbr"], news, get_extra("KR", symbol), symbol),
     }
 

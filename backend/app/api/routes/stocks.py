@@ -113,6 +113,7 @@ def _rec_row(r: dict, extra: dict) -> dict:
         "per": r.get("per", 0), "pbr": r.get("pbr", 0),
         "prediction": r["prediction"],
         "news": r.get("news"),
+        "flows": r.get("flows"),
         "long_term_score": r["style"].get("long_term_score", 0),
         "short_term_score": r["style"].get("short_term_score", 0),
         "trend_6m": r["style"].get("trend_6m", 0),

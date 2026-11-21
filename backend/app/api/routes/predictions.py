@@ -24,6 +24,8 @@ async def review_predictions(
     data["newly_evaluated"] = evaluated
     data["backtest"] = backtest.status()
     data["model"] = ml_model.status()
+    from app.services import flows
+    data["flows"] = flows.status()
     return data
 
 

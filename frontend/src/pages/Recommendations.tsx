@@ -6,7 +6,7 @@ import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
 import NewsLink from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
-import { sessionLabel, fmtPrice } from "../components/common/format";
+import { sessionLabel, fmtPrice, fmtShares } from "../components/common/format";
 
 function Delta({ now, prev }: { now: number; prev?: number | null }) {
   if (prev === undefined || prev === null || prev === now) return null;
@@ -102,6 +102,30 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
           </span>
         )}
       </div>
+
+      {/* 변동성 이벤트 경고 (FOMC·CPI 발표, 옵션 만기일) — 확률에는 반영 안 함 */}
+      {pred.events?.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {pred.events.map((e: string) => (
+            <span key={e} className="badge" style={{ background: "color-mix(in srgb, var(--yellow) 14%, transparent)", color: "var(--yellow)", fontWeight: 600 }}>
+              ⚠ {e}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* 국내 수급 (최근 5거래일 순매수) */}
+      {item.flows && (
+        <p style={{ fontSize: 11, color: "var(--text-muted)", display: "flex", gap: 10, flexWrap: "wrap" }}
+          title={`${item.flows.from} ~ ${item.flows.to} 순매수 합계 (KIS)`}>
+          <span>수급 {item.flows.days}일</span>
+          {([["외국인", item.flows.frgn_qty], ["기관", item.flows.orgn_qty], ["개인", item.flows.prsn_qty]] as [string, number][]).map(([k, v]) => (
+            <span key={k}>
+              {k} <strong style={{ color: v > 0 ? "var(--green)" : v < 0 ? "var(--red)" : "var(--text-muted)" }}>{fmtShares(v)}</strong>
+            </span>
+          ))}
+        </p>
+      )}
 
       {/* 추천 매입가 / 목표가 / 손절가 */}
       {pred.target_price && (

@@ -184,7 +184,7 @@ export default function Predictions() {
           </div>
 
           {/* 예측 방식별 적중률 */}
-          <MethodCard methods={data.method_accuracy || []} model={data.model} />
+          <MethodCard methods={data.method_accuracy || []} model={data.model} flows={data.flows} />
 
           {/* 확률 구간별 실제 상승 비율 */}
           <div className="card" style={{ marginBottom: 20 }}>
@@ -346,11 +346,13 @@ export default function Predictions() {
 
 const VARIANT_LABEL: Record<string, string> = {
   US: "미국",
+  KRF: "국내 · 장 시작 전 + 외국인·기관 수급",
   KR: "국내 · 장 시작 전 (간밤 미국장 반영)",
+  KRF_base: "국내 · 장중/장 마감 후 + 외국인·기관 수급",
   KR_base: "국내 · 장중/장 마감 후",
 };
 
-function MethodCard({ methods, model }: { methods: any[]; model: any }) {
+function MethodCard({ methods, model, flows }: { methods: any[]; model: any; flows?: any }) {
   const pct = (v: any) => (v == null ? "-" : `${v}%`);
   const color = (v: any) => (v == null ? "var(--text-muted)" : v >= 55 ? "var(--green)" : v >= 50 ? "var(--yellow)" : "var(--red)");
   return (
@@ -395,7 +397,11 @@ function MethodCard({ methods, model }: { methods: any[]; model: any }) {
                       <div>학습 {m.n?.toLocaleString()}건 (~{m.trained_until})</div>
                     </div>
                   ) : (
-                    <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>백테스트가 끝나면 학습됩니다</span>
+                    <span style={{ color: "var(--text-muted)", marginLeft: 6 }}>
+                      {v.startsWith("KRF")
+                        ? `수급 데이터가 쌓이면 학습 (KIS 는 최근 30일만 줘서 매일 저녁 쌓는 중 · 현재 ${flows?.rows?.toLocaleString() ?? 0}건, 학습에 약 800건 이상 + 검증 기간 필요 → 약 2~3개월)`
+                        : "백테스트가 끝나면 학습됩니다"}
+                    </span>
                   )}
                 </div>
               </div>

@@ -71,6 +71,7 @@ models/
   watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
+  flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
 services/
   kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
                    국내 현재가·일봉(get_kr_chart, 오름차순)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
@@ -88,8 +89,12 @@ services/
                    prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
   ml_model.py    — 학습 모델(numpy 로지스틱 회귀): feature_frame(특징값), walk_forward, adoption(채택 조건), live_predict(실시간),
                    stack_fit/stack_usable(모델+규칙 결합·보정, 시간순 구간 검증). 실시간 우선순위: 결합 → 모델 단독 → 규칙
-                   변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base. 결과 app/data/model_*.json (gitignore)
-  scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET) + AI 추천 기본 데이터 14분마다 미리 계산
+                   변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base / KRF·KRF_base(+외국인·기관 수급).
+                   실시간은 검증 통과 + 오늘 특징값이 다 있는 첫 변형(수급 포함 우선). 결과 app/data/model_*.json (gitignore)
+  scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET), 국내 수급 수집(18:10~)
+                   + AI 추천 기본 데이터 14분마다 미리 계산 + 이벤트 일정 6시간마다 갱신
+  flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음)
+  events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
                    (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext);

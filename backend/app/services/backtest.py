@@ -94,6 +94,7 @@ def _model_stage(stocks: list, data: dict, idx: dict, cutoff: str) -> dict:
     반환: {(market, symbol, 대상일): {"KR_base"/"KR"/"US": 확률}} 와 시장별 성적
     """
     from app.services.prediction_log import index_key
+    from app.services import flows as flow_store
     frames = {"KR": [], "US": []}
     for st in stocks:
         d = data.get((st["market"], st["symbol"]))
@@ -102,7 +103,8 @@ def _model_stage(stocks: list, data: dict, idx: dict, cutoff: str) -> dict:
         own = idx.get(ml_model.IDX_TICKERS[index_key(st["market"], st["symbol"])])
         spx = idx.get(ml_model.IDX_TICKERS["US"]) if st["market"] == "KR" else None
         ndx = idx.get(ml_model.IDX_TICKERS["NDX"]) if st["market"] == "KR" else None
-        s = ml_model.samples(d["candles"], ml_model.feature_frame(d["candles"], own, spx, ndx))
+        fl = flow_store.series(st["symbol"]) if st["market"] == "KR" else None
+        s = ml_model.samples(d["candles"], ml_model.feature_frame(d["candles"], own, spx, ndx, fl))
         s = s[s["target_date"].map(lambda t: _closed(st["market"], t))]
         s["market"], s["symbol"] = st["market"], st["symbol"]
         # 같은 날짜의 규칙 점수 확률 (채택 비교용)
@@ -111,7 +113,7 @@ def _model_stage(stocks: list, data: dict, idx: dict, cutoff: str) -> dict:
 
     probs: dict = {}
     report: dict = {}
-    for market, variants in (("KR", ("KR_base", "KR")), ("US", ("US",))):
+    for market, variants in (("KR", ("KR_base", "KR", "KRF_base", "KRF")), ("US", ("US",))):
         if not frames[market]:
             continue
         df = pd.concat(frames[market], ignore_index=True)
@@ -244,6 +246,11 @@ async def _run(force: bool):
     us_hist = await batch_yf_history(us_syms, "2y") if us_syms else {}
     data = await _fetch_all(stocks, us_hist)
 
+    # 국내 수급(외국인·기관): KIS 는 최근 30일만 줘서 매번 받아 DB 에 쌓음 (실패해도 수급 없는 모델로 진행)
+    _status["phase"] = "외국인·기관 수급 받는 중"
+    from app.services import flows as flow_store
+    await flow_store.collect([s["symbol"] for s in stocks if s["market"] == "KR" and (s["market"], s["symbol"]) in data])
+
     _status["phase"] = "규칙 점수 계산 중"
     for st in stocks:
         d = data.get((st["market"], st["symbol"]))
@@ -272,7 +279,7 @@ async def _run(force: bool):
                 mp = probs.get(key, {})
                 rule_p = int(p["probability"])
                 # 화면에 보일 확률: 실시간과 같은 순서 — 국내는 장 시작 전 자동 갱신(간밤 미국장 반영) 모델 우선
-                order = ("KR", "KR_base") if st["market"] == "KR" else ("US",)
+                order = ("KRF", "KR", "KRF_base", "KR_base") if st["market"] == "KR" else ("US",)
                 # 실시간과 같은 순서: 결합(검증 통과) → 학습 모델(엄격한 채택) → 규칙 점수
                 main_v, shown_p = None, rule_p
                 for v in order:
