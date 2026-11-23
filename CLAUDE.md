@@ -65,6 +65,7 @@ npm run dev
 ```
 core/
   swr.py         — SWRCache: 기존 값을 바로 주고 뒤에서 갱신(stale-while-revalidate), 동시 요청 1회 실행. 응답에 updated_at·refreshing·refresh_error
+                   fresh_for(값) 로 값마다 신선 기간 조절 (경제 캘린더: 일부 출처 일시 실패면 5분)
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
