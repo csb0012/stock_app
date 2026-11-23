@@ -48,6 +48,7 @@ export const marketApi = {
   section: (name: string) => api.get(`/market/overview/${name}`),
   calendar: () => api.get("/market/calendar"),
   status: () => api.get("/market/status"),
+  regime: () => api.get("/market/regime", { timeout: 120_000 }),
 };
 
 // Stocks
@@ -87,6 +88,11 @@ export const themeApi = {
 export const accumApi = {
   result: (minScore = 50) => api.get("/accumulation", { params: { min_score: minScore } }),
   scan: () => api.post("/accumulation/scan"),
+};
+
+// 퀀트 점수 (국내 전 종목, 매집 탐지와 같은 스캔)
+export const quantApi = {
+  list: (limit = 100) => api.get("/quant", { params: { limit } }),
 };
 
 // 예측 검증

@@ -66,6 +66,10 @@ def api_client(monkeypatch):
     async def _no_record(*a, **k):
         return None
     monkeypatch.setattr(prediction_log, "record", _no_record)
+
+    async def _no_tracks():
+        return {}
+    monkeypatch.setattr(prediction_log, "tracks", _no_tracks)   # 실제 DB 파일을 열지 않게
     with TestClient(app) as client:
         yield client, Session, user
     run(engine.dispose())

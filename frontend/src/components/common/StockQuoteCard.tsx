@@ -5,6 +5,7 @@ import ChangeTag from "./ChangeTag";
 import PredictionReasons from "./PredictionReasons";
 import PriceLevels from "./PriceLevels";
 import DaytimePrice from "./DaytimePrice";
+import QuantBadge, { TrackBadge } from "./QuantBadge";
 import NewsLink, { NewsSource } from "./NewsLink";
 import { fmtPrice, probColor, probLabel, sessionLabel } from "./format";
 
@@ -62,6 +63,11 @@ export default function StockQuoteCard({
               <ChangeTag value={data.change_rate} />
             </div>
             {data.daytime && <div style={{ marginTop: 4 }}><DaytimePrice d={data.daytime} /></div>}
+            {(data.quant || data.track) && (
+              <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <QuantBadge q={data.quant} /><TrackBadge t={data.track} />
+              </div>
+            )}
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
               {data.per > 0 && <span>PER {data.per.toFixed(1)}</span>}
               {data.pbr > 0 && <span>PBR {data.pbr.toFixed(2)}</span>}

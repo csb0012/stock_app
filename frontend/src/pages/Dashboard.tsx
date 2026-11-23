@@ -3,6 +3,7 @@ import { marketApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import FetchStatus from "../components/common/FetchStatus";
 import DaytimePrice from "../components/common/DaytimePrice";
+import MarketRegimePanel from "../components/common/MarketRegime";
 import { RefreshCw, AlertCircle } from "lucide-react";
 
 const INDEX_LABELS: Record<string, { label: string; unit: string }> = {
@@ -188,6 +189,9 @@ export default function Dashboard() {
           새로고침
         </button>
       </div>
+
+      {/* 시장 상태 (CAN SLIM 'M') */}
+      <MarketRegimePanel />
 
       {/* 주요 지수 */}
       <section style={{ marginBottom: 32 }}>

@@ -93,6 +93,7 @@ services/
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨,
                    us_daytime_session() (미국 주간거래 시간: 한국 날짜가 미국 거래일 + 10:00~미국 04:00 ET), market_status("US").daytime
   prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점(grade) · 적중률/틀린 이유 집계 (review: 실제+백테스트 합산, 실제 우선)
+                   tracks()/attach_tracks(): 종목별 최근 90일 예측 적중 기록(30분 캐시) → 관심종목·AI 추천·종목 조회 행의 track
                    채점 기준: 50% 초과 상승 / 50% 미만 하락 (정확히 50 만 제외), 55/45 는 '확신 예측' 비교용
   backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 데이터만으로 규칙 점수·학습 모델(walk-forward) 예측 → 채점 →
                    prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
@@ -110,6 +111,13 @@ services/
                    거래량 꿈틀15·저점 상승10·바닥권15). 그날까지 데이터만 사용(score_frame). 제외: 20일 +25% 이상·거래대금 1억 미만·상장 120일 미만.
                    검증 = 과거 날짜별 점수 → 이후 20거래일 안 +20% 도달률을 점수 구간별로 전체 평균과 비교(lift).
                    하루 1회(scheduler accum_kr 16:30~, 결과 없으면 시작 2분 뒤), mark_background, 결과 app/data/accumulation.json
+  quant.py       — 퀀트 점수(국내 전 종목, Seeking Alpha 퀀트 등급·TipRanks 스마트 점수·IBD RS 참고): 요인 = 모멘텀 RS(1·3·6개월 0.2/0.4/0.4)·
+                   추세(50/120일선·200일 고저)·거래량 매집(50일 상승일/하락일 거래량)·안정성(60일 변동성 낮음)·고점 근접(200일 고점 대비),
+                   같은 날 전 종목 백분위 → 요인 비중 = 날짜별 순위 상관(IC)이 양수인 만큼 (손으로 안 정함) → 종합 백분위·점수 1~10·등급 A+~F.
+                   검증: 앞쪽 날짜로 비중을 정하고(20거래일 겹침 제거) 뒤쪽 날짜에서 점수 구간별 '20거래일 뒤 그날 전 종목 중간값을 이긴 비율'.
+                   매집 스캔(accumulation.scan)이 같은 일봉으로 계산해 accumulation.json 의 quant 에 저장 (KIS 추가 호출 없음). 거래대금 1억 미만 제외
+  market_regime.py — 시장 상태(CAN SLIM 'M'): 코스피·코스닥·S&P500·나스닥 yfinance 5년 일봉 → 50/200일선·200일선 기울기·분산일(25일 중 −0.2%↓+거래량↑)
+                   → 상승 추세/상승 압박/하락 추세 + 상태별 20거래일 뒤 지수 성과 검증. 예측 확률엔 안 넣고 경고로만
   themes.py      — 테마별 종목: 네이버 증권 모바일 API(m.stock.naver.com/api/stocks/theme, JSON) → 하루 1회 app/data/themes.json
                    (테마 설명·종목별 편입 사유 포함, 종목코드는 종목마스터로 확인). 예전 PC 화면 finance.naver.com/sise/theme.naver 는 폐지됨.
                    테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수).
@@ -135,16 +143,17 @@ api/routes/
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
                    /screener/{kr,us}/{mode}
-  market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
+  market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /regime (시장 상태, SWR 1시간), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   chat.py        — POST /chat ({messages:[{role,content}]} → 마지막 질문만 보고 {reply, tools, model:"규칙 기반"}), GET /chat/status
   themes.py      — GET /themes (테마 전체, SWR 60초), GET /themes/{no} (테마 종목), POST /themes/refresh, GET /themes/status
-  accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산)
+  accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산),
+                   GET /quant (?limit, 퀀트 점수 상위·요인 비중·검증 — 전 종목 점수표는 응답에 안 실음)
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과 없으면 전 종목 스캔), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과나 퀀트 점수가 없으면 전 종목 스캔 — 매집·퀀트 같이), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -168,7 +177,7 @@ api/routes/
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
 api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
-pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Accumulation(매집 탐지),
+pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
                      Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio, Predictions(예측 검증), Calendar, Login
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
 components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃) + ChatWidget.
@@ -176,6 +185,7 @@ components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
+                     QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
                      LongTermPanel (장기 보유 분석 표·지수 카드), format.ts
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)

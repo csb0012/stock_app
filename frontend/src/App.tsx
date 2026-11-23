@@ -13,6 +13,7 @@ import CalendarPage from "./pages/Calendar";
 import Predictions from "./pages/Predictions";
 import Themes from "./pages/Themes";
 import Accumulation from "./pages/Accumulation";
+import Quant from "./pages/Quant";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
@@ -35,6 +36,7 @@ export default function App() {
           {/* 예전 종목검색 화면 → 종목탐색(검색 포함)으로 통합 */}
           <Route path="/search" element={<Navigate to="/screener" replace />} />
           <Route path="/themes" element={<ProtectedRoute><Themes /></ProtectedRoute>} />
+          <Route path="/quant" element={<ProtectedRoute><Quant /></ProtectedRoute>} />
           <Route path="/accumulation" element={<ProtectedRoute><Accumulation /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

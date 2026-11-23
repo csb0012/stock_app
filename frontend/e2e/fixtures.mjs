@@ -112,3 +112,62 @@ export const CALENDAR_OLD = {
   source: "FRED", errors: [], updated_at: now,
   events: [{ date: day(-4), event: "미국 신규 실업수당 청구", country: "US", impact: "medium", actual: null, previous: null, estimate: null }],
 };
+
+// ---------- 퀀트 점수 · 시장 상태 · 예측 적중 기록 ----------
+export const QUANT_ROW = {
+  score: 9, pct: 87, grade: "A", factors: { rs: 92, trend: 85, updown: 70, lowvol: 40, high52: 88 },
+  beat_rate: 57.4, bucket: "80~100", price: 177800, date: "2026-11-20", universe: 2412,
+};
+export const TRACK = { hit: 14, miss: 9, n: 23, accuracy: 60.9, conf_hit: 6, conf_n: 9, conf_accuracy: 66.7, live: 5, enough: true, days: 90 };
+WATCHLIST[0].quant = QUANT_ROW;
+WATCHLIST[0].track = TRACK;
+WATCHLIST[2].track = { ...TRACK, hit: 3, miss: 1, n: 4, accuracy: 75, enough: false };
+RECS.items[0].quant = QUANT_ROW;
+RECS.items[0].track = TRACK;
+
+const regimeVal = (s) => ["상승 추세", "상승 압박", "하락 추세"].map((st, i) => ({
+  state: st, n: 300 - i * 50, up_rate: [62.1, 55.0, 48.3][i], avg_ret: [1.8, 0.6, -0.9][i], base_up_rate: 57.2 }));
+const reg = (key, name, market, state, extra = {}) => ({
+  key, name, market, ticker: "^X", state, advice: `${state} 설명`, as_of: "2026-11-20", close: 2500, vs_ma50: -2.1, vs_ma200: state === "하락 추세" ? -4.2 : 3.3,
+  ma200_up: state !== "하락 추세", dist_days: 3, since: "2026-11-02", days_in_state: 14, validation: regimeVal(), horizon_days: 20,
+  period: ["2022-09-01", "2026-11-20"], ...extra,
+});
+export const REGIME = {
+  items: {
+    KOSPI: reg("KOSPI", "코스피", "KR", "상승 압박"),
+    KOSDAQ: reg("KOSDAQ", "코스닥", "KR", "하락 추세"),
+    SPX: reg("SPX", "S&P 500", "US", "상승 추세"),
+    NASDAQ: reg("NASDAQ", "나스닥 종합", "US", "상승 추세", { dist_days: null }),
+  },
+  rules: { dist_window: 25, dist_drop_pct: -0.2, dist_warn: 5 }, updated_at: now, refreshing: false,
+};
+
+export const QUANT = {
+  quant: {
+    date: "2026-11-20", universe: 2412, horizon_days: 20, useful: true,
+    weights: { rs: 0.35, trend: 0.25, updown: 0.1, lowvol: 0.05, high52: 0.25 },
+    ic: { rs: 0.041, trend: 0.03, updown: 0.012, lowvol: 0.006, high52: 0.03 },
+    validation: {
+      train: ["2026-07-01", "2026-07-20"], test: ["2026-08-20", "2026-10-22"], ic: 0.035, spread: 2.41, n: 52000,
+      train_weights: {},
+      buckets: [
+        { range: "80~100", lo: 80, hi: 100, n: 10400, beat_rate: 56.2, avg_excess: 1.21 },
+        { range: "60~80", lo: 60, hi: 80, n: 10400, beat_rate: 52.0, avg_excess: 0.4 },
+        { range: "40~60", lo: 40, hi: 60, n: 10400, beat_rate: 49.8, avg_excess: -0.1 },
+        { range: "20~40", lo: 20, hi: 40, n: 10400, beat_rate: 47.9, avg_excess: -0.5 },
+        { range: "0~20", lo: 0, hi: 20, n: 10400, beat_rate: 45.1, avg_excess: -1.2 },
+      ],
+    },
+    factors: [
+      { key: "rs", name: "모멘텀(RS)", about: "최근 1·3·6개월 수익률 가중" }, { key: "trend", name: "추세", about: "이평 정배열" },
+      { key: "updown", name: "거래량 매집", about: "상승일/하락일 거래량" }, { key: "lowvol", name: "안정성", about: "저변동성" },
+      { key: "high52", name: "고점 근접", about: "200일 고점 대비" },
+    ],
+    top: [
+      { symbol: "005930", name: "삼성전자", ...QUANT_ROW, themes: [{ name: "반도체" }], accum: 55 },
+      { symbol: "000660", name: "SK하이닉스", ...QUANT_ROW, score: 10, pct: 95, grade: "A+", themes: [], accum: null },
+      { symbol: "035420", name: "NAVER", ...QUANT_ROW, score: 6, pct: 55, grade: "B", beat_rate: 49.8, themes: [], accum: 30 },
+    ],
+  },
+  error: null, status: { running: false, done: 0, total: 0, stale: false }, base_date: "2026-11-20",
+};

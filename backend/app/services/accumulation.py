@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from app.services import stock_master
+from app.services import stock_master, quant
 
 _FILE = Path(__file__).resolve().parents[1] / "data" / "accumulation.json"
 CANDLES = 200
@@ -170,6 +170,7 @@ async def scan(force: bool = False) -> dict:
     _status.update(running=True, done=0, total=len(syms), errors=0, error_samples=[],
                    started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None, message=None)
     rows, scores, val = [], {}, _empty_val()
+    qframes: dict = {}   # 퀀트 점수용 요인 (같은 일봉으로 계산 — KIS 추가 호출 없음)
     sem = asyncio.Semaphore(4)
     loop = asyncio.get_event_loop()
 
@@ -178,6 +179,7 @@ async def scan(force: bool = False) -> dict:
             try:
                 chart = await kis_client.get_kr_chart(sym, CANDLES)
                 row, f = await loop.run_in_executor(None, analyze_one, sym, chart["candles"])
+                qframes[sym] = await loop.run_in_executor(None, quant.factor_frame, chart["candles"])
                 if f is not None:
                     _add_val(val, f)
                 if row:
@@ -204,6 +206,14 @@ async def scan(force: bool = False) -> dict:
             "rules": {"hit_up_pct": int(HIT_UP * 100), "horizon_days": HORIZON, "max_ret20_pct": int(MAX_RET20 * 100),
                       "min_tv_eok": MIN_TV / 1e8},
         }
+        try:
+            names = {s: (stock_master.get("KR", s) or {}).get("name", s) for s in qframes}
+            result["quant"] = await loop.run_in_executor(None, quant.build, qframes, names)
+            if result["quant"] is None:
+                result["quant_error"] = "퀀트 점수를 계산할 종목이 없음 (거래대금·데이터 기간 부족)"
+        except Exception as e:   # 퀀트 점수 실패가 매집 결과 저장을 막지 않게
+            result["quant"], result["quant_error"] = None, f"퀀트 점수 계산 실패: {e}"
+            print(f"[accumulation] {result['quant_error']}")
         _save(result)
         _status["message"] = f"{len(rows)}/{len(syms)}종목 계산, 후보 {len(cands)}개" + (
             f" · 실패 {_status['errors']}건" if _status["errors"] else "")
@@ -236,6 +246,13 @@ def result() -> dict | None:
     return _result
 
 
+def quant_of(symbol: str) -> dict | None:
+    """국내 종목의 퀀트 점수 (마지막 스캔 기준) — 없으면 None"""
+    q = (result() or {}).get("quant") or {}
+    v = (q.get("scores") or {}).get(symbol)
+    return {**v, "date": q.get("date"), "universe": q.get("universe")} if v else None
+
+
 def score_of(symbol: str):
     r = result()
     return (r or {}).get("scores", {}).get(symbol)
@@ -256,5 +273,7 @@ async def startup():
     """서버 시작 후 결과가 없거나 오래됐으면 2분 뒤 스캔 (장중에는 어제 결과로 충분하므로 결과가 아예 없을 때만)"""
     from app.services.market_calendar import is_market_open
     await asyncio.sleep(120)
-    if result() is None or (stale() and not is_market_open("KR")):
+    r = result()
+    # 퀀트 점수가 없는 예전 결과도 다시 계산 (업데이트 직후 한 번)
+    if r is None or "quant" not in r or (stale() and not is_market_open("KR")):
         await scan()

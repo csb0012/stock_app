@@ -383,3 +383,64 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
         "items_total": len(listed),
         "thresholds": {"up": UP_TH, "down": DOWN_TH, "confident_up": CONF_UP, "confident_down": CONF_DOWN},
     }
+
+
+# ---------------- 종목별 예측 적중 기록 (TipRanks 가 애널리스트마다 적중률을 공개하는 것처럼) ----------------
+TRACK_DAYS, TRACK_MIN, TRACK_TTL = 90, 10, 1800
+_track_cache: dict = {"ts": 0.0, "data": {}}
+
+
+def build_tracks(rows: list) -> dict:
+    """[(market, symbol, target_date, probability, actual_change, kind)] → {(market, symbol): 기록}
+    같은 종목·대상일은 실제 예측(live)이 백테스트보다 우선. 50% 기준 방향 적중 + 55/45 확신 예측 적중"""
+    best: dict = {}
+    for m, s, d, p, ch, kind in rows:
+        if ch is None or p is None:
+            continue
+        key = (m, s, d)
+        if key not in best or kind == "live":
+            best[key] = (m, s, p, ch, kind)
+    agg: dict = {}
+    for m, s, p, ch, kind in best.values():
+        a = agg.setdefault((m, s), {"hit": 0, "miss": 0, "conf_hit": 0, "conf_n": 0, "live": 0})
+        o = outcome_of(p, ch)
+        if o in ("hit", "miss"):
+            a[o] += 1
+        if p >= CONF_UP or p <= CONF_DOWN:
+            a["conf_n"] += 1
+            a["conf_hit"] += (ch > 0) if p >= CONF_UP else (ch < 0)
+        a["live"] += kind == "live"
+    out = {}
+    for k, a in agg.items():
+        n = a["hit"] + a["miss"]
+        out[k] = {**a, "n": n, "accuracy": round(a["hit"] / n * 100, 1) if n else None,
+                  "conf_accuracy": round(a["conf_hit"] / a["conf_n"] * 100, 1) if a["conf_n"] else None,
+                  "enough": n >= TRACK_MIN, "days": TRACK_DAYS}
+    return out
+
+
+async def tracks() -> dict:
+    """최근 90일 종목별 기록 (30분 캐시). 실패해도 주 응답을 막지 않도록 빈 값 + 로그"""
+    import time as _t
+    if _t.time() - _track_cache["ts"] < TRACK_TTL:
+        return _track_cache["data"]
+    cutoff = date.fromordinal(datetime.now().date().toordinal() - TRACK_DAYS).isoformat()
+    rows = []
+    try:
+        async with AsyncSessionLocal() as db:
+            for model, kind in ((BacktestLog, "backtest"), (PredictionLog, "live")):
+                q = select(model.market, model.symbol, model.target_date, model.probability, model.actual_change).where(
+                    model.target_date >= cutoff, model.evaluated.is_(True))
+                rows += [(*r, kind) for r in (await db.execute(q)).all()]
+    except Exception as e:
+        print(f"[prediction_log] 종목별 기록 조회 실패: {e}")
+        return _track_cache["data"]
+    data = build_tracks(rows)
+    _track_cache.update(ts=_t.time(), data=data)
+    return data
+
+
+async def attach_tracks(rows: list) -> list:
+    """목록 행(market·symbol)에 track 을 붙인 새 목록"""
+    t = await tracks()
+    return [{**r, "track": t.get((r.get("market"), r.get("symbol")))} if isinstance(r, dict) else r for r in rows]

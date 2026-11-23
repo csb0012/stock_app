@@ -100,6 +100,7 @@ app.include_router(predictions.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(themes_route.router, prefix="/api")
 app.include_router(accumulation_route.router, prefix="/api")
+app.include_router(accumulation_route.quant_router, prefix="/api")
 
 
 @app.get("/api/health")

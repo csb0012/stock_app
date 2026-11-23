@@ -82,6 +82,20 @@ async def get_scheduler_status(current_user: User = Depends(get_current_user)):
     return scheduler.status()
 
 
+# 시장 상태: 하루에 몇 번만 바뀌므로 1시간 신선, 하루 동안은 기존 값을 먼저
+_regime = SWRCache("market_regime", fresh=3600, max_stale=24 * 3600)
+
+
+@router.get("/regime")
+async def get_market_regime(current_user: User = Depends(get_current_user)):
+    """시장 상태 (CAN SLIM 'M'): 코스피·코스닥·S&P500·나스닥 — 추세·분산일·상태별 20일 뒤 성과 검증"""
+    from app.services import market_regime
+    try:
+        return await _regime.get("all", market_regime.get_all)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"시장 상태 조회 실패 — {e}")
+
+
 @router.get("/calendar")
 async def get_calendar(current_user: User = Depends(get_current_user)):
     """경제 캘린더 (1시간 캐시, 하루 안이면 기존 값을 바로 보여주고 뒤에서 갱신)"""

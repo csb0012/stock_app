@@ -7,6 +7,8 @@ import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import PriceLevels from "../components/common/PriceLevels";
 import DaytimePrice from "../components/common/DaytimePrice";
+import QuantBadge, { TrackBadge } from "../components/common/QuantBadge";
+import { RegimeWarning } from "../components/common/MarketRegime";
 import { fmtPrice, fmtSigned, probColor, probLabel, sessionLabel } from "../components/common/format";
 
 type Sort = "added" | "change" | "prob" | "buy" | "target";
@@ -299,6 +301,8 @@ export default function Watchlist() {
             </div>
           </div>
 
+          <RegimeWarning market={shownMarket} />
+
           {/* 요약 */}
           {rows.length > 0 && (
             <div data-testid="watch-summary" style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
@@ -450,6 +454,11 @@ function WatchCard({ item, analyzing, editing, onEdit, editor, onRemove }: {
             <span>20일 <span style={{ color: tone(item.change_20d) }}>{pct(item.change_20d)}</span></span>
             {item.rsi != null && <span>RSI {Number(item.rsi).toFixed(0)}</span>}
           </div>
+          {(item.quant || item.track) && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <QuantBadge q={item.quant} size={11} /><TrackBadge t={item.track} />
+            </div>
+          )}
           <RangeBar item={item} />
         </div>
       ) : (
@@ -484,8 +493,8 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
   rows: any[]; analyzing: boolean; editId: number | null; setEditId: (id: number | null) => void;
   editor: (item: any) => React.ReactNode; onRemove: (id: number) => void;
 }) {
-  const heads = ["종목", "현재가", "등락", "5일", "20일", "전망", "추천 매입가", "목표가", "손절가", "목표 매수가", "메모", ""];
-  const numCols = new Set([1, 2, 3, 4, 6, 7, 8, 9]);
+  const heads = ["종목", "현재가", "등락", "5일", "20일", "전망", "퀀트·적중", "추천 매입가", "목표가", "손절가", "목표 매수가", "메모", ""];
+  const numCols = new Set([1, 2, 3, 4, 7, 8, 9, 10]);
   return (
     <div className="card" style={{ padding: 0, overflowX: "auto" }}>
       <table className="data-table" data-testid="watch-table">
@@ -511,9 +520,9 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                   <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{r.symbol}</div>
                 </td>
                 {r.error ? (
-                  <td colSpan={8} style={{ color: "var(--red)", whiteSpace: "normal" }}>시세 조회 실패: {r.error}</td>
+                  <td colSpan={9} style={{ color: "var(--red)", whiteSpace: "normal" }}>시세 조회 실패: {r.error}</td>
                 ) : r.current_price === undefined ? (
-                  <td colSpan={8} style={{ color: "var(--text-muted)" }}>{analyzing ? "불러오는 중..." : "-"}</td>
+                  <td colSpan={9} style={{ color: "var(--text-muted)" }}>{analyzing ? "불러오는 중..." : "-"}</td>
                 ) : (
                   <>
                     <td className="num">
@@ -529,6 +538,13 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                     <td className="num" style={{ color: tone(r.change_20d) }}>{pct(r.change_20d)}</td>
                     <td>
                       {p ? <span style={{ color: probColor(p.probability), fontWeight: 600 }} title={p.summary}>{p.probability}% {probLabel(p.probability)}</span> : "-"}
+                    </td>
+                    <td>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        {r.quant ? <QuantBadge q={r.quant} size={10.5} /> : null}
+                        <TrackBadge t={r.track} size={10.5} />
+                        {!r.quant && !r.track?.n && <span style={{ color: "var(--text-muted)" }}>-</span>}
+                      </div>
                     </td>
                     <td className="num" style={{ color: "var(--accent)" }} title={p?.buy_comment}>
                       {fmtPrice(p?.buy_price, m)}

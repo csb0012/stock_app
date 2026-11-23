@@ -6,6 +6,8 @@ import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import PriceLevels from "../components/common/PriceLevels";
 import DaytimePrice from "../components/common/DaytimePrice";
+import QuantBadge, { TrackBadge } from "../components/common/QuantBadge";
+import { RegimeWarning } from "../components/common/MarketRegime";
 import NewsLink, { NewsSource } from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice, fmtShares } from "../components/common/format";
@@ -80,6 +82,11 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
             {isLong && item.per > 0 && <span> · PER {item.per.toFixed(1)} · PBR {item.pbr?.toFixed(1)}</span>}
           </span>
           {item.daytime && <div style={{ marginTop: 3 }}><DaytimePrice d={item.daytime} size={11.5} /></div>}
+          {(item.quant || item.track) && (
+            <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <QuantBadge q={item.quant} /><TrackBadge t={item.track} />
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <WatchButton item={item} inList={inWatchlist} />
@@ -326,6 +333,8 @@ export default function Recommendations() {
           ))}
         </div>
       </div>
+
+      <RegimeWarning market={group === "KR" ? "KR" : "US"} />
 
       {query.data?.updated_at && (
         <p style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12, marginBottom: 14, flexWrap: "wrap" }}>

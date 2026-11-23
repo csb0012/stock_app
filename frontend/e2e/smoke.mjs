@@ -35,6 +35,8 @@ function makeApi(overrides = {}) {
     "GET /api/portfolio/": F.PORTFOLIO_LIST,
     "GET /api/portfolio/analysis": F.PORTFOLIO,
     "GET /api/chat/status": { model: "규칙 기반", ready: true },
+    "GET /api/market/regime": F.REGIME,
+    "GET /api/quant": F.QUANT,
     ...overrides,
   };
   async function handle(route) {
@@ -242,6 +244,50 @@ async function run() {
     await page.getByText(/시세 조회 실패.*가짜 응답 없음/).waitFor({ timeout: 15000 });
   });
 
+  await test("퀀트 점수 화면: 검증 표 · 요인 등급 · 필터 · 상세 카드", {}, async (page) => {
+    await page.goto(`${BASE}/quant`);
+    await page.getByTestId("quant-table").waitFor();
+    const v = await page.getByTestId("quant-validation").innerText();
+    for (const s of ["처음 보는 기간", "56.2%", "+2.41%p", "모멘텀(RS) 35%"]) expect(v.includes(s), `검증 영역에 '${s}' 없음`);
+    const t = await page.getByTestId("quant-table").innerText();
+    for (const s of ["SK하이닉스", "A+", "57.4%", "반도체"]) expect(t.includes(s), `퀀트 표에 '${s}' 없음`);
+    expect(await page.getByTestId("regime-warning").count() === 1, "코스닥 하락 추세 경고가 없음");
+    await page.getByRole("button", { name: "9점 이상" }).click();
+    expect(!(await page.getByTestId("quant-table").innerText()).includes("NAVER"), "9점 이상 필터가 안 됨");
+    await shot(page, "quant");
+    await page.getByText("삼성전자").first().click();
+    await page.getByTestId("quote-card").waitFor();
+  });
+
+  await test("퀀트 점수 없음 / 계산 실패 문구", { api: makeApi({ "GET /api/quant": { quant: null, error: "퀀트 점수 계산 실패: 테스트", status: { running: false } } }) }, async (page) => {
+    await page.goto(`${BASE}/quant`);
+    await page.getByText("퀀트 점수 계산 실패: 테스트").waitFor();
+  });
+
+  await test("대시보드: 시장 상태 4개 지수 + 상태별 과거 성과", {}, async (page) => {
+    await page.goto(`${BASE}/`);
+    const panel = page.getByTestId("market-regime");
+    await panel.getByText("코스닥").waitFor();
+    const t = await panel.innerText();
+    for (const s of ["상승 압박", "하락 추세", "상승 추세", "분산일 3"]) expect(t.includes(s), `시장 상태에 '${s}' 없음`);
+    await panel.getByText("상태별 과거 성과").click();
+    expect((await panel.innerText()).includes("◀ 지금"), "검증 표에 현재 상태 표시 없음");
+    await shot(page, "dashboard-regime");
+  });
+
+  await test("관심종목: 퀀트 배지 · 예측 적중 기록 · 시장 경고(국내만)", {}, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("tab-KR").click();
+    await page.getByTestId("quant-badge").first().waitFor();
+    const first = await page.getByTestId("watch-card").first().innerText();
+    expect(first.includes("퀀트 A · 9/10") && first.includes("예측 적중 60.9%"), `카드: ${first.slice(0, 200)}`);
+    expect(await page.getByTestId("regime-warning").count() === 1, "국내 탭에 코스닥 하락 경고 없음");
+    await page.getByTestId("tab-US").click();
+    await page.getByText("브로드컴").waitFor();
+    expect(await page.getByTestId("regime-warning").count() === 0, "미국은 상승 추세인데 경고가 뜸");
+    expect((await page.getByTestId("watch-grid").innerText()).includes("예측 적중 75%"), "표본 적은 적중 기록도 흐리게 표시돼야 함");
+  });
+
   await test("대시보드: 빅테크 브로드컴 주간거래 표시", {}, async (page) => {
     await page.goto(`${BASE}/`);
     await page.getByText("브로드컴").waitFor();
@@ -289,7 +335,7 @@ async function run() {
   });
 
   // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)
-  const pages = ["/", "/recommendations", "/screener", "/themes", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
+  const pages = ["/", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
   for (const theme of ["light", "dark"]) {
     await test(`모든 화면 열기 — 오류로 멈추지 않음 (${theme})`, { theme }, async (page) => {
       for (const p of pages) {
@@ -301,7 +347,7 @@ async function run() {
     });
   }
   await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
-    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio"]) {
+    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant"]) {
       await page.goto(`${BASE}${p}`);
       await page.waitForLoadState("networkidle");
       await noHScroll(page);

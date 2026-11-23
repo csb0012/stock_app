@@ -107,6 +107,13 @@ def _fail(e: Exception):
     raise HTTPException(status_code=502, detail=str(e))
 
 
+def _quant(r: dict):
+    if r.get("market") != "KR":
+        return None
+    from app.services import accumulation
+    return accumulation.quant_of(r["symbol"])
+
+
 def _rec_row(r: dict, extra: dict) -> dict:
     return {
         "symbol": r["symbol"], "name": r["name"], "market": r["market"],
@@ -121,6 +128,7 @@ def _rec_row(r: dict, extra: dict) -> dict:
         "trend_6m": r["style"].get("trend_6m", 0),
         "volatility": r["style"].get("volatility", 0),
         "indicators": {"rsi": r["indicators"].get("rsi"), "macd_hist": r["indicators"].get("macd_hist")},
+        "quant": _quant(r),
         **extra,
     }
 
@@ -357,7 +365,11 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
              **analyze_candles(market, candles, r.get("per", 0), r.get("pbr", 0), news.get((market, symbol)),
                                get_extra(market, symbol), symbol)}
     await prediction_log.record([r], "검색")
-    return (await us_daytime.attach([strip_candles(r)]))[0]   # 미국이면 주간거래 가격 (표시 전용)
+    if market == "KR":
+        from app.services import accumulation
+        r = {**r, "quant": accumulation.quant_of(symbol)}
+    rows = await us_daytime.attach([strip_candles(r)])   # 미국이면 주간거래 가격 (표시 전용)
+    return (await prediction_log.attach_tracks(rows))[0]
 
 
 @router.get("/kr/{symbol}")
@@ -408,7 +420,8 @@ async def get_recommendations(kind: str, current_user: User = Depends(get_curren
         raise HTTPException(status_code=404, detail="kind 는 longterm 또는 shortterm")
     try:
         data = await _live(kind)
-        return {**data, "items": await us_daytime.attach(data.get("items") or [])}   # 미국 주간거래 (표시 전용)
+        items = await us_daytime.attach(data.get("items") or [])   # 미국 주간거래 (표시 전용)
+        return {**data, "items": await prediction_log.attach_tracks(items)}   # 종목별 예측 적중 기록
     except HTTPException:
         raise
     except Exception as e:

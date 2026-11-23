@@ -13,7 +13,7 @@ from app.services import stock_master
 from app.services.quote import analyze_items
 from app.services import prediction_log
 from app.core.swr import SWRCache
-from app.services import us_daytime
+from app.services import us_daytime, accumulation
 
 # 같은 목록을 15초 안에 다시 요청하면(화면 이동·새로고침 연타) 다시 분석하지 않음, 동시에 와도 분석은 한 번
 _analysis_cache = SWRCache("watchlist_analysis", fresh=15, max_stale=15)
@@ -132,7 +132,8 @@ async def analyze_watchlist(
     items = [_to_dict(i) for i in result.scalars().all()]
     key = (current_user.id, tuple((i["id"], i["symbol"], i["market"], i["memo"], i["target_price"]) for i in items))
     rows = await _analysis_cache.get(key, lambda: _analyze(items), wrap=False)
-    return await us_daytime.attach(rows)   # 미국 주간거래 가격 (한국 낮 시간만, 표시 전용)
+    rows = await us_daytime.attach(rows)   # 미국 주간거래 가격 (한국 낮 시간만, 표시 전용)
+    return await prediction_log.attach_tracks(rows)   # 종목별 최근 90일 예측 적중 기록
 
 
 async def _analyze(items: list) -> list:
@@ -161,5 +162,6 @@ async def _analyze(items: list) -> list:
             "change_20d": round((closes[-1] / closes[-21] - 1) * 100, 2) if len(closes) >= 21 else None,
             "target_gap_pct": round((r["price"] - tp) / tp * 100, 2) if tp else None,
             "target_reached": bool(tp and r["price"] <= tp),
+            "quant": accumulation.quant_of(item["symbol"]) if item["market"] == "KR" else None,
         })
     return rows
