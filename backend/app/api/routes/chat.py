@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import get_current_user
-from app.core.config import settings
 from app.models.user import User
 from app.services import chatbot
 
@@ -22,13 +21,13 @@ class ChatRequest(BaseModel):
 
 @router.get("/status")
 async def chat_status(current_user: User = Depends(get_current_user)):
-    """챗봇 사용 가능 여부 (키는 보여주지 않음)"""
-    return {"enabled": bool(settings.anthropic_api_key), "model": settings.chat_model, "effort": settings.chat_effort}
+    """챗봇 사용 가능 여부 (규칙 기반 — 외부 API 키 필요 없음)"""
+    return {"enabled": True, "model": "규칙 기반"}
 
 
 @router.post("")
 async def chat(req: ChatRequest, current_user: User = Depends(get_current_user)):
-    """AI 챗봇 — Claude 가 앱 데이터(추천·종목 분석·투자종목·관심종목·시장·적중률·이벤트)를 조회해 답변"""
+    """규칙 기반 챗봇 — 질문 키워드로 앱 데이터(추천·종목 분석·투자종목·관심종목·시장·적중률·이벤트)를 조회해 답변"""
     try:
         return await chatbot.chat(current_user, [m.model_dump() for m in req.messages])
     except chatbot.ChatError as e:

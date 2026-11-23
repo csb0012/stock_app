@@ -56,7 +56,6 @@ npm run dev
 | `FINNHUB_API_KEY` | 선택 | 경제 캘린더 + 미국 종목 애널리스트 의견·실적 요인 |
 | `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
 | `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) |
-| `ANTHROPIC_API_KEY` | 선택 | AI 챗봇 (Claude API, 유료). `CHAT_MODEL`(기본 claude-opus-5-5)·`CHAT_EFFORT`(기본 medium) |
 
 ## 아키텍처
 
@@ -65,7 +64,7 @@ npm run dev
 ```
 core/
   swr.py         — SWRCache: 기존 값을 바로 주고 뒤에서 갱신(stale-while-revalidate), 동시 요청 1회 실행. 응답에 updated_at·refreshing·refresh_error
-  config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증)
+  config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
 models/
@@ -96,9 +95,9 @@ services/
   scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET), 국내 수급 수집(18:10~)
                    + AI 추천 기본 데이터 14분마다 미리 계산 + 이벤트 일정 6시간마다 갱신
   flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음)
-  chatbot.py     — AI 챗봇: Claude API(anthropic SDK) tool runner. 도구(읽기 전용) = today_picks·analyze_stock·my_portfolio·
-                   my_watchlist·market_overview·track_record·upcoming_events. 숫자는 도구 결과만, 현재 시각은 마지막 질문 앞에 붙임
-                   (system 고정 → 캐시), 서버 측 거절 대비 fallbacks="default". 키 없음·API 오류는 그대로 오류
+  chatbot.py     — 규칙 기반 챗봇 (외부 AI 없음): route() 가 질문 키워드로 의도(종목 분석·매수/매도 후보·투자종목·관심종목·
+                   시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
+                   prediction_log.review·events)를 조회해 정해진 마크다운 형식으로 답함. 종목은 종목마스터 정확 일치 우선
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
@@ -113,7 +112,7 @@ api/routes/
   market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
-  chat.py        — POST /chat ({messages:[{role,content}]} → {reply, tools, model, usage}), GET /chat/status
+  chat.py        — POST /chat ({messages:[{role,content}]} → 마지막 질문만 보고 {reply, tools, model:"규칙 기반"}), GET /chat/status
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
@@ -141,7 +140,7 @@ api/routes/
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
 Layout.tsx         — 사이드바(메뉴·장 운영 상태) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃)
 store/auth.ts      — Zustand: token + user 상태
-pages/             — Dashboard, Recommendations, Chat(AI 챗봇), Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
+pages/             — Dashboard, Recommendations, Chat(규칙 기반 챗봇), Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
 components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,
                      PredictionReasons (전망 근거), BuyPrice (추천 매입가), StockSearchBox (자동완성), StockQuoteCard, format.ts
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)

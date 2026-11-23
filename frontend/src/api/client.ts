@@ -37,10 +37,9 @@ export const authApi = {
   enableTotp: (totp_code: string) => api.post("/auth/enable-totp", { totp_code }),
 };
 
-// AI 챗봇 (도구 조회 때문에 오래 걸릴 수 있어 3분까지 기다림)
+// 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)
 export const chatApi = {
-  status: () => api.get("/chat/status"),
-  send: (messages: { role: string; content: string }[]) => api.post("/chat", { messages }, { timeout: 180_000 }),
+  send: (messages: { role: string; content: string }[]) => api.post("/chat", { messages }, { timeout: 60_000 }),
 };
 
 // Market

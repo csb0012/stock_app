@@ -1,242 +1,429 @@
-"""AI 챗봇 — Claude API(도구 사용)로 앱 데이터를 직접 조회해서 답변
+"""규칙 기반 챗봇 — 질문의 키워드로 할 일을 고르고, 앱 데이터를 조회해 정해진 형식으로 답변 (외부 AI API 없음)
 
-Claude 가 질문에 필요한 도구를 스스로 골라 부름 (SDK tool runner 가 반복 처리):
-  today_picks       오늘의 매수(상승 확률 높은)·매도/주의(하락 확률 높은) 후보 — AI 추천 데이터
-  analyze_stock     종목 하나 상세 (현재가·상승 확률·추천 매입가·목표가·손절가·근거·수급·뉴스)
-  my_portfolio      내 투자종목 손익 + 다음 거래일 전망
-  my_watchlist      내 관심종목 + 전망
-  market_overview   지수·환율·VIX 등
-  track_record      예측 적중률 (실제 + 백테스트) — 확률을 얼마나 믿어도 되는지
-  upcoming_events   옵션 만기일·미국 주요 지표 발표 일정
+질문 → 의도 판단 (위에서부터 먼저 맞는 것):
+  1. 종목명·코드가 정확히 들어 있으면       → 종목 분석 (예: "삼성전자 사도 돼?", "NVDA 어때")
+  2. 투자종목·보유·손익·수익                → 내 투자종목 점검
+  3. 관심종목                               → 관심종목 현황
+  4. 매도·팔·하락·위험                       → 하락 확률 높은 종목 (보유 중이면 표시)
+  5. 매수·추천·살·오를·상승                  → 상승 확률 높은 종목
+  6. 적중률·정확도·믿을                      → 예측 적중률
+  7. 이벤트·일정·만기·FOMC·CPI·발표          → 변동성 이벤트 일정
+  8. 시장·지수·코스피·나스닥·환율·VIX         → 시장 현황
+  9. 그 밖                                  → 이름 일부로 종목 찾기 (3글자 이상) → 못 찾으면 사용법 안내
+조건: "국내/한국/코스피" → 국내만, "미국/나스닥/해외" → 미국만, "3개" → 개수.
 
-원칙: 모든 숫자는 도구 결과에서만 (지어내지 않음). 도구는 읽기 전용 (주문·수정 없음).
-ANTHROPIC_API_KEY 가 없거나 API 오류면 그대로 오류로 알림 (다른 답으로 대체하지 않음).
+원칙: 숫자는 전부 조회한 값 그대로 (지어내지 않음). 조회 실패는 실패라고 답함. 읽기 전용 (주문·수정 없음).
 """
-import json
-from datetime import date, datetime, timedelta
+import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import anthropic
-from anthropic import beta_async_tool
+from sqlalchemy import select
 
-from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 
-SYSTEM = """당신은 개인용 주식 앱 'StockApp' 안의 투자 도우미입니다. 사용자는 한국어로 묻고, 국내(KOSPI·KOSDAQ)와 미국 주식을 합니다.
+DISCLAIMER = "\n\n_예측은 참고용이며 투자 판단과 손실 책임은 본인에게 있습니다._"
 
-## 데이터 원칙
-- 가격·확률·적중률·수급 등 모든 숫자는 반드시 도구로 조회한 값만 씁니다. 기억이나 추측으로 숫자를 만들지 않습니다.
-- 도구가 오류를 돌려주면 그 사실을 그대로 말하고, 다른 값으로 메우지 않습니다.
-- 질문에 필요한 도구는 먼저 호출하세요. 여러 도구가 필요하면 한 번에 같이 호출해도 됩니다.
+# 종목코드처럼 보이지만 질문에서는 다른 뜻으로 쓰이는 영문 단어
+_NOT_SYMBOL = {"AI", "ETF", "ETN", "VIX", "CPI", "PCE", "GDP", "PPI", "FOMC", "PER", "PBR", "RSI", "MACD", "USD",
+               "KRW", "KR", "US", "ET", "OK", "PM", "AM", "IPO", "EPS", "ATR", "MA", "TOP", "BEST", "NOW", "BUY", "SELL"}
+# 종목명 뒤에 붙는 조사·어미
+_JOSA = ("에서는", "으로는", "이랑", "하고", "에서", "으로", "한테", "은", "는", "이", "가", "을", "를", "도", "의",
+         "에", "랑", "로", "좀", "요")
+_STOP = {"오늘", "내일", "지금", "종목", "주식", "추천", "매수", "매도", "어때", "사도", "팔까", "괜찮", "전망", "분석",
+         "알려줘", "알려", "줘", "해줘", "어떻게", "얼마", "언제", "국내", "미국", "한국", "해외", "시장"}
 
-## 매수·매도 추천 방식
-- 앱의 '상승 확률'은 다음 거래일 하루의 방향 예측입니다. 50% 초과 = 상승 쪽, 50% 미만 = 하락 쪽.
-- 추천할 때는 track_record 로 확인한 실제 적중률을 함께 알려 확률을 얼마나 믿을지 판단하게 하세요. 적중률이 50% 근처면 "참고 수준"이라고 분명히 말합니다.
-- 주식에 '확실한' 종목은 없습니다. 사용자가 확실한 종목을 원하면, 근거가 가장 많이 겹치는 후보를 고르되 왜 확실하지 않은지(적중률·변동성 이벤트)를 짧게 덧붙이세요. 과장하지 않습니다.
-- 종목을 추천할 때는 행동 계획을 구체적으로 줍니다:
-  - 언제·얼마에 살지: 추천 매입가(범위)와 그 조건(buy_comment). 현재가가 매입가보다 높으면 "눌릴 때까지 기다림".
-  - 언제 팔지: 목표가(익절), 손절가(이 가격 아래로 내려가면 정리). 예측 대상일(target_label) 기준임을 밝힙니다.
-  - 근거: 학습 모델/지표 요인, 외국인·기관 수급, 뉴스, 공시 중 실제로 나온 것.
-  - 주의: events(옵션 만기·FOMC·CPI 등), warnings.
-- 하락 확률이 높은 종목은 "매도·비중 축소 검토" 또는 "신규 매수 보류"로 제시합니다. 사용자가 보유 중인지(my_portfolio) 확인해서 구분하세요.
-- 사용자의 투자종목·관심종목 질문에는 평단가 대비 손익과 다음 거래일 전망을 같이 봅니다.
-
-## 답변 형식
-- 한국어, 간결하게. 핵심 결론을 먼저, 그다음 종목별 표나 목록.
-- 가격은 국내 ₩, 미국 $ 로 표시합니다.
-- 마지막 줄에 한 문장으로: 예측은 참고용이며 투자 판단과 손실 책임은 본인에게 있다는 점.
-"""
+_KW = [
+    ("portfolio", r"투자\s*종목|보유|포트폴리오|내\s*(주식|종목)|손익|수익률?|평가\s*금액|물렸"),
+    ("watchlist", r"관심\s*종목|관심\s*목록|찜"),
+    ("sell", r"매도|팔(까|아|고|야|지|면)|파는|팔\s|하락|떨어|위험|손절|빠질|약세"),
+    ("buy", r"매수|추천|살\s*만|사(도|면|야|고|볼|자|려)|오를|상승|유망|강세|좋은\s*종목|뭐\s*살"),
+    ("track", r"적중|정확도|맞(췄|았|나|아)|믿을|신뢰|성적|성능"),
+    ("events", r"이벤트|일정|만기|마녀|fomc|cpi|pce|고용|금리\s*결정|발표|지표"),
+    ("market", r"시장|지수|코스피|코스닥|나스닥|다우|s&p|환율|달러|vix|공포|유가|국채|금리|빅테크|증시|장\s*어때"),
+    ("help", r"도움|사용법|뭘?\s*할\s*수|기능|안녕|hello|\bhi\b"),
+]
 
 
-def _brief_pred(p: dict | None) -> dict | None:
-    if not p:
-        return None
-    keys = ("target_label", "probability", "signal", "confidence", "buy_price", "buy_low", "buy_high", "buy_gap_pct",
-            "buy_comment", "target_price", "stop_loss", "method", "model_status", "events", "warnings")
-    out = {k: p.get(k) for k in keys if p.get(k) not in (None, [], "")}
-    if p.get("summary"):
-        out["summary"] = p["summary"][:400]
-    factors = [f"{f['name']}: {f['detail'][:120]}" for f in (p.get("factors") or [])[:6]]
-    if factors:
-        out["factors"] = factors
+# ---------------- 질문 해석 ----------------
+
+def _market_filter(q: str) -> str:
+    kr = re.search(r"국내|한국|코스피|코스닥|\bkr\b", q, re.I)
+    us = re.search(r"미국|나스닥|해외|뉴욕|\bus\b", q, re.I)
+    return "KR" if kr and not us else "US" if us and not kr else "ALL"
+
+
+def _count(q: str, default: int = 5) -> int:
+    m = re.search(r"(\d{1,2})\s*(개|종목|가지|위)", q)
+    return max(1, min(10, int(m.group(1)))) if m else default
+
+
+def _strip_josa(w: str) -> str:
+    for j in _JOSA:
+        if w.endswith(j) and len(w) > len(j) + 1:
+            return w[: -len(j)]
+    return w
+
+
+def _tokens(q: str) -> list:
+    words = [w for w in re.split(r"[\s,?!.~·/()\"']+", q) if w]
+    out = []
+    for w in words + [a + b for a, b in zip(words, words[1:])]:   # "LG 에너지솔루션" 처럼 띄어 쓴 이름
+        for t in (w, _strip_josa(w)):
+            if t and t not in out:
+                out.append(t)
     return out
 
 
-def _headlines(news: dict | list | None, n: int = 3) -> list:
-    items = news.get("headlines", []) if isinstance(news, dict) else (news or [])
-    return [{"title": h.get("title", "")[:90], "date": h.get("date"), "tone": h.get("tone")} for h in items[:n]]
-
-
-def _dump(obj) -> str:
-    return json.dumps(obj, ensure_ascii=False, default=str)
-
-
-def make_tools(user):
-    """요청한 사용자 기준의 도구들 (투자종목·관심종목은 그 사용자 것만)"""
-
-    @beta_async_tool
-    async def today_picks(side: str = "buy", market: str = "ALL", limit: int = 5) -> str:
-        """오늘의 매수 후보 또는 매도/주의 후보를 AI 추천 데이터(장기 후보 + 단기 거래량 급증 종목)에서 고릅니다.
-
-        Args:
-            side: "buy" = 상승 확률 높은 순(매수 후보), "sell" = 하락 확률 높은 순(매도·주의 후보)
-            market: "KR"(국내), "US"(미국), "ALL"(전체)
-            limit: 돌려줄 종목 수 (1~10)
-        """
-        from app.api.routes import stocks
-        limit = max(1, min(10, int(limit)))
-        rows, errors = {}, []
-        for kind in ("longterm", "shortterm"):
-            try:
-                data = await stocks._live(kind)
-            except Exception as e:
-                errors.append(f"{kind}: {getattr(e, 'detail', e)}")
+def _find_stock(q: str, fuzzy: bool = False) -> dict | None:
+    """질문 안의 종목: 이름·코드가 정확히 일치하는 것 우선. fuzzy=True 면 이름 앞부분·일부 일치도 (3글자 이상)"""
+    from app.services import stock_master
+    toks = _tokens(q)
+    for t in toks:
+        if t.upper() in _NOT_SYMBOL or t in _STOP:
+            continue
+        for h in stock_master.search(t, "ALL", 3):
+            if h["symbol"].upper() == t.upper() or h["name"].replace(" ", "").lower() == t.lower():
+                return h
+    if fuzzy:
+        for t in sorted(toks, key=len, reverse=True):
+            if len(t) < 3 or t.upper() in _NOT_SYMBOL or t in _STOP or re.fullmatch(r"[a-z]+", t):
                 continue
-            for r in data["items"]:
-                if market != "ALL" and r["market"] != market:
-                    continue
+            hits = stock_master.search(t, "ALL", 1)
+            if hits:
+                return hits[0]
+    return None
+
+
+def route(q: str) -> tuple:
+    """질문 → (의도, 종목 또는 None)"""
+    stock = _find_stock(q)
+    ql = q.lower()
+    intents = [name for name, pat in _KW if re.search(pat, ql)]
+    if stock and not ({"portfolio", "watchlist"} & set(intents)):
+        return "stock", stock
+    if "buy" in intents and "sell" in intents:
+        # "매수 추천해줘, 언제 팔지도" 는 매수 / "하락할 종목 추천" 은 매도 — 강한 매도 단어가 있을 때만 매도 쪽
+        intents.remove("buy" if re.search(r"매도|하락|떨어|위험|손절|약세|팔아야", ql) else "sell")
+    for name in ("portfolio", "watchlist", "sell", "buy", "track", "events", "market"):
+        if name in intents:
+            return name, None
+    stock = _find_stock(q, fuzzy=True)   # "하이닉스 어때" 처럼 이름 일부
+    if stock:
+        return "stock", stock
+    return ("help" if "help" in intents else "unknown"), None
+
+
+# ---------------- 형식 ----------------
+
+def _px(v, market: str) -> str:
+    if v is None:
+        return "-"
+    return f"₩{v:,.0f}" if market == "KR" else f"${v:,.2f}"
+
+
+def _won(v) -> str:
+    """부호 있는 원화 금액: +₩45,678 / -₩1,200"""
+    return f"{'-' if v < 0 else '+'}₩{abs(v):,.0f}"
+
+
+def _pct(v) -> str:
+    return "-" if v is None else f"{v:+.2f}%"
+
+
+def _opinion(prob) -> str:
+    if prob is None:
+        return "-"
+    return "상승 우세" if prob >= 55 else "하락 우세" if prob < 45 else "방향 약함"
+
+
+def _buy_zone(p: dict, market: str) -> str:
+    if p.get("buy_low") and p.get("buy_high") and p["buy_low"] != p["buy_high"]:
+        return f"{_px(p['buy_low'], market)}~{_px(p['buy_high'], market)}"
+    return _px(p.get("buy_price"), market)
+
+
+async def _accuracy_line() -> str:
+    from app.services import prediction_log
+    try:
+        rv = await prediction_log.review(90, "ALL", "all", "all", 1)
+    except Exception as e:
+        return f"(적중률 조회 실패: {e})"
+    o = rv["overall"]
+    if not o["accuracy"]:
+        return "아직 채점된 예측이 없어 적중률을 알 수 없습니다 — 확률은 참고만 하세요."
+    note = " — 50% 근처라 참고 수준입니다" if o["accuracy"] < 55 else ""
+    return f"최근 90일 예측 적중률 **{o['accuracy']}%** ({o['hit']}/{o['hit'] + o['miss']}건){note}."
+
+
+# ---------------- 답변 ----------------
+
+async def _picks(user, side: str, q: str) -> str:
+    from app.api.routes import stocks
+    market, limit = _market_filter(q), _count(q)
+    rows, errors = {}, []
+    for kind in ("longterm", "shortterm"):
+        try:
+            data = await stocks._live(kind)
+        except Exception as e:
+            errors.append(f"{'장기' if kind == 'longterm' else '단기'} 후보 조회 실패: {getattr(e, 'detail', e)}")
+            continue
+        for r in data["items"]:
+            if market == "ALL" or r["market"] == market:
                 rows.setdefault((r["market"], r["symbol"]), r)
-        items = sorted(rows.values(), key=lambda r: r["prediction"].get("probability_exact", r["prediction"]["probability"]),
-                       reverse=(side != "sell"))[:limit]
-        out = [{
-            "name": r["name"], "symbol": r["symbol"], "market": r["market"], "category": r.get("category"),
-            "price": r["price"], "change_rate_today": r["change_rate"], "per": r.get("per"), "pbr": r.get("pbr"),
-            "prediction": _brief_pred(r["prediction"]), "flows_5d": r.get("flows"),
-            "news": _headlines(r.get("news"), 2), "long_term_score": r.get("long_term_score"),
-        } for r in items]
-        return _dump({"side": side, "market": market, "candidates_total": len(rows), "items": out, "errors": errors})
+    if not rows:
+        return "추천 후보를 불러오지 못했습니다.\n" + "\n".join(f"- {e}" for e in errors)
 
-    @beta_async_tool
-    async def analyze_stock(query: str) -> str:
-        """종목 하나를 이름이나 코드로 찾아 상세 분석합니다 (현재가, 다음 거래일 상승 확률, 추천 매입가·목표가·손절가, 근거, 수급, 뉴스).
+    def prob(r):
+        return r["prediction"].get("probability_exact", r["prediction"]["probability"])
+    where = {"KR": "국내", "US": "미국"}.get(market, "국내·미국")
+    title = "상승 확률이 높은" if side == "buy" else "하락 확률이 높은"
+    # 매수 후보는 상승 쪽(50% 초과)만, 매도·주의 후보는 하락 쪽(50% 미만)만
+    items = sorted([r for r in rows.values() if (prob(r) > 50 if side == "buy" else prob(r) < 50)],
+                   key=prob, reverse=(side == "buy"))[:limit]
+    if not items:
+        return (f"지금 {where} AI 추천 후보 {len(rows)}개 중 {'상승' if side == 'buy' else '하락'} 쪽으로 예측된 종목이 없습니다."
+                + "".join(f"\n⚠ {e}" for e in errors))
+    held = await _held_symbols(user) if side == "sell" else set()
+    target = items[0]["prediction"].get("target_label") or "다음 거래일"
+    lines = [f"**{where} {title} 종목 {len(items)}개** ({target} 기준, AI 추천 후보 {len(rows)}개 중)", ""]
+    if side == "buy":
+        lines += ["| 종목 | 현재가 | 상승 확률 | 추천 매입가 | 목표가 | 손절가 |", "|---|---|---|---|---|---|"]
+        for r in items:
+            p, m = r["prediction"], r["market"]
+            lines.append(f"| {r['name']} ({r['symbol']}) | {_px(r['price'], m)} ({_pct(r['change_rate'])}) | "
+                         f"{p['probability']}% | {_buy_zone(p, m)} | {_px(p.get('target_price'), m)} | {_px(p.get('stop_loss'), m)} |")
+    else:
+        lines += ["| 종목 | 현재가 | 상승 확률 | 보유 | 의견 |", "|---|---|---|---|---|"]
+        for r in items:
+            p, m = r["prediction"], r["market"]
+            mine = (m, r["symbol"]) in held
+            lines.append(f"| {r['name']} ({r['symbol']}) | {_px(r['price'], m)} ({_pct(r['change_rate'])}) | "
+                         f"{p['probability']}% | {'**보유 중**' if mine else '-'} | "
+                         f"{'비중 축소 검토' if mine else '신규 매수 보류'} |")
+    lines += ["", "**근거**"]
+    for r in items:
+        lines.append(f"- **{r['name']}**: {(r['prediction'].get('summary') or '-')[:160]}")
+    if side == "buy":
+        lines += ["", "추천 매입가 근처로 내려올 때 사고, 목표가에서 익절·손절가 아래로 내려가면 정리하는 계획입니다."]
+    if errors:
+        lines += [""] + [f"⚠ {e}" for e in errors]
+    lines += ["", await _accuracy_line()]
+    return "\n".join(lines)
 
-        Args:
-            query: 종목명 또는 코드 (예: 삼성전자, 005930, 엔비디아, NVDA)
-        """
-        from app.services import stock_master
-        from app.services.quote import analyze_kr, analyze_us_many, strip_candles
-        hits = stock_master.search(query, "ALL", 5)
-        if not hits:
-            return _dump({"error": f"'{query}' 종목을 찾지 못함 (KIS 종목마스터 기준)"})
-        m = hits[0]
+
+async def _held_symbols(user) -> set:
+    from app.models.portfolio import PortfolioItem
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(PortfolioItem).where(PortfolioItem.user_id == user.id))).scalars().all()
+    return {(r.market, r.symbol) for r in rows}
+
+
+async def _stock(stock: dict) -> str:
+    from app.services.quote import analyze_kr, analyze_us_many
+    try:
+        r = await analyze_kr(stock["symbol"]) if stock["market"] == "KR" else (await analyze_us_many([stock["symbol"]]))[stock["symbol"]]
+    except Exception as e:
+        return f"{stock['name']}({stock['symbol']}) 조회 실패: {e}"
+    if "error" in r:
+        return f"{stock['name']}({stock['symbol']}) 조회 실패: {r['error']}"
+    p, m, ind = r["prediction"], r["market"], r.get("indicators") or {}
+    lines = [
+        f"**{r['name']} ({r['symbol']})** — 현재가 {_px(r['price'], m)} ({_pct(r['change_rate'])})",
+        "",
+        f"- {p.get('target_label') or '다음 거래일'} 상승 확률 **{p['probability']}%** → **{p.get('signal', '-')}** (신뢰도 {p.get('confidence', '-')})",
+        f"- 추천 매입가 {_buy_zone(p, m)}" + (f" — {p['buy_comment']}" if p.get("buy_comment") else ""),
+        f"- 목표가 {_px(p.get('target_price'), m)} / 손절가 {_px(p.get('stop_loss'), m)}",
+    ]
+    extra = []
+    if ind.get("rsi") is not None:
+        extra.append(f"RSI {ind['rsi']:.0f}")
+    if r.get("per"):
+        extra.append(f"PER {r['per']:.1f}")
+    if r.get("pbr"):
+        extra.append(f"PBR {r['pbr']:.2f}")
+    if extra:
+        lines.append("- " + " · ".join(extra))
+    fl = r.get("flows")
+    if fl:
+        lines.append(f"- 최근 {fl['days']}거래일 순매수: 외국인 {fl['frgn_qty']:+,}주 · 기관 {fl['orgn_qty']:+,}주 · 개인 {fl['prsn_qty']:+,}주")
+    lines += ["", f"**요약**: {p.get('summary') or '-'}"]
+    factors = (p.get("factors") or [])[:5]
+    if factors:
+        lines += ["", "**근거**"] + [f"- {'▲' if f.get('impact') == 'up' else '▼' if f.get('impact') == 'down' else '·'} "
+                                    f"{f['name']}: {f['detail'][:140]}" for f in factors]
+    news = (r.get("news") or {}).get("headlines") or []
+    if news:
+        lines += ["", "**최근 뉴스**"] + [f"- {h.get('title', '')[:90]}" for h in news[:3]]
+    for w in p.get("warnings") or []:
+        lines.append(f"\n⚠ {w}")
+    lines += ["", await _accuracy_line()]
+    return "\n".join(lines)
+
+
+async def _portfolio(user) -> str:
+    from app.api.routes.portfolio import analyze_portfolio
+    async with AsyncSessionLocal() as db:
         try:
-            if m["market"] == "KR":
-                r = await analyze_kr(m["symbol"])
-            else:
-                r = (await analyze_us_many([m["symbol"]]))[m["symbol"]]
+            data = await analyze_portfolio(current_user=user, db=db)
         except Exception as e:
-            return _dump({"error": f"{m['name']} 조회 실패: {e}"})
-        if "error" in r:
-            return _dump({"error": f"{m['name']}: {r['error']}"})
-        r = strip_candles(r)
-        ind = r.get("indicators") or {}
-        return _dump({
-            "name": r["name"], "symbol": r["symbol"], "market": r["market"], "category": r.get("category"),
-            "price": r["price"], "change_rate_today": r["change_rate"], "per": r.get("per"), "pbr": r.get("pbr"),
-            "indicators": {k: ind.get(k) for k in ("rsi", "macd_hist", "ma20", "ma60", "bb_upper", "bb_lower")},
-            "prediction": _brief_pred(r["prediction"]), "flows_5d": r.get("flows"),
-            "news": _headlines(r.get("news"), 4), "style": r.get("style"),
-            "other_matches": [f"{h['name']}({h['symbol']})" for h in hits[1:4]],
-        })
+            return f"투자종목 조회 실패: {getattr(e, 'detail', e)}"
+    items = data.get("items") or []
+    if not items:
+        return "등록된 투자종목이 없습니다. **투자종목** 메뉴에서 보유 종목을 추가하세요."
+    lines = []
+    c = data.get("combined_krw")
+    if c:
+        lines.append(f"**총 평가금액 ₩{c['value']:,}** · 손익 {_won(c['pnl'])} ({c['pnl_pct']:+.2f}%) · 오늘 {_won(c['day_pnl'])}")
+    elif data.get("fx_error"):
+        lines.append(f"(환율 조회 실패로 원화 합계 없음: {data['fx_error']})")
+    lines += ["", "| 종목 | 수량 | 평단가 | 현재가 | 손익률 | 상승 확률 | 의견 |", "|---|---|---|---|---|---|---|"]
+    warn = []
+    for r in items:
+        m = r["market"]
+        if r.get("error"):
+            lines.append(f"| {r['name']} ({r['symbol']}) | {r['quantity']:g} | {_px(r['avg_price'], m)} | 조회 실패 | - | - | - |")
+            warn.append(f"{r['name']}: {r['error']}")
+            continue
+        p = r.get("prediction") or {}
+        prob = p.get("probability")
+        op = "보유·추가 검토" if prob is not None and prob >= 55 else "비중 축소 검토" if prob is not None and prob < 45 else "관망"
+        if p.get("stop_loss") and r["current_price"] <= p["stop_loss"]:
+            op = "**손절가 이하**"
+        lines.append(f"| {r['name']} ({r['symbol']}) | {r['quantity']:g} | {_px(r['avg_price'], m)} | {_px(r['current_price'], m)} | "
+                     f"{_pct(r.get('pnl_pct'))} | {prob if prob is not None else '-'}% | {op} |")
+        if r.get("warning"):
+            warn.append(r["warning"])
+    downs = [r["name"] for r in items if (r.get("prediction") or {}).get("probability", 50) < 45]
+    if downs:
+        lines += ["", f"하락 확률이 높은 보유 종목: **{', '.join(downs)}** — 손절가·비중을 확인하세요."]
+    lines += [""] + [f"⚠ {w}" for w in warn]
+    lines += [await _accuracy_line()]
+    return "\n".join(lines)
 
-    @beta_async_tool
-    async def my_portfolio() -> str:
-        """사용자의 투자종목(보유 종목): 수량·평단가·현재가·손익률·오늘 손익과 다음 거래일 전망, 통화별 합계."""
-        from app.api.routes.portfolio import analyze_portfolio
-        async with AsyncSessionLocal() as db:
-            try:
-                data = await analyze_portfolio(current_user=user, db=db)
-            except Exception as e:
-                return _dump({"error": f"투자종목 조회 실패: {getattr(e, 'detail', e)}"})
-        rows = []
-        for r in data.get("items", []):
-            rows.append({k: r.get(k) for k in ("name", "symbol", "market", "quantity", "avg_price", "current_price",
-                                                "pnl_pct", "pnl_amount", "day_pnl", "weight", "error", "warning")}
-                        | {"prediction": _brief_pred(r.get("prediction"))})
-        return _dump({"items": rows, "totals_by_currency": data.get("totals"), "usdkrw": data.get("usdkrw"),
-                      "combined_krw": data.get("combined_krw"), "fx_error": data.get("fx_error")})
 
-    @beta_async_tool
-    async def my_watchlist() -> str:
-        """사용자의 관심종목: 현재가·등락·5/20일 변화·메모·사용자가 정한 목표가와 다음 거래일 전망."""
-        from app.api.routes.watchlist import analyze_watchlist
-        async with AsyncSessionLocal() as db:
-            try:
-                rows = await analyze_watchlist(current_user=user, db=db)
-            except Exception as e:
-                return _dump({"error": f"관심종목 조회 실패: {getattr(e, 'detail', e)}"})
-        return _dump([{k: r.get(k) for k in ("name", "symbol", "market", "memo", "target_price", "current_price",
-                                             "change_rate", "change_5d", "change_20d", "rsi", "target_reached", "error")}
-                       | {"prediction": _brief_pred(r.get("prediction"))} for r in rows])
-
-    @beta_async_tool
-    async def market_overview() -> str:
-        """시장 전체: 코스피·코스닥(KIS 실시간), 다우·S&P500·나스닥·SOX·VIX·미 10년 금리·달러인덱스·유가·환율, 빅테크 종가와 시간외."""
-        from app.api.routes.market import get_market_overview
+async def _watchlist(user) -> str:
+    from app.api.routes.watchlist import analyze_watchlist
+    async with AsyncSessionLocal() as db:
         try:
-            data = await get_market_overview(current_user=user)
+            rows = await analyze_watchlist(current_user=user, db=db)
         except Exception as e:
-            return _dump({"error": f"시장 데이터 조회 실패: {e}"})
-        idx = {k: {f: v.get(f) for f in ("price", "change_rate", "as_of", "source", "stale", "error") if v.get(f) is not None}
-               for k, v in (data.get("indices") or {}).items()}
-        big = [{f: b.get(f) for f in ("symbol", "price", "change_rate", "as_of", "ext", "error") if b.get(f) is not None}
-               for b in data.get("bigtech") or []]
-        return _dump({"indices": idx, "bigtech": big})
-
-    @beta_async_tool
-    async def track_record(days: int = 90) -> str:
-        """앱 예측의 실제 적중률 (실제 예측 + 과거 백테스트): 전체·상승/하락 예측별·시장별·방식별, 학습 모델 사용 상태.
-
-        Args:
-            days: 최근 며칠 기준 (7~180)
-        """
-        from app.services import prediction_log, ml_model
-        days = max(7, min(180, int(days)))
-        rv = await prediction_log.review(days, "ALL", "all", "all", 1)
-        models = {v: (None if not m else {k: m.get(k) for k in ("adopted", "adopt_reason", "stack_usable", "stack_reason")})
-                  for v, m in ml_model.status().items() if v in ml_model.VARIANT_FEATURES}
-        return _dump({
-            "days": days, "overall": rv["overall"], "up_calls": rv["up_calls"], "down_calls": rv["down_calls"],
-            "by_market": rv["by_market"], "by_kind": rv["by_kind"],
-            "method_accuracy": [{k: m.get(k) for k in ("label", "n", "dir_accuracy", "accuracy", "calls")}
-                                for m in rv.get("method_accuracy", [])],
-            "models": models,
-        })
-
-    @beta_async_tool
-    async def upcoming_events(days: int = 14) -> str:
-        """앞으로 며칠 동안의 변동성 이벤트: 국내·미국 옵션 만기일(마녀의 날)과 미국 주요 지표 발표(CPI·고용·FOMC·PCE·GDP).
-
-        Args:
-            days: 앞으로 며칠 (1~60)
-        """
-        from app.services import events
-        days = max(1, min(60, int(days)))
-        from zoneinfo import ZoneInfo
-        today = datetime.now(ZoneInfo("Asia/Seoul")).date()
-        out = []
-        for i in range(days + 1):
-            d = today + timedelta(days=i)
-            for mk in ("KR", "US"):
-                ox = events.option_expiry(mk, d)
-                if ox:
-                    out.append({"date": d.isoformat(), "market": mk, "event": ox})
-        for e in events._cache["events"]:
-            if today.isoformat() <= e["date"][:10] <= (today + timedelta(days=days)).isoformat():
-                out.append({"date": e["date"][:10], "market": "US", "event": e["event"]})
-        out.sort(key=lambda x: x["date"])
-        return _dump({"events": out, "note": events.status().get("error")})
-
-    return [today_picks, analyze_stock, my_portfolio, my_watchlist, market_overview, track_record, upcoming_events]
+            return f"관심종목 조회 실패: {getattr(e, 'detail', e)}"
+    if not rows:
+        return "등록된 관심종목이 없습니다. **관심종목** 메뉴에서 추가하세요."
+    lines = ["| 종목 | 현재가 | 오늘 | 20일 | 상승 확률 | 목표가 |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        m = r["market"]
+        if r.get("error"):
+            lines.append(f"| {r['name']} ({r['symbol']}) | 조회 실패 | - | - | - | - |")
+            continue
+        p = r.get("prediction") or {}
+        tp = _px(r["target_price"], m) + (" **도달**" if r.get("target_reached") else "") if r.get("target_price") else "-"
+        lines.append(f"| {r['name']} ({r['symbol']}) | {_px(r['current_price'], m)} | {_pct(r.get('change_rate'))} | "
+                     f"{_pct(r.get('change_20d'))} | {p.get('probability', '-')}% ({_opinion(p.get('probability'))}) | {tp} |")
+    reached = [r["name"] for r in rows if r.get("target_reached")]
+    if reached:
+        lines += ["", f"목표가(이하)에 도달한 종목: **{', '.join(reached)}**"]
+    return "\n".join(lines)
 
 
-def _now_context() -> str:
-    from app.services.market_calendar import market_status
-    kr, us = market_status("KR"), market_status("US")
-    from zoneinfo import ZoneInfo
-    now = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d (%a) %H:%M")  # 서버 시계가 UTC 여도 한국시간
-    return (f"[현재 {now} 한국시간 · 국내장 {kr['state']}"
-            f"{' (다음 개장 ' + kr['next_open_label'] + ')' if kr.get('next_open_label') else ''}"
-            f" · 미국장 {us['state']}{' (다음 개장 ' + us['next_open_kst'] + ' 한국시간)' if us.get('next_open_kst') else ''}]")
+async def _market(user) -> str:
+    from app.api.routes.market import get_market_overview
+    try:
+        data = await get_market_overview(current_user=user)
+    except Exception as e:
+        return f"시장 데이터 조회 실패: {getattr(e, 'detail', e)}"
+    names = {"kospi": "코스피", "kosdaq": "코스닥", "dow": "다우", "sp500": "S&P 500", "nasdaq": "나스닥",
+             "sox": "필라델피아 반도체", "vix": "VIX", "us10y": "미 10년 금리", "dxy": "달러인덱스", "wti": "WTI 원유",
+             "usdkrw": "원/달러"}
+    lines = ["| 지수 | 값 | 등락 | 기준 |", "|---|---|---|---|"]
+    for k, label in names.items():
+        v = (data.get("indices") or {}).get(k)
+        if v is None:
+            continue
+        if v.get("error"):
+            lines.append(f"| {label} | 조회 실패 | - | - |")
+        else:
+            lines.append(f"| {label} | {v.get('price', 0):,.2f} | {_pct(v.get('change_rate'))} | {v.get('source', '')} {v.get('as_of', '')} |")
+    vix = (data.get("indices") or {}).get("vix") or {}
+    if vix.get("price"):
+        lines += ["", f"VIX {vix['price']:.1f} — " + ("⚠ 고위험 구간" if vix["price"] >= 30 else "경계 구간" if vix["price"] >= 20 else "안정 구간")]
+    big = [b for b in data.get("bigtech") or [] if not b.get("error")]
+    if big:
+        lines += ["", "**빅테크**: " + " · ".join(
+            f"{b['symbol']} ${b['price']:.2f} ({_pct(b['change_rate'])})"
+            + (f" [{b['ext']['label']} {_pct(b['ext']['change_rate'])}]" if b.get("ext") else "") for b in big)]
+    return "\n".join(lines)
+
+
+async def _track() -> str:
+    from app.services import prediction_log
+    try:
+        rv = await prediction_log.review(90, "ALL", "all", "all", 1)
+    except Exception as e:
+        return f"적중률 조회 실패: {e}"
+
+    def fmt(a):
+        n = a["hit"] + a["miss"]
+        return f"{a['accuracy']}% ({a['hit']}/{n}건)" if n else "채점 없음"
+    lines = [f"**최근 90일 예측 적중률: {fmt(rv['overall'])}** (실제 예측 + 과거 백테스트)", "",
+             f"- 상승 예측: {fmt(rv['up_calls'])}", f"- 하락 예측: {fmt(rv['down_calls'])}",
+             f"- 국내: {fmt(rv['by_market']['KR'])} / 미국: {fmt(rv['by_market']['US'])}",
+             f"- 실제 예측: {fmt(rv['by_kind']['live'])} / 백테스트: {fmt(rv['by_kind']['backtest'])}"]
+    ma = [m for m in rv.get("method_accuracy") or [] if m.get("n")]
+    if ma:
+        lines += ["", "**방식별 방향 적중률**"] + [f"- {m['label']}: {m.get('dir_accuracy')}% ({m['n']}건)" for m in ma]
+    acc = rv["overall"]["accuracy"]
+    if acc is not None:
+        lines += ["", "50%에 가까우면 동전 던지기와 비슷하다는 뜻이라, 확률은 참고 수준으로만 보세요." if acc < 55
+                  else "50%보다 확실히 높지만 하루 방향 예측이라 틀리는 날도 많습니다."]
+    lines.append("자세한 내용은 **예측 검증** 메뉴에서 볼 수 있습니다.")
+    return "\n".join(lines)
+
+
+async def _events(q: str) -> str:
+    from app.services import events
+    m = re.search(r"(\d{1,2})\s*일", q)
+    days = int(m.group(1)) if m else 30 if "달" in q else 7 if "주" in q else 14
+    days = max(1, min(60, days))
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    out = []
+    for i in range(days + 1):
+        d = today + timedelta(days=i)
+        for mk in ("KR", "US"):
+            ox = events.option_expiry(mk, d)
+            if ox:
+                out.append((d.isoformat(), "국내" if mk == "KR" else "미국", ox))
+    for e in events._cache["events"]:
+        if today.isoformat() <= e["date"][:10] <= (today + timedelta(days=days)).isoformat():
+            out.append((e["date"][:10], "미국", e["event"]))
+    out.sort()
+    note = events.status().get("error")
+    if not out:
+        return f"앞으로 {days}일 동안 등록된 변동성 이벤트가 없습니다." + (f"\n(미국 지표 일정 조회 문제: {note})" if note else "")
+    lines = [f"**앞으로 {days}일 변동성 이벤트**", "", "| 날짜 | 시장 | 이벤트 |", "|---|---|---|"]
+    lines += [f"| {d} | {mk} | {ev} |" for d, mk, ev in out]
+    lines += ["", "이런 날은 가격이 크게 움직일 수 있어 예측이 더 자주 틀립니다."]
+    if note:
+        lines.append(f"(미국 지표 일정 조회 문제: {note})")
+    return "\n".join(lines)
+
+
+HELP = """이 챗봇은 앱 데이터를 조회해서 정해진 형식으로 답합니다. 이렇게 물어보세요:
+
+- **종목 분석**: "삼성전자 어때?", "NVDA 사도 돼?", "005930"
+- **매수 후보**: "오늘 국내 매수 추천 3개", "미국 오를 종목"
+- **매도·주의 후보**: "하락할 종목", "팔아야 할 거 있어?" (보유 중이면 표시)
+- **내 투자종목 점검**: "내 투자종목 어때?", "손익 알려줘"
+- **관심종목**: "관심종목 보여줘"
+- **시장 현황**: "오늘 시장 어때?", "환율", "VIX"
+- **예측 적중률**: "적중률 알려줘"
+- **이벤트 일정**: "이번 주 이벤트", "옵션 만기 언제야?"
+
+조건: "국내/미국"으로 시장을, "3개"처럼 개수를 정할 수 있습니다."""
+
+TOOL = {"stock": "analyze_stock", "buy": "today_picks", "sell": "today_picks", "portfolio": "my_portfolio",
+        "watchlist": "my_watchlist", "market": "market_overview", "track": "track_record", "events": "upcoming_events"}
 
 
 class ChatError(RuntimeError):
@@ -246,59 +433,29 @@ class ChatError(RuntimeError):
 
 
 async def chat(user, history: list) -> dict:
-    """history: [{"role": "user"|"assistant", "content": "..."}] (마지막은 user) → {"reply", "tools", "model", "usage"}"""
-    if not settings.anthropic_api_key:
-        raise ChatError(503, "ANTHROPIC_API_KEY 가 backend/.env 에 없습니다 — console.anthropic.com 에서 API 키를 발급해 넣고 백엔드를 재시작하세요")
-    msgs = [{"role": m["role"], "content": m["content"]} for m in history[-20:] if m.get("content")]
-    if not msgs or msgs[-1]["role"] != "user":
+    """history: [{"role", "content"}] (마지막은 user) → {"reply", "tools", "model"}"""
+    if not history or history[-1].get("role") != "user" or not (history[-1].get("content") or "").strip():
         raise ChatError(400, "마지막 메시지는 사용자 질문이어야 합니다")
-    while msgs and msgs[0]["role"] != "user":   # 첫 메시지는 user 여야 함
-        msgs.pop(0)
-    # 현재 시각·장 상태는 매번 바뀌므로 system 이 아니라 마지막 질문 앞에 붙임 (system 은 캐시되도록 고정)
-    msgs[-1] = {"role": "user", "content": f"{_now_context()}\n{msgs[-1]['content']}"}
-
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    runner = client.beta.messages.tool_runner(
-        model=settings.chat_model,
-        max_tokens=16000,
-        system=SYSTEM,
-        messages=msgs,
-        tools=make_tools(user),
-        output_config={"effort": settings.chat_effort},
-        cache_control={"type": "ephemeral"},
-        max_iterations=8,
-        # 안전 분류기가 거절하면 서버가 다른 모델로 같은 요청을 이어서 처리
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    )
-    tools_used, last = [], None
-    try:
-        async for message in runner:
-            last = message
-            tools_used += [b.name for b in message.content if b.type == "tool_use"]
-    except anthropic.AuthenticationError:
-        raise ChatError(502, "Claude API 키가 올바르지 않습니다 (ANTHROPIC_API_KEY 확인)")
-    except anthropic.PermissionDeniedError as e:
-        raise ChatError(502, f"Claude API 권한 오류: {e.message}")
-    except anthropic.RateLimitError:
-        raise ChatError(429, "Claude API 호출 한도 초과 — 잠시 후 다시 시도하세요")
-    except anthropic.BadRequestError as e:
-        raise ChatError(502, f"Claude API 요청 오류: {e.message}")
-    except anthropic.APIStatusError as e:
-        raise ChatError(502, f"Claude API 오류 ({e.status_code}): {e.message}")
-    except anthropic.APIConnectionError:
-        raise ChatError(502, "Claude API 에 연결하지 못했습니다 (인터넷 연결 확인)")
-    finally:
-        await client.close()
-
-    if last is None:
-        raise ChatError(502, "Claude API 응답 없음")
-    if last.stop_reason == "refusal":
-        raise ChatError(502, "AI 가 이 질문에는 답하지 않았습니다 (안전 정책). 질문을 바꿔 보세요")
-    text = "\n".join(b.text for b in last.content if b.type == "text").strip()
-    if last.stop_reason == "max_tokens":
-        text += "\n\n(답변이 길어 중간에 끊겼습니다 — 질문을 나눠 주세요)"
-    u = last.usage
-    return {"reply": text or "(빈 답변)", "tools": tools_used, "model": last.model,
-            "usage": {"input": u.input_tokens, "output": u.output_tokens,
-                      "cache_read": getattr(u, "cache_read_input_tokens", None)}}
+    q = history[-1]["content"].strip()
+    intent, stock = route(q)
+    if intent == "stock":
+        reply = await _stock(stock)
+    elif intent in ("buy", "sell"):
+        reply = await _picks(user, intent, q)
+    elif intent == "portfolio":
+        reply = await _portfolio(user)
+    elif intent == "watchlist":
+        reply = await _watchlist(user)
+    elif intent == "market":
+        reply = await _market(user)
+    elif intent == "track":
+        reply = await _track()
+    elif intent == "events":
+        reply = await _events(q)
+    elif intent == "help":
+        reply = HELP
+    else:
+        reply = "질문을 이해하지 못했습니다. 종목명은 정확히(예: 삼성전자, NVDA) 적어 주세요.\n\n" + HELP
+    if intent in ("stock", "buy", "sell", "portfolio"):
+        reply += DISCLAIMER
+    return {"reply": reply, "tools": [TOOL[intent]] if intent in TOOL else [], "model": "규칙 기반"}

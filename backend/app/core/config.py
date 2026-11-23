@@ -26,10 +26,6 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     dart_api_key: str = ""
     fred_api_key: str = ""
-    # AI 챗봇 (Claude API) — console.anthropic.com 에서 발급, 없으면 챗봇만 "키 없음" 오류
-    anthropic_api_key: str = ""
-    chat_model: str = "claude-opus-5-5"
-    chat_effort: str = "medium"   # low / medium / high — 높을수록 신중하지만 느리고 비쌈
 
     # App
     app_env: str = "development"
@@ -49,6 +45,8 @@ class Settings(BaseSettings):
     class Config:
         env_file = str(BACKEND_DIR / ".env")
         case_sensitive = False
+        # .env 에 더 이상 안 쓰는 값(예: 예전 ANTHROPIC_API_KEY)이 남아 있어도 서버가 멈추지 않도록 무시
+        extra = "ignore"
 
 
 _SECRET_PLACEHOLDERS = {"", "change-this-secret-key-in-production", "your-very-long-random-secret-key-change-this"}
