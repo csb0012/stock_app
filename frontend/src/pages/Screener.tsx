@@ -60,7 +60,7 @@ export default function Screener() {
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>종목 탐색</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>국내 · 미국 시장 실시간 스크리너 ({REFRESH_SEC}초마다 갱신) · 국내: KIS 순위 · 미국: Yahoo 전체 시장</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>종목 검색(상세 분석·관심 추가) + 국내 · 미국 실시간 스크리너 ({REFRESH_SEC}초마다 갱신) · 국내: KIS 순위 · 미국: Yahoo 전체 시장</p>
       </div>
 
       {/* 종목 검색 */}

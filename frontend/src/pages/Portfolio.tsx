@@ -5,6 +5,7 @@ import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
+import DaytimePrice from "../components/common/DaytimePrice";
 import { probLabel, sessionLabel } from "../components/common/format";
 import { Briefcase, Plus, Trash2, X, Search, Edit2, Check, AlertTriangle } from "lucide-react";
 
@@ -328,7 +329,7 @@ export default function Portfolio() {
                       <span className="badge badge-neutral">{item.symbol}</span>
                       <span className="badge badge-neutral">{isKR ? "국내" : "미국"}</span>
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--text-secondary)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--text-secondary)", flexWrap: "wrap" }}>
                       <span>
                         현재가: <strong style={{ color: "var(--text-primary)" }}>
                           {item.current_price > 0
@@ -339,6 +340,7 @@ export default function Portfolio() {
                       {item.change_rate !== undefined && item.change_rate !== 0 && (
                         <ChangeTag value={item.change_rate} />
                       )}
+                      <DaytimePrice d={item.daytime} />
                     </div>
                   </div>
 

@@ -4,7 +4,8 @@ import { stockApi, watchlistApi, errMsg } from "../api/client";
 import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
-import BuyPrice from "../components/common/BuyPrice";
+import PriceLevels from "../components/common/PriceLevels";
+import DaytimePrice from "../components/common/DaytimePrice";
 import NewsLink, { NewsSource } from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice, fmtShares } from "../components/common/format";
@@ -78,6 +79,7 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
             {fmtPrice(item.price, item.market)}
             {isLong && item.per > 0 && <span> · PER {item.per.toFixed(1)} · PBR {item.pbr?.toFixed(1)}</span>}
           </span>
+          {item.daytime && <div style={{ marginTop: 3 }}><DaytimePrice d={item.daytime} size={11.5} /></div>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <WatchButton item={item} inList={inWatchlist} />
@@ -154,21 +156,7 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
       {/* 추천 매입가 / 목표가 / 손절가 */}
       {pred.target_price && (
         <>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-          <BuyPrice pred={pred} market={item.market} />
-          <div style={{ background: "color-mix(in srgb, var(--green) 7%, transparent)", borderRadius: 7, padding: "8px 10px" }}>
-            <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>목표가 (익절)</p>
-            <p style={{ fontWeight: 700, color: "var(--green)", fontSize: 13 }}>
-              {isKR ? `₩${Math.round(pred.target_price).toLocaleString()}` : `$${pred.target_price.toFixed(2)}`}
-            </p>
-          </div>
-          <div style={{ background: "color-mix(in srgb, var(--red) 7%, transparent)", borderRadius: 7, padding: "8px 10px" }}>
-            <p style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 2 }}>손절가</p>
-            <p style={{ fontWeight: 700, color: "var(--red)", fontSize: 13 }}>
-              {isKR ? `₩${Math.round(pred.stop_loss || 0).toLocaleString()}` : `$${(pred.stop_loss || 0).toFixed(2)}`}
-            </p>
-          </div>
-        </div>
+        <PriceLevels pred={pred} market={item.market} />
         {(pred.buy_comment || pred.entry_comment) && (
           <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: -6 }}>
             💡 {pred.buy_comment || pred.entry_comment}

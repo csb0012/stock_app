@@ -1,0 +1,335 @@
+// 화면 전체 테스트 (Playwright, 가짜 API) — 빌드된 화면(dist)을 vite preview 로 띄우고 /api 요청은 fixtures.mjs 로 응답.
+// 실행: frontend 폴더에서  npm run build && node e2e/smoke.mjs   (스크린샷: E2E_SHOTS=폴더 를 주면 저장)
+// 백엔드·외부 API 없이 동작. 실제 응답 형식은 backend/tests 가 따로 검사.
+import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import * as F from "./fixtures.mjs";
+
+const require = createRequire(import.meta.url);
+let chromium;
+try { ({ chromium } = require("playwright")); }
+catch { console.error("playwright 가 없습니다 — npm i -D playwright && npx playwright install chromium"); process.exit(2); }
+
+const PORT = Number(process.env.E2E_PORT || 4173);
+const BASE = `http://127.0.0.1:${PORT}`;
+const SHOTS = process.env.E2E_SHOTS || "";
+if (SHOTS) mkdirSync(SHOTS, { recursive: true });
+
+// ---------------- 가짜 API ----------------
+function makeApi(overrides = {}) {
+  const calls = [];
+  const table = {
+    "GET /api/auth/me": { id: 1, username: "tester", totp_enabled: false },
+    "GET /api/market/status": F.MARKET_STATUS,
+    "GET /api/market/overview/bigtech": F.BIGTECH,
+    "GET /api/market/overview/etfs": { items: [], updated_at: F.BIGTECH.updated_at },
+    "GET /api/market/calendar": F.CALENDAR,
+    "GET /api/watchlist/": F.WATCH_LIST_BASIC,
+    "GET /api/watchlist/analysis": F.WATCHLIST,
+    "GET /api/stocks/recommendations/shortterm": F.RECS,
+    "GET /api/stocks/recommendations/longterm": F.RECS,
+    "GET /api/stocks/search": F.SEARCH,
+    "GET /api/stocks/quote/US/AVGO": F.QUOTE_AVGO,
+    "GET /api/stocks/screener/kr/trading_value": [],
+    "GET /api/portfolio/": F.PORTFOLIO_LIST,
+    "GET /api/portfolio/analysis": F.PORTFOLIO,
+    "GET /api/chat/status": { model: "규칙 기반", ready: true },
+    ...overrides,
+  };
+  async function handle(route) {
+    const req = route.request();
+    const url = new URL(req.url());
+    const key = `${req.method()} ${url.pathname}`;
+    calls.push({ key, body: req.postData() });
+    let body = table[key];
+    if (typeof body === "function") body = body(req);
+    if (body === undefined && req.method() !== "GET") body = { ok: true };
+    if (body === undefined) {
+      // 가짜 응답이 없는 화면 데이터 → 서버 오류처럼 (화면이 오류 문구를 보여야 하고 멈추면 안 됨)
+      return route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ detail: `e2e: 가짜 응답 없음 (${key})` }) });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  }
+  return { handle, calls, table };
+}
+
+// ---------------- 작은 테스트 도구 ----------------
+const results = [];
+let browser;
+
+async function withPage(opts, fn) {
+  const { width = 1440, height = 900, theme = "light", api = makeApi(), token = true, init } = opts;
+  const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1 });
+  await ctx.addInitScript(([t, th, extra]) => {
+    if (sessionStorage.getItem("e2e-init")) return;   // 새로고침 때는 다시 안 넣음 (화면이 저장한 값 유지)
+    sessionStorage.setItem("e2e-init", "1");
+    localStorage.clear();
+    if (t) localStorage.setItem("token", "e2e-token");
+    localStorage.setItem("theme", th);
+    for (const [k, v] of Object.entries(extra || {})) localStorage.setItem(k, v);
+  }, [token, theme, init || {}]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
+  page.on("console", (m) => {
+    if (m.type() === "error" && !/Failed to load resource|status of 502/.test(m.text())) errors.push(`console: ${m.text()}`);
+  });
+  await page.route("**/api/**", api.handle);
+  try {
+    await fn(page, api);
+    if (errors.length) throw new Error(errors.join("\n"));
+  } finally {
+    await ctx.close();
+  }
+}
+
+async function test(name, opts, fn) {
+  const t0 = Date.now();
+  try {
+    await withPage(opts, fn);
+    results.push({ name, ok: true, ms: Date.now() - t0 });
+    console.log(`  ✓ ${name}`);
+  } catch (e) {
+    results.push({ name, ok: false, err: e.message });
+    console.log(`  ✗ ${name}\n      ${String(e.message).split("\n").join("\n      ")}`);
+  }
+}
+
+function expect(cond, msg) { if (!cond) throw new Error(msg); }
+async function shot(page, name) { if (SHOTS) await page.screenshot({ path: `${SHOTS}/${name}.png`, fullPage: true }); }
+async function noHScroll(page) {
+  const [sw, iw] = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]);
+  expect(sw <= iw + 1, `가로 스크롤 생김 (scrollWidth ${sw} > ${iw})`);
+}
+const text = (page) => page.locator("body").innerText();
+
+// ---------------- 테스트 ----------------
+async function run() {
+  await test("사이드바: 종목검색 메뉴 없음 + 미국 주간거래 상태, /search → 종목탐색", {}, async (page) => {
+    await page.goto(`${BASE}/search`);
+    await page.waitForURL(/\/screener$/);
+    await page.getByText("주간거래 중 (~18:00)").waitFor();
+    const nav = await page.locator(".sidebar").innerText();
+    expect(!nav.includes("종목검색"), "사이드바에 종목검색이 남아 있음");
+    expect(nav.includes("종목탐색"), "사이드바에 종목탐색이 없음");
+  });
+
+  await test("종목탐색: 검색 → 상세 카드(주간거래·매입가/목표가/손절가·지표·뉴스)", {}, async (page) => {
+    await page.goto(`${BASE}/screener`);
+    const box = page.locator("input").first();
+    await box.fill("브로드컴");
+    await page.getByText("브로드컴").first().click();
+    const card = page.getByTestId("quote-card");
+    await card.getByText("Broadcom falls on report").waitFor();
+    const t = await card.innerText();
+    for (const s of ["주간거래", "$320.53", "+5.30%", "추천 매입가", "목표가 (익절)", "손절가", "RSI(14)", "과매도", "60일선"]) {
+      expect(t.includes(s), `상세 카드에 '${s}' 없음`);
+    }
+    await shot(page, "screener-quote");
+  });
+
+  await test("관심종목: 국내/미국 탭 · 3열 카드 · 가격대 · 요약", {}, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    const grid = page.getByTestId("watch-grid");
+    await grid.waitFor();
+    await page.getByText("삼성전자").first().waitFor();
+    const cols = await grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+    expect(cols === 3, `1440px 에서 3열이 아님 (${cols}열)`);
+    expect(await page.getByTestId("tab-KR").innerText().then((s) => s.includes("6")), "국내 탭 개수(6) 표시 안 됨");
+    expect(await page.getByTestId("tab-US").innerText().then((s) => s.includes("3")), "미국 탭 개수(3) 표시 안 됨");
+    const cards = page.getByTestId("watch-card");
+    expect(await cards.count() === 6, `국내 카드 수 ${await cards.count()} (6 이어야 함)`);
+    const first = await cards.first().innerText();
+    for (const s of ["추천 매입가", "목표가 (익절)", "손절가", "₩171,577", "상승 36%", "HBM 수주"]) expect(first.includes(s), `카드에 '${s}' 없음`);
+    const sum = await page.getByTestId("watch-summary").innerText();
+    expect(sum.includes("6종목") && sum.includes("상승 확률 55% 이상"), `요약 줄 이상: ${sum}`);
+    // 카드 높이: 예전(한 줄 전체 폭)보다 한 화면에 많이 — 첫 줄 3개가 같은 높이 줄에
+    const ys = await cards.evaluateAll((els) => els.slice(0, 3).map((e) => Math.round(e.getBoundingClientRect().top)));
+    expect(new Set(ys).size === 1, `첫 줄 카드 3개가 한 줄에 있지 않음 ${ys}`);
+    await shot(page, "watchlist-kr");
+
+    await page.getByTestId("tab-US").click();
+    await page.getByText("브로드컴").waitFor();
+    const us = await page.getByTestId("watch-grid").innerText();
+    expect(us.includes("주간거래") && us.includes("$320.53"), "미국 탭 브로드컴 카드에 주간거래 가격 없음");
+    expect(us.includes("시세 조회 실패: yfinance"), "조회 실패 종목의 오류 문구가 안 보임");
+    expect(!us.includes("삼성전자"), "미국 탭에 국내 종목이 보임");
+    await shot(page, "watchlist-us");
+  });
+
+  await test("관심종목: 표 보기 · 설정 기억 · 메모 저장(PUT) · 정렬", {}, async (page, api) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("tab-US").click();
+    await page.getByRole("button", { name: "표", exact: true }).click();
+    const table = page.getByTestId("watch-table");
+    await table.waitFor();
+    const t = await table.innerText();
+    for (const s of ["추천 매입가", "목표가", "손절가", "주간 $320.53", "브로드컴"]) expect(t.includes(s), `표에 '${s}' 없음`);
+    await shot(page, "watchlist-table");
+    await page.reload();                                       // 탭·보기 방식 기억
+    await page.getByTestId("watch-table").waitFor();
+    expect((await page.getByTestId("tab-US").getAttribute("aria-selected")) === "true", "새로고침 후 미국 탭이 유지 안 됨");
+    // 메모 저장
+    await page.getByRole("button", { name: "메모·목표 매수가 수정" }).first().click();
+    await page.getByPlaceholder("메모 (관심 이유, 매수 조건 등)").fill("e2e 메모");
+    await page.getByRole("button", { name: "저장" }).click();
+    await page.waitForTimeout(300);
+    const put = api.calls.find((c) => c.key.startsWith("PUT /api/watchlist/"));
+    expect(put && JSON.parse(put.body).memo === "e2e 메모", `메모 저장 요청 이상: ${JSON.stringify(put)}`);
+    // 정렬: 상승확률순
+    await page.getByRole("button", { name: "카드", exact: true }).click();
+    await page.getByTestId("tab-KR").click();
+    await page.getByRole("button", { name: "상승확률순" }).click();
+    const firstName = await page.getByTestId("watch-card").first().innerText();
+    expect(firstName.includes("테스트종목4"), "상승확률순 정렬이 안 됨 (테스트종목4 = 64% 가 먼저여야 함)");
+  });
+
+  await test("관심종목: 삭제는 확인 후에만", {}, async (page, api) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    page.once("dialog", (d) => d.dismiss());
+    await page.getByRole("button", { name: "삭제" }).first().click();
+    await page.waitForTimeout(200);
+    expect(!api.calls.some((c) => c.key.startsWith("DELETE")), "취소했는데 삭제 요청이 감");
+    page.once("dialog", (d) => d.accept());
+    await page.getByRole("button", { name: "삭제" }).first().click();
+    await page.waitForTimeout(200);
+    expect(api.calls.some((c) => c.key === "DELETE /api/watchlist/1"), "확인했는데 삭제 요청이 안 감");
+  });
+
+  for (const theme of ["light", "dark"]) {
+    await test(`관심종목: 모바일 390px 1열 · 가로 스크롤 없음 (${theme})`, { width: 390, height: 844, theme }, async (page) => {
+      await page.goto(`${BASE}/watchlist`);
+      await page.getByTestId("watch-card").first().waitFor();
+      const cols = await page.getByTestId("watch-grid").evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(" ").length);
+      expect(cols === 1, `390px 에서 ${cols}열`);
+      await noHScroll(page);
+      await shot(page, `watchlist-mobile-${theme}`);
+    });
+  }
+
+  await test("휴대폰 390px: 사이드바는 ☰ 메뉴 · 본문이 화면 폭을 다 씀", { width: 390, height: 844 }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    const side = await page.locator(".sidebar").boundingBox();
+    expect(side.x + side.width <= 1, `사이드바가 화면에 보임 (x=${side.x})`);
+    const cardW = await page.getByTestId("watch-card").first().evaluate((e) => e.getBoundingClientRect().width);
+    expect(cardW >= 340, `카드 폭이 좁음 (${cardW}px)`);
+    await page.getByRole("button", { name: "메뉴 열기" }).click();
+    await page.waitForTimeout(300);
+    expect((await page.locator(".sidebar").boundingBox()).x >= 0, "☰ 눌러도 메뉴가 안 열림");
+    await shot(page, "mobile-menu-open");
+    await page.locator(".sidebar").getByText("경제캘린더").click();
+    await page.waitForURL(/\/calendar$/);
+    await page.waitForTimeout(300);
+    expect((await page.locator(".sidebar").boundingBox()).x < 0, "화면을 옮겼는데 메뉴가 안 닫힘");
+  });
+
+  await test("PC 1440px: 사이드바 항상 보임 · ☰ 버튼 없음", {}, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    expect((await page.locator(".sidebar").boundingBox()).x === 0, "PC 에서 사이드바가 안 보임");
+    expect(!(await page.getByRole("button", { name: "메뉴 열기" }).isVisible()), "PC 에서 ☰ 버튼이 보임");
+  });
+
+  await test("관심종목: 빈 목록 / 분석 실패", { api: makeApi({ "GET /api/watchlist/": [], "GET /api/watchlist/analysis": [] }) }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByText("관심종목을 추가해보세요").waitFor();
+  });
+  await test("관심종목: 분석 API 502 → 오류 문구", { api: makeApi({ "GET /api/watchlist/analysis": undefined }) }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByText(/시세 조회 실패.*가짜 응답 없음/).waitFor({ timeout: 15000 });
+  });
+
+  await test("대시보드: 빅테크 브로드컴 주간거래 표시", {}, async (page) => {
+    await page.goto(`${BASE}/`);
+    await page.getByText("브로드컴").waitFor();
+    const row = await page.getByText("브로드컴").locator("xpath=ancestor::div[2]").innerText();
+    expect(row.includes("주간거래") && row.includes("$320.53") && row.includes("$304.41"), `브로드컴 줄: ${row}`);
+  });
+
+  await test("AI 추천 · 투자종목: 미국 종목 주간거래 표시", {}, async (page) => {
+    await page.goto(`${BASE}/recommendations`);
+    await page.getByRole("button", { name: /미국/ }).first().click();
+    await page.getByText("브로드컴").first().waitFor();
+    expect(await page.getByTestId("daytime-price").count() >= 1, "AI 추천 카드에 주간거래 가격 없음");
+    const t = await text(page);
+    expect(t.includes("목표가 (익절)") && t.includes("손절가"), "AI 추천 카드 가격대 3칸 없음");
+    await page.goto(`${BASE}/portfolio`);
+    await page.getByText("브로드컴").first().waitFor();
+    await page.getByTestId("daytime-price").first().waitFor();
+  });
+
+  await test("경제 캘린더: 실제·이전·변화·해설 + 반영 전 사유", {}, async (page) => {
+    await page.goto(`${BASE}/calendar`);
+    await page.getByText("23.5만 건").waitFor();
+    const t = await text(page);
+    for (const s of ["22.1만 건", "▲ 1.4만 건 증가", "값 없음", "미국 GDP"]) expect(t.includes(s), `캘린더에 '${s}' 없음`);
+    await page.getByText("미국 신규 실업수당 청구").click();
+    await page.getByText(/실직자 증가/).waitFor();
+    expect(await page.getByTestId("calendar-old-format").count() === 0, "정상 데이터인데 예전 형식 경고가 뜸");
+    await shot(page, "calendar");
+  });
+
+  await test("경제 캘린더: 백엔드가 예전 형식이면 재시작 안내", { api: makeApi({ "GET /api/market/calendar": F.CALENDAR_OLD }) }, async (page) => {
+    await page.goto(`${BASE}/calendar`);
+    await page.getByTestId("calendar-old-format").waitFor();
+  });
+
+  await test("저장된 예전 데이터(1시간 이내)도 화면을 열면 새로 받음", {
+    init: { "rq-cache-v1": JSON.stringify({ ts: Date.now(), state: { mutations: [], queries: [{
+      queryKey: ["calendar"], queryHash: '["calendar"]',
+      state: { data: F.CALENDAR_OLD, dataUpdateCount: 1, dataUpdatedAt: Date.now() - 5 * 60 * 1000, error: null, errorUpdateCount: 0,
+               errorUpdatedAt: 0, fetchFailureCount: 0, fetchFailureReason: null, fetchMeta: null, isInvalidated: false, status: "success", fetchStatus: "idle" } }] } }) },
+  }, async (page, api) => {
+    await page.goto(`${BASE}/calendar`);
+    await page.getByText("23.5만 건").waitFor();             // 저장본(예전 형식) 대신 새 데이터
+    expect(api.calls.some((c) => c.key === "GET /api/market/calendar"), "캘린더를 새로 요청하지 않음");
+  });
+
+  // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)
+  const pages = ["/", "/recommendations", "/screener", "/themes", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
+  for (const theme of ["light", "dark"]) {
+    await test(`모든 화면 열기 — 오류로 멈추지 않음 (${theme})`, { theme }, async (page) => {
+      for (const p of pages) {
+        await page.goto(`${BASE}${p}`);
+        await page.waitForLoadState("networkidle");
+        const h1 = await page.locator("h1").first().innerText().catch(() => "");
+        expect(h1.length > 0, `${p}: 제목(h1)이 안 그려짐 — 화면이 깨졌을 수 있음`);
+      }
+    });
+  }
+  await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
+    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio"]) {
+      await page.goto(`${BASE}${p}`);
+      await page.waitForLoadState("networkidle");
+      await noHScroll(page);
+    }
+  });
+}
+
+// ---------------- 실행 ----------------
+async function waitServer(url, ms = 20000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try { if ((await fetch(url)).ok) return; } catch { /* 아직 안 뜸 */ }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error(`미리보기 서버가 안 뜸: ${url}`);
+}
+
+const server = spawn("npx", ["vite", "preview", "--port", String(PORT), "--strictPort", "--host", "127.0.0.1"],
+  { cwd: new URL("..", import.meta.url).pathname, stdio: "ignore" });
+try {
+  await waitServer(`${BASE}/`);
+  browser = await chromium.launch();
+  console.log("화면 테스트 (가짜 API)");
+  await run();
+} finally {
+  await browser?.close();
+  server.kill();
+}
+const failed = results.filter((r) => !r.ok);
+console.log(`\n${results.length - failed.length}/${results.length} 통과${failed.length ? ` — 실패: ${failed.map((f) => f.name).join(", ")}` : ""}`);
+process.exit(failed.length ? 1 : 0);

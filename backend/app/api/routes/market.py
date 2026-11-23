@@ -7,6 +7,7 @@ from app.models.user import User
 from app.services.market_data import (get_kr_indices, get_global_indices, get_bigtech_data,
                                       get_us_etf_data, INDEX_TICKERS, KIS_INDEX)
 from app.services.econ_calendar import get_economic_calendar
+from app.services import us_daytime
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -44,7 +45,10 @@ async def get_overview_section(section: str, current_user: User = Depends(get_cu
     if section not in _SECTIONS:
         raise HTTPException(status_code=404, detail=f"section 은 {list(_SECTIONS)} 중 하나")
     try:
-        return await overview_section(section)
+        data = await overview_section(section)
+        if section in ("bigtech", "etfs"):   # 미국 주간거래 가격 (한국 낮 시간만, 캐시와 별개로 30초마다)
+            data = {**data, "items": await us_daytime.attach(data.get("items") or [], market_key=None)}
+        return data
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{section} 조회 실패 — {e}")
 

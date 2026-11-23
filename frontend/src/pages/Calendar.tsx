@@ -160,41 +160,13 @@ export default function CalendarPage() {
         )}
       </div>
 
-      {/* 주요 이벤트 가이드 */}
-      <section style={{ marginBottom: 28 }}>
-        <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-          주요 경제 지표 가이드
-        </h2>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {KNOWN_EVENTS.map((e) => (
-            <div key={e.event} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px" }}>
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: IMPACT_COLOR[e.impact], flexShrink: 0 }} />
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>{e.event}</span>
-                  <span className="badge badge-neutral">{e.country}</span>
-                </div>
-                <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 2 }}>{e.description}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* CME FedWatch */}
-      <div className="card" style={{ marginBottom: 24, borderColor: "color-mix(in srgb, var(--accent) 30%, transparent)", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-          <AlertCircle size={15} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />
-          <div>
-            <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>💡 CME FedWatch 활용 팁</p>
-            <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
-              FOMC 발표 전 시장이 예상하는 금리 인상·인하 확률을 확인하세요.
-              발표된 숫자보다 <strong style={{ color: "var(--text-primary)" }}>"예상보다 좋았는가 나빴는가"</strong>에 시장이 반응합니다.
-            </p>
-          </div>
-        </div>
-      </div>
-
+      {/* 발표값·해설(explain)이 하나도 없으면 업데이트 전 백엔드가 준 예전 형식 → 서버 재시작 안내 */}
+      {events.length > 0 && events.every((e: any) => !e.explain) && !isFetching && (
+        <p data-testid="calendar-old-format" style={{ color: "var(--yellow)", fontSize: 12, marginBottom: 8 }}>
+          ⚠ 백엔드가 예전 버전의 캘린더 데이터를 주고 있습니다 (발표값·해설 없음) — 백엔드를 다시 시작하세요
+          (start.bat 창을 닫고 다시 실행 / Docker: docker compose restart backend / 클라우드: bash deploy/update.sh)
+        </p>
+      )}
       {data && <div style={{ marginBottom: 12 }}><FetchStatus updatedAt={data.updated_at} fetching={isFetching || data.refreshing} error={data.refresh_error} /></div>}
       {error && (
         <div className="card" style={{ padding: 20, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)", marginBottom: 16 }}>
@@ -212,6 +184,42 @@ export default function CalendarPage() {
           {futureEvents.length > 0 && <EventTable title="향후 주요 일정 (행을 누르면 결과별 시나리오)" events={futureEvents} past={false} />}
         </>
       )}
+
+      {/* 주요 이벤트 가이드 */}
+      <details style={{ marginBottom: 20 }}>
+        <summary style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, cursor: "pointer", letterSpacing: 1 }}>
+          주요 경제 지표 가이드 (눌러서 펼치기)
+        </summary>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {KNOWN_EVENTS.map((e) => (
+            <div key={e.event} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px" }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: IMPACT_COLOR[e.impact], flexShrink: 0 }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 600, fontSize: 13 }}>{e.event}</span>
+                  <span className="badge badge-neutral">{e.country}</span>
+                </div>
+                <p style={{ color: "var(--text-secondary)", fontSize: 12, marginTop: 2 }}>{e.description}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+
+      {/* CME FedWatch */}
+      <div className="card" style={{ marginBottom: 24, borderColor: "color-mix(in srgb, var(--accent) 30%, transparent)", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <AlertCircle size={15} style={{ color: "var(--accent)", flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>💡 CME FedWatch 활용 팁</p>
+            <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+              FOMC 발표 전 시장이 예상하는 금리 인상·인하 확률을 확인하세요.
+              발표된 숫자보다 <strong style={{ color: "var(--text-primary)" }}>"예상보다 좋았는가 나빴는가"</strong>에 시장이 반응합니다.
+            </p>
+          </div>
+        </div>
+      </div>
+
     </div>
   );
 }

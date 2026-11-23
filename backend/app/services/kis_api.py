@@ -445,6 +445,30 @@ class KISClient:
             "timestamp": datetime.now().isoformat(),
         }
 
+    # 미국 주간거래(한국 낮 시간, 블루오션 ATS) 시세 거래소 코드 — 현재가 TR 은 같고 EXCD 만 다름
+    DAYTIME_EXCD = {"NAS": "BAQ", "NYS": "BAY", "AMS": "BAA"}
+
+    async def get_us_daytime_price(self, symbol: str, exchange: str = "NAS") -> dict:
+        """미국 주간거래 현재가 (HHDFS00000300, EXCD=BAQ/BAY/BAA).
+        price 0 = 오늘 주간거래 체결 없음. base = 기준가(직전 정규장 종가)"""
+        excd = self.DAYTIME_EXCD.get((exchange or "").upper())
+        if not excd:
+            raise KISError(f"주간거래 거래소 코드를 모르는 거래소: {exchange}")
+        data = await self._get(
+            "/uapi/overseas-price/v1/quotations/price", "HHDFS00000300",
+            {"AUTH": "", "EXCD": excd, "SYMB": symbol},
+        )
+        o = data.get("output") or {}
+        if isinstance(o, list):
+            o = o[0] if o else {}
+        return {
+            "price": _float(o.get("last")),
+            "base": _float(o.get("base")),
+            "change": _float(o.get("diff")),
+            "change_rate": _float(o.get("rate")),
+            "volume": _int(o.get("tvol")),
+        }
+
 
     async def get_kr_investor(self, symbol: str) -> list:
         """주식현재가 투자자 (FHKST01010900) — 최근 약 30거래일 일별 외국인·기관·개인 순매수 수량

@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { marketApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
 import FetchStatus from "../components/common/FetchStatus";
+import DaytimePrice from "../components/common/DaytimePrice";
 import { RefreshCw, AlertCircle } from "lucide-react";
 
 const INDEX_LABELS: Record<string, { label: string; unit: string }> = {
@@ -86,6 +87,7 @@ function UsRow({ item }: { item: any }) {
         <span style={{ color: "var(--red)", fontSize: 12 }}>조회 실패 — {item.error.slice(0, 60)}</span>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <DaytimePrice d={item.daytime} />
           {item.ext && (
             <span style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }} title={`${item.ext.time} 기준`}>
               {item.ext.label}
@@ -178,7 +180,7 @@ export default function Dashboard() {
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>오늘의 시장 브리핑</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>{dateStr} {timeStr} 기준</p>
           <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 2 }}>
-            국내 지수: KIS 실시간 · 해외 지수·종목·환율: Yahoo Finance (정규장 종가 기준, 미국 종목은 시간외 가격 따로 표시, 장중 최대 15분 지연)
+            국내 지수: KIS 실시간 · 해외 지수·종목·환율: Yahoo Finance (정규장 종가 기준, 미국 종목은 시간외 가격 따로 표시, 장중 최대 15분 지연) · 한국 낮 시간엔 미국 주간거래 가격(KIS) 함께 표시
           </p>
         </div>
         <button className="btn btn-ghost" onClick={() => all.forEach((q) => q.refetch())} disabled={anyFetching}>

@@ -89,6 +89,25 @@ def market_status(market: str) -> dict:
         "next_open_label": session_label(market, nxt) if nxt else None,
         # 다음 개장 시각을 한국시간으로 (미국장은 날짜가 하루 어긋나 보이므로)
         "next_open_kst": _kst_open(market, nxt) if nxt else None,
+        # 미국: 한국 낮 시간 주간거래 (정규장과 별개)
+        **({"daytime": us_daytime_session()} if market == "US" else {}),
+    }
+
+
+def us_daytime_session(now: datetime | None = None) -> dict:
+    """미국 주간거래(한국투자증권·토스 등, 블루오션 ATS) 시간인지.
+    한국 10:00 ~ 미국 동부 04:00(프리마켓 시작) = 겨울 18:00 / 서머타임 17:00 (한국시간),
+    그날(한국 날짜)이 미국 거래일일 때만 (월요일 낮 = 미국 월요일 장을 앞둔 거래)."""
+    kr, us = _TZ["KR"], _TZ["US"]
+    k = (now or datetime.now(kr)).astimezone(kr)
+    d = k.date()
+    start = datetime(d.year, d.month, d.day, 10, 0, tzinfo=kr)
+    end = datetime(d.year, d.month, d.day, 4, 0, tzinfo=us).astimezone(kr)
+    return {
+        "open": is_trading_day("US", d) and start <= k < end,
+        "session_date": d.isoformat(),
+        "hours_kst": f"10:00~{end:%H:%M}",
+        "end_kst": f"{end:%H:%M}",
     }
 
 

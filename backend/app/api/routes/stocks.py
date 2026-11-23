@@ -14,6 +14,7 @@ from app.services.news import get_news_many, get_news_tone
 from app.services import prediction_log
 from app.services.extras import get_extra
 from app.core.swr import SWRCache
+from app.services import us_daytime
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -356,7 +357,7 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
              **analyze_candles(market, candles, r.get("per", 0), r.get("pbr", 0), news.get((market, symbol)),
                                get_extra(market, symbol), symbol)}
     await prediction_log.record([r], "검색")
-    return strip_candles(r)
+    return (await us_daytime.attach([strip_candles(r)]))[0]   # 미국이면 주간거래 가격 (표시 전용)
 
 
 @router.get("/kr/{symbol}")
@@ -406,7 +407,8 @@ async def get_recommendations(kind: str, current_user: User = Depends(get_curren
     if kind not in _BUILDERS:
         raise HTTPException(status_code=404, detail="kind 는 longterm 또는 shortterm")
     try:
-        return await _live(kind)
+        data = await _live(kind)
+        return {**data, "items": await us_daytime.attach(data.get("items") or [])}   # 미국 주간거래 (표시 전용)
     except HTTPException:
         raise
     except Exception as e:

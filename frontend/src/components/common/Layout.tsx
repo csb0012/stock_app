@@ -1,11 +1,12 @@
-import { NavLink, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
 import { useQuery } from "@tanstack/react-query";
 import { marketApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  Search, LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar,
+  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X,
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
 
@@ -19,7 +20,6 @@ const navItems = [
   { to: "/portfolio", icon: Briefcase, label: "투자종목" },
   { to: "/predictions", icon: ClipboardCheck, label: "예측 검증" },
   { to: "/calendar", icon: Calendar, label: "경제캘린더" },
-  { to: "/search", icon: Search, label: "종목검색" },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -30,14 +30,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     logout();
     navigate("/login");
   };
+  // 좁은 화면(휴대폰): 사이드바는 ☰ 버튼으로 여는 메뉴 — 화면을 옮기면 닫힘
+  const [navOpen, setNavOpen] = useState(false);
+  const location = useLocation();
+  useEffect(() => setNavOpen(false), [location.pathname]);
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
+    <div className={`app-shell${navOpen ? " nav-open" : ""}`}>
+      {navOpen && <div className="nav-backdrop" onClick={() => setNavOpen(false)} />}
       {/* Sidebar */}
-      <aside className="sidebar" style={{
-        width: 220, background: "var(--bg-secondary)", borderRight: "1px solid var(--border)",
-        display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0,
-      }}>
+      <aside className="sidebar" aria-label="메뉴">
         {/* Logo */}
         <div style={{ padding: "0 20px 24px", borderBottom: "1px solid var(--border)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -74,11 +76,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main */}
-      <main style={{ flex: 1, overflow: "auto", background: "var(--bg-primary)" }}>
+      <main style={{ flex: 1, minWidth: 0, overflow: "auto", background: "var(--bg-primary)" }}>
         {/* 상단 바 (창 오른쪽 끝): 사용자 · 화이트/다크 모드 · 로그아웃 */}
-        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6, padding: "12px 20px 0" }}>
+        <div className="top-bar">
+          <button className="btn btn-ghost menu-btn" onClick={() => setNavOpen(!navOpen)} aria-label={navOpen ? "메뉴 닫기" : "메뉴 열기"}
+            style={{ padding: "5px 10px", marginRight: "auto" }}>
+            {navOpen ? <X size={16} /> : <Menu size={16} />}
+          </button>
           {username && (
-            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)", marginRight: 6 }}>
+            <span className="top-user" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)", marginRight: 6 }}>
               <UserCircle size={15} /> {username}
             </span>
           )}
@@ -88,7 +94,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             로그아웃
           </button>
         </div>
-        <div style={{ maxWidth: 1400, margin: "0 auto", padding: "8px 32px 28px" }}>
+        <div className="page-body">
           {children}
         </div>
       </main>
@@ -120,6 +126,11 @@ function MarketStatus() {
             </div>
             {!st.open && st.next_open_kst && (
               <div style={{ color: "var(--text-muted)", paddingLeft: 12 }}>개장 {st.next_open_kst} (한국시간)</div>
+            )}
+            {st.daytime?.open && (
+              <div style={{ color: "var(--accent)", paddingLeft: 12 }} title="한국 낮 시간 미국 주식 거래 (블루오션) — 관심종목·대시보드 등에 '주간거래' 가격 표시">
+                주간거래 중 (~{st.daytime.end_kst})
+              </div>
             )}
           </div>
         );

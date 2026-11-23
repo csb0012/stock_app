@@ -10,7 +10,8 @@ const IMPACT = {
 };
 
 /** 내일 전망 근거: 한 줄 요약 + 펼치면 지표별 상세 */
-export default function PredictionReasons({ pred, defaultOpen = false }: { pred: any; defaultOpen?: boolean }) {
+/** compact: 요약 2줄까지만(전체는 마우스 올리면), 모델 상태 문구는 펼쳤을 때만 — 좁은 카드용 */
+export default function PredictionReasons({ pred, defaultOpen = false, compact = false }: { pred: any; defaultOpen?: boolean; compact?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   if (!pred) return null;
   const factors: Factor[] = pred.factors || [];
@@ -18,11 +19,12 @@ export default function PredictionReasons({ pred, defaultOpen = false }: { pred:
   const downs = factors.filter((f) => f.impact === "down").length;
 
   return (
-    <div style={{ marginTop: 8 }}>
+    <div style={{ marginTop: compact ? 0 : 8 }}>
       {pred.summary && (
-        <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{pred.summary}</p>
+        <p className={compact && !open ? "clamp-2" : undefined} title={compact ? pred.summary : undefined}
+          style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{pred.summary}</p>
       )}
-      {pred.model_status && (
+      {pred.model_status && (!compact || open) && (
         <p style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5, marginTop: 2 }}>ⓘ {pred.model_status}</p>
       )}
       {factors.length > 0 && (

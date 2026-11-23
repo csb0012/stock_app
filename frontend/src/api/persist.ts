@@ -23,6 +23,9 @@ export function restorePersisted(qc: QueryClient) {
       return;
     }
     hydrate(qc, saved.state);
+    // 저장본은 '먼저 보여주기'용 — 화면을 열면 항상 한 번은 새로 받게 오래된 것으로 표시.
+    // (안 그러면 staleTime 이 긴 화면(경제 캘린더 1시간 등)은 업데이트 전 형식의 저장본을 계속 보여줌)
+    qc.invalidateQueries({ refetchType: "none" });
   } catch {
     try { localStorage.removeItem(KEY); } catch { /* 저장소 사용 불가 — 무시 */ }
   }
