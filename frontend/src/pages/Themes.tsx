@@ -25,7 +25,9 @@ export default function Themes() {
     queryKey: ["themes"],
     queryFn: () => themeApi.list().then((r) => r.data),
     // 서버가 이전 값을 주고 뒤에서 갱신 중이면 3초 뒤 다시, 아니면 1분마다
-    refetchInterval: (qq) => (qq.state.data?.refreshing ? 3000 : 60_000),
+    // 테마 구성을 받는 중이라 아직 없으면(오류) 5초마다 다시 확인
+    refetchInterval: (qq) => (qq.state.data?.refreshing ? 3000 : !qq.state.data && qq.state.error ? 5000 : 60_000),
+    retry: false,
   });
   const refresh = useMutation({ mutationFn: () => themeApi.refresh(), onSuccess: () => setTimeout(() => list.refetch(), 1500) });
 
@@ -125,6 +127,11 @@ export default function Themes() {
                 {detail.data && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{detail.data.items.length}종목 · 오늘 등락률순</span>}
                 <span style={{ marginLeft: "auto" }}><FetchStatus updatedAt={detail.data?.updated_at} fetching={detail.isFetching} /></span>
               </div>
+              {detail.data?.description && (
+                <p style={{ padding: "10px 16px", fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)", borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
+                  {detail.data.description}
+                </p>
+              )}
               {detail.isLoading && <p style={{ padding: 16, color: "var(--text-muted)", fontSize: 13 }}>불러오는 중...</p>}
               {detail.error && !detail.data && <p style={{ padding: 16, color: "var(--red)", fontSize: 13 }}>{errMsg(detail.error)}</p>}
               {detail.data && (
@@ -144,6 +151,9 @@ export default function Themes() {
                         onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
                         <td style={{ padding: "10px 14px" }}>
                           <p style={{ fontWeight: 600, fontSize: 13 }}>{r.name} <span style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 400 }}>{r.symbol}</span></p>
+                          {r.reason && (
+                            <p title={r.reason} style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2, maxWidth: 460, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reason}</p>
+                          )}
                           {r.other_themes?.length > 0 && (
                             <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>다른 테마: {r.other_themes.join(", ")}</p>
                           )}

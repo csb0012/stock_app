@@ -103,7 +103,8 @@ services/
                    거래량 꿈틀15·저점 상승10·바닥권15). 그날까지 데이터만 사용(score_frame). 제외: 20일 +25% 이상·거래대금 1억 미만·상장 120일 미만.
                    검증 = 과거 날짜별 점수 → 이후 20거래일 안 +20% 도달률을 점수 구간별로 전체 평균과 비교(lift).
                    하루 1회(scheduler accum_kr 16:30~, 결과 없으면 시작 2분 뒤), mark_background, 결과 app/data/accumulation.json
-  themes.py      — 테마별 종목: 네이버 증권 테마 화면(HTML) 파싱 → 하루 1회 app/data/themes.json (종목코드는 종목마스터로 확인).
+  themes.py      — 테마별 종목: 네이버 증권 모바일 API(m.stock.naver.com/api/stocks/theme, JSON) → 하루 1회 app/data/themes.json
+                   (테마 설명·종목별 편입 사유 포함, 종목코드는 종목마스터로 확인). 예전 PC 화면 finance.naver.com/sise/theme.naver 는 폐지됨.
                    테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수)
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구

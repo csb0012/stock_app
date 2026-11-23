@@ -1,15 +1,16 @@
 """테마별 종목 묶음 — 네이버 증권 테마 분류 (KIS 에는 테마 분류가 없음)
 
-- 테마 목록: finance.naver.com/sise/theme.naver?page=N (페이지마다 약 40개)
-- 테마 종목: finance.naver.com/sise/sise_group_detail.naver?type=theme&no=번호
+- 네이버 증권 모바일 API (JSON) — 예전 PC 화면(finance.naver.com/sise/theme.naver)은 2026-11 새 사이트(stock.naver.com)로 옮겨져
+  HTML 을 읽을 수 없게 됨 → 같은 데이터를 주는 모바일 API 사용 (뉴스도 같은 m.stock.naver.com API 를 씀)
+  - 테마 목록:  m.stock.naver.com/api/stocks/theme?page=N&pageSize=100   → groups[{no, name, totalCount}], totalCount
+  - 테마 종목:  m.stock.naver.com/api/stocks/theme/{no}?page=N&pageSize=100 → stocks[{itemCode, stockName}],
+                themeDescription(테마 설명), themeItemInfoMap({코드: 편입 사유})
 - 하루 1번 다시 받아 app/data/themes.json 에 저장 (테마 구성은 자주 안 바뀜). 종목코드는 KIS 종목마스터로 확인한 것만 남김
 - 테마별 오늘 등락(평균·상승/하락 수·주도주)은 KIS 멀티종목 시세로 직접 계산 (네이버 시세는 안 씀)
-네이버는 공식 API 가 아니라 화면(HTML)을 읽는 방식 → 형식이 바뀌면 "테마 목록을 읽지 못함" 오류로 표시.
+공식 공개 API 가 아니라 형식이 바뀔 수 있음 → 바뀌면 "테마 목록을 읽지 못함" 오류로 표시.
 """
 import asyncio
-import html
 import json
-import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,73 +20,87 @@ import httpx
 from app.services import stock_master
 
 _FILE = Path(__file__).resolve().parents[1] / "data" / "themes.json"
-_BASE = "https://finance.naver.com"
-_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
+_API = "https://m.stock.naver.com/api/stocks/theme"
+_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+       "Referer": "https://m.stock.naver.com/"}
 _REFRESH_SEC = 24 * 3600
+_PAGE = 100
 
-_LIST_RE = re.compile(r'href="/sise/sise_group_detail\.naver\?type=theme&(?:amp;)?no=(\d+)"[^>]*>\s*([^<]+?)\s*</a>')
-_CODE_RE = re.compile(r'/item/main\.naver\?code=([0-9A-Z]{6})')
-
-_data: dict | None = None      # {"updated_at", "themes": [{"no", "name", "symbols": [...]}]}
+_data: dict | None = None      # {"updated_at", "themes": [{"no", "name", "symbols", "description", "reasons"}]}
 _by_symbol: dict = {}          # symbol -> [테마 이름]
 _status: dict = {"running": False, "done": 0, "total": 0, "error": None, "finished_at": None}
 
 
-def parse_list(page_html: str) -> list:
-    """테마 목록 페이지 → [(번호, 이름)]"""
-    out, seen = [], set()
-    for no, name in _LIST_RE.findall(page_html):
-        if no not in seen:
-            seen.add(no)
-            out.append((no, re.sub(r"\s+", " ", html.unescape(name)).strip()))
-    return out
+def parse_list(j: dict) -> tuple:
+    """테마 목록 응답 → ([(번호, 이름)], 전체 개수)"""
+    groups = j.get("groups") or []
+    return [(str(g["no"]), str(g["name"]).strip()) for g in groups if g.get("no") is not None and g.get("name")], \
+        int(j.get("totalCount") or 0)
 
 
-def parse_detail(page_html: str) -> list:
-    """테마 상세 페이지 → [종목코드] (순서 유지, 중복 제거)"""
-    out = []
-    for code in _CODE_RE.findall(page_html):
-        if code not in out:
-            out.append(code)
-    return out
+def parse_detail(j: dict) -> tuple:
+    """테마 종목 응답 → ([종목코드], 전체 개수, 테마 설명, {코드: 편입 사유})"""
+    codes = []
+    for st in j.get("stocks") or []:
+        c = str(st.get("itemCode") or "").strip()
+        if c and c not in codes and st.get("stockEndType", "stock") == "stock":
+            codes.append(c)
+    info = j.get("themeItemInfoMap") or {}
+    return codes, int(j.get("totalCount") or 0), (j.get("themeDescription") or "").strip(), \
+        {str(k): str(v).strip() for k, v in info.items() if v}
 
 
-async def _get(client: httpx.AsyncClient, url: str) -> str:
+async def _get_json(client: httpx.AsyncClient, url: str) -> dict:
     r = await client.get(url)
     r.raise_for_status()
-    return r.content.decode("cp949", errors="replace")   # 네이버 증권 PC 화면은 EUC-KR
+    if not r.content.strip():
+        return {}   # 마지막 페이지 다음은 빈 응답
+    return r.json()
+
+
+async def _paged(client: httpx.AsyncClient, url: str, key: str) -> dict:
+    """page=1,2,... 를 전체 개수(totalCount)만큼 받아 key 목록을 합침"""
+    items, total = [], None
+    first: dict = {}
+    for page in range(1, 30):
+        j = await _get_json(client, f"{url}{'&' if '?' in url else '?'}page={page}&pageSize={_PAGE}")
+        if page == 1:
+            first = j
+        batch = j.get(key) or []
+        items += batch
+        total = int(j.get("totalCount") or 0) if total is None else total
+        if not batch or len(items) >= total:
+            break
+        await asyncio.sleep(0.2)
+    return {**first, key: items}
 
 
 async def refresh() -> dict:
-    """네이버에서 테마·종목을 다시 받음 (약 2~3분, 페이지마다 0.3초 간격)"""
+    """네이버에서 테마·종목을 다시 받음 (테마 약 260개, 1~2분)"""
     if _status["running"]:
         return status()
     _status.update(running=True, done=0, total=0, error=None)
     try:
         await stock_master.load()
         async with httpx.AsyncClient(headers=_UA, timeout=10.0, follow_redirects=True) as client:
-            themes: dict = {}
-            for page in range(1, 21):
-                found = parse_list(await _get(client, f"{_BASE}/sise/theme.naver?&page={page}"))
-                new = [(no, nm) for no, nm in found if no not in themes]
-                if not new:
-                    break
-                themes.update(new)
-                await asyncio.sleep(0.3)
+            listing = await _paged(client, _API, "groups")
+            themes, _ = parse_list(listing)
             if len(themes) < 10:
-                raise RuntimeError(f"테마 목록을 읽지 못함 ({len(themes)}개) — 네이버 화면 형식이 바뀌었을 수 있음")
+                raise RuntimeError(f"테마 목록을 읽지 못함 ({len(themes)}개) — 네이버 응답 형식이 바뀌었을 수 있음")
             _status["total"] = len(themes)
             out, fails = [], []
-            for no, name in themes.items():
+            for no, name in themes:
                 try:
-                    codes = parse_detail(await _get(client, f"{_BASE}/sise/sise_group_detail.naver?type=theme&no={no}"))
+                    j = await _paged(client, f"{_API}/{no}", "stocks")
+                    codes, _, desc, reasons = parse_detail(j)
                     syms = [c for c in codes if stock_master.get("KR", c)]   # KIS 종목마스터에 있는 코드만
                     if syms:
-                        out.append({"no": no, "name": name, "symbols": syms})
+                        out.append({"no": no, "name": name, "symbols": syms, "description": desc,
+                                    "reasons": {s: reasons[s] for s in syms if s in reasons}})
                 except Exception as e:
                     fails.append(f"{name}: {type(e).__name__}")
                 _status["done"] += 1
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
         if not out:
             raise RuntimeError("테마 종목을 하나도 읽지 못함 — " + ", ".join(fails[:3]))
         data = {"updated_at": datetime.now().isoformat(timespec="seconds"), "themes": out,
@@ -179,7 +194,9 @@ async def overview() -> dict:
     """테마 전체: 평균 등락률·상승/하락 종목 수·주도주 3개 (평균 등락률 높은 순)"""
     d = load()
     if not d:
-        raise RuntimeError("테마 데이터가 아직 없습니다 — " + (_status.get("error") or "서버 시작 후 1~3분 뒤 자동으로 받습니다"))
+        if _status["running"]:
+            raise RuntimeError(f"테마 구성을 받는 중입니다 ({_status['done']}/{_status['total'] or '?'}) — 1~2분 뒤 자동으로 표시됩니다")
+        raise RuntimeError("테마 데이터가 아직 없습니다 — " + (_status.get("error") or "서버 시작 1분 뒤 자동으로 받습니다 (1~2분 걸림)"))
     syms = sorted({s for t in d["themes"] for s in t["symbols"]})
     px = await prices(syms)
     p = px["prices"]
@@ -218,7 +235,9 @@ async def detail(no: str) -> dict:
             "price": v["price"] if v else None, "change_rate": v["change_rate"] if v else None,
             "volume": v["volume"] if v else None,
             "accum_score": accumulation.score_of(s),
+            "reason": (t.get("reasons") or {}).get(s),
             "other_themes": [n for n in themes_of(s) if n != t["name"]][:4],
         })
     rows.sort(key=lambda r: -(r["change_rate"] if r["change_rate"] is not None else -999))
-    return {"no": t["no"], "name": t["name"], "items": rows, "price_errors": px["errors"][:3]}
+    return {"no": t["no"], "name": t["name"], "description": t.get("description") or "", "items": rows,
+            "price_errors": px["errors"][:3]}
