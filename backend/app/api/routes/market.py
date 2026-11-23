@@ -18,7 +18,9 @@ _SECTIONS = {
     "bigtech": lambda: _list(get_bigtech_data()),
     "etfs": lambda: _list(get_us_etf_data()),
 }
-_calendar = SWRCache("calendar", fresh=3600, max_stale=24 * 3600)
+# 일부 출처가 일시적으로 실패한 결과(retry)는 5분 뒤 다시 받음
+_calendar = SWRCache("calendar", fresh=3600, max_stale=24 * 3600,
+                     fresh_for=lambda v: 300 if isinstance(v, dict) and v.get("retry") else 3600)
 
 
 async def _list(coro) -> dict:

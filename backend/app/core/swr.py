@@ -14,8 +14,10 @@ from typing import Any, Awaitable, Callable
 
 
 class SWRCache:
-    def __init__(self, name: str, fresh: float, max_stale: float):
-        self.name, self.fresh, self.max_stale = name, fresh, max_stale
+    def __init__(self, name: str, fresh: float, max_stale: float,
+                 fresh_for: Callable[[Any], float] | None = None):
+        """fresh_for(value): 값마다 fresh 를 다르게 (예: 일부 실패한 결과는 짧게) — 없으면 fresh"""
+        self.name, self.fresh, self.max_stale, self.fresh_for = name, fresh, max_stale, fresh_for
         self._data: dict = {}     # key -> (ts, value)
         self._errors: dict = {}   # key -> 마지막 백그라운드 갱신 실패 사유
         self._tasks: dict = {}    # key -> 진행 중인 조회 Task
@@ -36,7 +38,8 @@ class SWRCache:
                 self._errors.pop(key, None)
                 return value
             except BaseException as e:
-                self._errors[key] = str(getattr(e, "detail", None) or e)
+                # httpx 시간 초과 등은 str(e) 가 빈 문자열 → 오류 종류라도 보이게
+                self._errors[key] = str(getattr(e, "detail", None) or e) or type(e).__name__
                 raise
             finally:
                 self._tasks.pop(key, None)
@@ -51,7 +54,8 @@ class SWRCache:
         """wrap=True 이고 값이 dict 면 updated_at(값에 이미 있으면 그대로)·refreshing·refresh_error 를 붙여서 돌려줌"""
         hit = self._data.get(key)
         age = time.time() - hit[0] if hit else None
-        if hit and age < self.fresh:
+        fresh = self.fresh_for(hit[1]) if hit and self.fresh_for else self.fresh
+        if hit and age < fresh:
             return self._wrap(key, hit, False) if wrap else hit[1]
         if hit and age < self.max_stale:
             self._start(key, fn)

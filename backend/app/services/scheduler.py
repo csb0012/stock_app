@@ -75,7 +75,7 @@ async def loop():
     mark_background()  # 화면 요청보다 KIS 호출 순서를 뒤로
     await asyncio.sleep(30)
     while True:
-        if time.time() - events.version() > 6 * 3600:   # 미국 지표 발표 일정 (경고용) 6시간마다
+        if events.due():   # 미국 지표 발표 일정 (경고용) 6시간마다, 일시적 실패면 10분 뒤
             await events.refresh()
         for name, market, start, end, source in JOBS:
             now = datetime.now(_TZ[market])

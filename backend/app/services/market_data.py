@@ -214,6 +214,15 @@ FRED_RELEASES = {
 }
 
 
+def err_text(e: BaseException) -> str:
+    """화면·로그용 오류 문구 — httpx 시간 초과·연결 오류는 str(e) 가 빈 문자열이라 종류를 적어 줌"""
+    if isinstance(e, httpx.TimeoutException):
+        return f"응답 시간 초과 ({type(e).__name__})"
+    if isinstance(e, httpx.TransportError):
+        return f"연결 실패 ({type(e).__name__}{': ' + str(e) if str(e) else ''})"
+    return str(e) or type(e).__name__
+
+
 def _result(actual, estimate):
     """발표치 vs 예상치 (둘 다 숫자일 때만)"""
     try:
@@ -227,8 +236,11 @@ async def _finnhub_calendar(start: str, end: str) -> list:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get("https://finnhub.io/api/v1/calendar/economic",
                                 params={"from": start, "to": end, "token": settings.finnhub_api_key})
-    if resp.status_code in (401, 403):
-        raise RuntimeError(f"HTTP {resp.status_code} — 경제 캘린더는 Finnhub 유료 기능일 수 있음 ({resp.text[:80]})")
+    if resp.status_code == 403:   # 키는 맞지만 플랜에 없는 기능 (키가 틀리면 401)
+        raise RuntimeError("HTTP 403 — 경제 캘린더는 Finnhub 유료 기능이라 무료 키로는 못 받음 "
+                           "(키는 정상, 애널리스트·실적 요인은 무료로 동작)")
+    if resp.status_code == 401:
+        raise RuntimeError(f"HTTP 401 — FINNHUB_API_KEY 가 맞지 않음 ({resp.text[:80]})")
     if resp.status_code != 200:   # raise_for_status() 문구엔 token 이 든 URL 이 들어감
         raise RuntimeError(f"HTTP {resp.status_code} ({resp.text[:80]})")
     events = []
@@ -242,12 +254,18 @@ async def _finnhub_calendar(start: str, end: str) -> list:
 
 
 async def _fred_calendar(start: str, end: str) -> list:
-    """FRED 발표 일정 (실제 공식 일정, 예상치·발표치는 없음)"""
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get("https://api.stlouisfed.org/fred/releases/dates", params={
-            "api_key": settings.fred_api_key, "file_type": "json", "realtime_start": start, "realtime_end": end,
-            "include_release_dates_with_no_data": "true", "limit": 1000, "sort_order": "asc",
-        })
+    """FRED 발표 일정 (실제 공식 일정, 예상치·발표치는 없음). 전체 발표 일정을 받아서 느릴 때가 있어 30초 + 한 번 재시도"""
+    params = {"api_key": settings.fred_api_key, "file_type": "json", "realtime_start": start, "realtime_end": end,
+              "include_release_dates_with_no_data": "true", "limit": 1000, "sort_order": "asc"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        for attempt in range(2):
+            try:
+                resp = await client.get("https://api.stlouisfed.org/fred/releases/dates", params=params)
+                break
+            except httpx.TransportError:   # 시간 초과·연결 끊김
+                if attempt:
+                    raise
+                await asyncio.sleep(2)
     if resp.status_code != 200:   # raise_for_status() 문구에는 api_key 가 든 URL 이 그대로 들어가서 화면·로그에 키가 보임
         raise RuntimeError(f"HTTP {resp.status_code} ({resp.text[:80]})")
     seen, events = set(), []
@@ -320,12 +338,12 @@ async def get_economic_calendar() -> dict:
     from datetime import timedelta
     today = datetime.now().date()
     start, end = (today - timedelta(days=14)).isoformat(), (today + timedelta(days=28)).isoformat()
-    errors = []
+    errors, retry = [], False   # retry: 일시적 실패가 있었음 → 캐시를 짧게 (routes/market.py)
     if settings.finnhub_api_key:
         try:
             return {"source": "Finnhub", "events": await _finnhub_calendar(start, end), "errors": []}
         except Exception as e:
-            errors.append(f"Finnhub: {e}")
+            errors.append(f"Finnhub: {err_text(e)}")
     else:
         errors.append("Finnhub: FINNHUB_API_KEY 없음")
     # Finnhub 가 안 되면: FRED 지표 발표 일정 + 연준 FOMC 일정 (하나라도 되면 보여주고 실패한 쪽은 errors 에 표시)
@@ -335,15 +353,18 @@ async def get_economic_calendar() -> dict:
             events += await _fred_calendar(start, end)
             used.append("FRED 공식 발표 일정")
         except Exception as e:
-            errors.append(f"FRED: {e}")
+            errors.append(f"FRED: {err_text(e)}")
+            retry = True
     else:
         errors.append("FRED: FRED_API_KEY 없음")
     try:
         events += await _fomc_calendar(start, end)
         used.append("연준 FOMC 일정")
     except Exception as e:
-        errors.append(f"FOMC 일정(연준): {e}")
+        errors.append(f"FOMC 일정(연준): {err_text(e)}")
+        retry = True
     if used:
         events.sort(key=lambda e: e["date"])
-        return {"source": " + ".join(used) + " (예상치·발표치 없음)", "events": events, "errors": errors}
+        return {"source": " + ".join(used) + " (예상치·발표치 없음)", "events": events, "errors": errors,
+                "retry": retry}
     raise RuntimeError(" / ".join(errors))

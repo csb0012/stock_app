@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from app.core.config import settings
 from app.services.market_calendar import is_trading_day
 
-_cache = {"ts": 0.0, "events": [], "error": None}
+_cache = {"ts": 0.0, "events": [], "error": None, "tried": 0.0, "retry": False}
 
 
 def status() -> dict:
@@ -28,27 +28,37 @@ def version() -> float:
     return _cache["ts"]
 
 
+def due() -> bool:
+    """다시 받을 때인지: 6시간마다, 일시적 실패(시간 초과 등)가 있었으면 10분 뒤"""
+    if time.time() - _cache["ts"] > 6 * 3600:
+        return time.time() - _cache["tried"] > 600 or not _cache["tried"]
+    return _cache["retry"] and time.time() - _cache["tried"] > 600
+
+
 async def refresh():
-    from app.services.market_data import _fred_calendar, _fomc_calendar  # 순환 import 방지
+    from app.services.market_data import _fred_calendar, _fomc_calendar, err_text  # 순환 import 방지
+    _cache["tried"] = time.time()
     today = date.today()
     start, end = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=60)).isoformat()
-    events, errors, ok = [], [], False
+    events, errors, ok, retry = [], [], False, False
     if settings.fred_api_key:
         try:
             events += [e for e in await _fred_calendar(start, end) if e["impact"] == "high"]
             ok = True
         except Exception as e:
-            errors.append(f"FRED 발표 일정 조회 실패: {e}")
+            errors.append(f"FRED 발표 일정 조회 실패: {err_text(e)}")
+            retry = True
     else:
         errors.append("FRED_API_KEY 없음 — CPI·고용 등 지표 발표 경고 없음")
     try:
         events += await _fomc_calendar(start, end)
         ok = True
     except Exception as e:
-        errors.append(f"FOMC 일정(연준) 조회 실패: {e}")
+        errors.append(f"FOMC 일정(연준) 조회 실패: {err_text(e)}")
+        retry = True
     if ok:   # 하나라도 받았으면 교체, 다 실패하면 이전 일정 유지
         _cache.update(ts=time.time(), events=sorted(events, key=lambda e: e["date"]))
-    _cache["error"] = " / ".join(errors) or None
+    _cache.update(error=" / ".join(errors) or None, retry=retry)
     if errors:
         print(f"[events] {_cache['error']}")
 
