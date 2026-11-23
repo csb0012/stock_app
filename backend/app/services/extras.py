@@ -58,7 +58,9 @@ async def _get(provider: str, url: str, params: dict) -> httpx.Response:
     if resp.status_code == 429:
         await asyncio.sleep(30)
         resp = await _client().get(url, params=params)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # raise_for_status() 문구엔 api_key·token 이 든 URL 이 그대로 들어가 화면·extras_cache.json·로그에 키가 남음
+        raise RuntimeError(f"{provider} HTTP {resp.status_code}")
     return resp
 
 

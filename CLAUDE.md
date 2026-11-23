@@ -108,10 +108,12 @@ services/
                    (테마 설명·종목별 편입 사유 포함, 종목코드는 종목마스터로 확인). 예전 PC 화면 finance.naver.com/sise/theme.naver 는 폐지됨.
                    테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수)
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
+                   + FOMC 금리 결정일(연준 공식 일정 페이지 — FRED 의 FOMC 항목은 매일 나와서 안 씀)
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
                    (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext);
-                   경제 캘린더 = Finnhub → 안 되면 FRED 공식 발표 일정 → 둘 다 안 되면 오류 (가짜 일정 없음)
+                   경제 캘린더 = Finnhub → 안 되면 FRED 공식 발표 일정 + 연준 FOMC 일정(federalreserve.gov, 하루 캐시)
+                   → 다 안 되면 오류 (가짜 일정 없음). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me

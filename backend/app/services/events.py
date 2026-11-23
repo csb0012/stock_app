@@ -3,11 +3,12 @@
 - 옵션 만기일 (날짜 규칙으로 계산)
   - 국내: 매월 둘째 목요일 (휴장이면 앞 거래일). 3·6·9·12월은 "네 마녀의 날"
   - 미국: 매월 셋째 금요일 (휴장이면 앞 거래일). 3·6·9·12월은 "쿼드러플 위칭"
-- 미국 주요 지표 발표일 (FRED 공식 발표 일정, 6시간마다 갱신 — market_data._fred_calendar)
+- 미국 주요 지표 발표일 (6시간마다 갱신): CPI·고용·GDP·PCE = FRED 공식 발표 일정 (market_data._fred_calendar),
+  FOMC 금리 결정일 = 연준 공식 일정 페이지 (market_data._fomc_calendar)
   - 미국 종목: 대상일 당일 발표
   - 국내 종목: 직전 국내 거래일 ~ 대상일 전날 밤 발표 → "간밤 미국 ○○ 결과가 반영되는 날",
                대상일 당일 발표 → "오늘 밤 미국 ○○ 발표 예정"
-FRED 키가 없거나 조회 실패하면 지표 발표 경고만 빠지고 status() 에 사유가 남음 (가짜 일정으로 채우지 않음)
+FRED 키가 없거나 조회 실패하면 그 경고만 빠지고 status() 에 사유가 남음 (가짜 일정으로 채우지 않음)
 """
 import time
 from datetime import date, datetime, timedelta
@@ -28,16 +29,27 @@ def version() -> float:
 
 
 async def refresh():
-    from app.services.market_data import _fred_calendar  # 순환 import 방지
-    if not settings.fred_api_key:
-        _cache.update(error="FRED_API_KEY 없음 — 미국 지표 발표 경고 없이 옵션 만기일만 표시")
-        return
+    from app.services.market_data import _fred_calendar, _fomc_calendar  # 순환 import 방지
     today = date.today()
+    start, end = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=60)).isoformat()
+    events, errors, ok = [], [], False
+    if settings.fred_api_key:
+        try:
+            events += [e for e in await _fred_calendar(start, end) if e["impact"] == "high"]
+            ok = True
+        except Exception as e:
+            errors.append(f"FRED 발표 일정 조회 실패: {e}")
+    else:
+        errors.append("FRED_API_KEY 없음 — CPI·고용 등 지표 발표 경고 없음")
     try:
-        evs = await _fred_calendar((today - timedelta(days=7)).isoformat(), (today + timedelta(days=60)).isoformat())
-        _cache.update(ts=time.time(), events=[e for e in evs if e["impact"] == "high"], error=None)
+        events += await _fomc_calendar(start, end)
+        ok = True
     except Exception as e:
-        _cache["error"] = f"FRED 발표 일정 조회 실패: {e}"
+        errors.append(f"FOMC 일정(연준) 조회 실패: {e}")
+    if ok:   # 하나라도 받았으면 교체, 다 실패하면 이전 일정 유지
+        _cache.update(ts=time.time(), events=sorted(events, key=lambda e: e["date"]))
+    _cache["error"] = " / ".join(errors) or None
+    if errors:
         print(f"[events] {_cache['error']}")
 
 

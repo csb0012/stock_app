@@ -1,7 +1,9 @@
 """미국 거시경제 데이터 (yfinance, FRED 등 무료 소스)"""
 import yfinance as yf
 import asyncio
-from datetime import datetime
+import re
+import time
+from datetime import date, datetime
 from typing import Optional
 from functools import lru_cache
 import httpx
@@ -197,12 +199,13 @@ async def get_us_stock_history(symbol: str, period: str = "6mo") -> list:
 
 
 # FRED 발표 일정에서 고를 주요 지표 (FRED 의 release_name 그대로 비교 — 이름이 다르면 그 지표는 그냥 안 보임)
+# FOMC 는 여기서 빼고 연준 공식 페이지에서 받음: FRED 의 "FOMC Press Release" 에는 매일 갱신되는 기준금리 데이터가
+# 들어 있어서 주말까지 날마다 발표일로 나옴 (실제 회의는 1년에 8번)
 FRED_RELEASES = {
     "consumer price index": ("미국 CPI (소비자물가)", "high"),
     "employment situation": ("미국 고용보고서 (비농업)", "high"),
     "gross domestic product": ("미국 GDP", "high"),
     "personal income and outlays": ("미국 PCE (개인소비지출)", "high"),
-    "fomc press release": ("FOMC 금리결정", "high"),
     "producer price index": ("미국 PPI (생산자물가)", "medium"),
     "advance monthly sales for retail and food services": ("미국 소매판매", "medium"),
     "job openings and labor turnover survey": ("JOLTS 구인건수", "medium"),
@@ -226,7 +229,8 @@ async def _finnhub_calendar(start: str, end: str) -> list:
                                 params={"from": start, "to": end, "token": settings.finnhub_api_key})
     if resp.status_code in (401, 403):
         raise RuntimeError(f"HTTP {resp.status_code} — 경제 캘린더는 Finnhub 유료 기능일 수 있음 ({resp.text[:80]})")
-    resp.raise_for_status()
+    if resp.status_code != 200:   # raise_for_status() 문구엔 token 이 든 URL 이 들어감
+        raise RuntimeError(f"HTTP {resp.status_code} ({resp.text[:80]})")
     events = []
     for e in (resp.json().get("economicCalendar") or []):
         events.append({
@@ -244,7 +248,8 @@ async def _fred_calendar(start: str, end: str) -> list:
             "api_key": settings.fred_api_key, "file_type": "json", "realtime_start": start, "realtime_end": end,
             "include_release_dates_with_no_data": "true", "limit": 1000, "sort_order": "asc",
         })
-    resp.raise_for_status()
+    if resp.status_code != 200:   # raise_for_status() 문구에는 api_key 가 든 URL 이 그대로 들어가서 화면·로그에 키가 보임
+        raise RuntimeError(f"HTTP {resp.status_code} ({resp.text[:80]})")
     seen, events = set(), []
     for r in resp.json().get("release_dates") or []:
         key = (r.get("release_name") or "").strip().lower()
@@ -257,8 +262,60 @@ async def _fred_calendar(start: str, end: str) -> list:
     return events
 
 
+FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+_MONTH_NAMES = ["january", "february", "march", "april", "may", "june",
+                "july", "august", "september", "october", "november", "december"]
+_MONTHS = {**{m: i for i, m in enumerate(_MONTH_NAMES, 1)}, **{m[:3]: i for i, m in enumerate(_MONTH_NAMES, 1)}}
+_fomc_cache = {"ts": 0.0, "events": []}
+_FOMC_ROW = re.compile(
+    r'fomc-meeting__month[^"]*"[^>]*>\s*<strong>\s*([^<]+?)\s*</strong>\s*</div>\s*'
+    r'<div class="[^"]*fomc-meeting__date[^"]*"[^>]*>\s*([^<]+?)\s*</div>', re.S)
+
+
+def parse_fomc_page(html: str) -> list:
+    """연준 FOMC 일정 페이지 → 정례 회의의 금리 결정일(회의 마지막 날) 목록.
+    표결만 한 회의('22 (notation vote)')·임시 회의('(unscheduled)')처럼 날짜 칸이 숫자가 아니면 뺀다.
+    '*' = 경제전망(점도표) 함께 발표, 'Apr/May 30-1' 처럼 달이 걸치면 결정일은 뒤쪽 달."""
+    events = []
+    parts = re.split(r">\s*(\d{4}) FOMC Meetings\s*<", html)
+    for k in range(1, len(parts), 2):
+        year = int(parts[k])
+        for month_txt, date_txt in _FOMC_ROW.findall(parts[k + 1]):
+            m = re.fullmatch(r"(\d{1,2})(?:\s*-\s*(\d{1,2}))?\s*(\*)?", date_txt)
+            months = [_MONTHS.get(x.strip().rstrip(".").lower()) for x in month_txt.split("/")]
+            if not m or not months or None in months:
+                continue
+            month, y = months[-1], year
+            if month < months[0]:   # Dec/Jan 처럼 해를 넘김
+                y += 1
+            try:
+                d = date(y, month, int(m.group(2) or m.group(1)))
+            except ValueError:
+                continue
+            events.append({"date": d.isoformat(),
+                           "event": "FOMC 금리결정" + (" (경제전망·점도표)" if m.group(3) else ""),
+                           "country": "US", "impact": "high",
+                           "actual": None, "estimate": None, "prev": None, "result": None})
+    return sorted(events, key=lambda e: e["date"])
+
+
+async def _fomc_calendar(start: str, end: str) -> list:
+    """FOMC 금리 결정일 (연준 공식 일정 페이지, 하루 캐시). 페이지 형식이 바뀌어 날짜를 못 찾으면 오류."""
+    if not _fomc_cache["events"] or time.time() - _fomc_cache["ts"] > 24 * 3600:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True,
+                                     headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(FOMC_URL)
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        events = parse_fomc_page(resp.text)
+        if not events:
+            raise RuntimeError("연준 FOMC 일정 페이지에서 회의 날짜를 찾지 못함 (페이지 형식이 바뀌었을 수 있음)")
+        _fomc_cache.update(ts=time.time(), events=events)
+    return [dict(e) for e in _fomc_cache["events"] if start <= e["date"] <= end]
+
+
 async def get_economic_calendar() -> dict:
-    """경제 캘린더 (최근 2주 + 앞으로 4주): Finnhub → 안 되면 FRED 공식 발표 일정. 둘 다 안 되면 오류.
+    """경제 캘린더 (최근 2주 + 앞으로 4주): Finnhub → 안 되면 FRED 공식 발표 일정 + 연준 FOMC 일정. 다 안 되면 오류.
     (예전엔 실패하면 손으로 적은 가짜 일정·가짜 발표치를 보여줬음 → 삭제)"""
     from datetime import timedelta
     today = datetime.now().date()
@@ -271,12 +328,22 @@ async def get_economic_calendar() -> dict:
             errors.append(f"Finnhub: {e}")
     else:
         errors.append("Finnhub: FINNHUB_API_KEY 없음")
+    # Finnhub 가 안 되면: FRED 지표 발표 일정 + 연준 FOMC 일정 (하나라도 되면 보여주고 실패한 쪽은 errors 에 표시)
+    events, used = [], []
     if settings.fred_api_key:
         try:
-            return {"source": "FRED 공식 발표 일정 (예상치·발표치 없음)", "events": await _fred_calendar(start, end),
-                    "errors": errors}
+            events += await _fred_calendar(start, end)
+            used.append("FRED 공식 발표 일정")
         except Exception as e:
             errors.append(f"FRED: {e}")
     else:
         errors.append("FRED: FRED_API_KEY 없음")
+    try:
+        events += await _fomc_calendar(start, end)
+        used.append("연준 FOMC 일정")
+    except Exception as e:
+        errors.append(f"FOMC 일정(연준): {e}")
+    if used:
+        events.sort(key=lambda e: e["date"])
+        return {"source": " + ".join(used) + " (예상치·발표치 없음)", "events": events, "errors": errors}
     raise RuntimeError(" / ".join(errors))
