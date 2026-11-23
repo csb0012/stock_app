@@ -355,7 +355,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - **새 패키지 `anthropic`** → 직접 설치 PC 는 `pip install -r requirements.txt` 필요 (Docker·클라우드는 재빌드 때 자동)
 - 가짜 Claude API 서버로 흐름 검증: 도구 3개 호출 → 결과 전달 → 답변, 요청에 모델·effort·fallbacks·캐시 설정 포함 확인. 실제 API 로는 미검증
 
-### 2026-11-23 — 화면 속도 개선: 받은 데이터부터 바로 표시 (commit `PENDING`)
+### 2026-11-23 — 화면 속도 개선: 받은 데이터부터 바로 표시 (commit `d7bce43`)
 - 증상: 대시보드를 비롯한 모든 화면이 데이터를 다 받을 때까지 "로딩 중"으로 오래 비어 있음
 - **브라우저에 마지막 데이터 저장** (`frontend/src/api/persist.ts`, `api/queryClient.ts`)
   - 성공한 조회 결과를 localStorage(`rq-cache-v1`)에 저장 → 새로고침·재접속하면 마지막 데이터가 즉시(0.1초) 보이고 뒤에서 최신 값으로 바뀜
