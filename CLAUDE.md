@@ -79,8 +79,9 @@ services/
   stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
   quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치(60초 캐시), 실시간 현재가 패치(국내는 멀티종목 시세 30개씩),
                    analyze_candles 결과 메모(입력 같으면 재계산 안 함), 미국 PER/PBR(KIS 해외 상세), USD/KRW 환율
-  news.py        — 종목 뉴스(국내: 네이버 증권 모바일 API → 실패 시 Google 뉴스 RSS / 미국: yfinance)
-                   + 문구·키워드 기반 호재/악재 분위기 (10분 캐시)
+  news.py        — 종목 뉴스 + 문구·키워드 기반 호재/악재 분위기. 국내 종목: 해외 영문 기사(Yahoo .KS 뉴스 + Google 뉴스 영문,
+                   TRUSTED_FOREIGN 매체만, 30분 캐시)만 확률 반영(weight_source="foreign") / 국내 기사(네이버 → Google 한국어,
+                   TRUSTED_KR 언론사만)는 보여주기만(weighted=False). 영문 회사명 app/data/kr_en_names.json. 미국: yfinance (10분 캐시)
   extras.py      — 외부 데이터 요인: FRED 거시환경 / Finnhub 애널리스트·실적(미국) / DART 공시(국내).
                    호출 제한 때문에 백그라운드 큐(worker)로 수집, get_extra() 는 기다리지 않고 캐시값 또는 pending 반환
   market_calendar.py — 거래소 휴장일(holidays XKRX/NYSE) 기반 다음 거래일·"월요일(11/23)" 라벨
@@ -130,7 +131,7 @@ api/routes/
 
 1. `quote.py` 에서 캔들 조회 — 국내는 KIS 일봉(최대 100개씩 기간을 나눠 받아 날짜 오름차순 정렬), 미국은 yfinance.
 2. `analysis.calc_technical_indicators()` — RSI, MACD, 볼린저밴드, MA20/60 계산.
-3. `analysis.predict_next_day(candles, indicators, news, extra, model)` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15 + 키가 있을 때 거시환경 10·애널리스트 15·실적 10·공시 10) → 확률(15~85% 클램프), 지표별 근거(`factors`)·요약(`summary`)·경고(`warnings`). 가격: `_buy_zone()` 이 지지선·ATR 로 추천 매입가(`buy_price`, `buy_low/high`, `buy_gap_pct`, `buy_comment`), 목표가 = 현재가+2ATR, 손절가 = 매입가 아래. `quote.analyze_candles(..., symbol)` 가 대상일(`target_date`, `target_label`)과 `extras.get_extra()`, `ml_model.live_predict()` 를 붙인다. 학습 모델이 채택돼 있으면 최종 확률 = 모델 확률 + 뉴스·외부데이터 소폭 보정(`_apply_model`), 아니면 규칙 점수 확률 (`rule_probability`, `model_probability`, `method`, `model_status` 같이 반환).
+3. `analysis.predict_next_day(candles, indicators, news, extra, model)` — 룰 기반 점수(RSI 30·MACD 25·볼린저 20·이평 25·뉴스 15(국내는 해외 기사가 있을 때만) + 키가 있을 때 거시환경 10·애널리스트 15·실적 10·공시 20) → 확률(15~85% 클램프), 지표별 근거(`factors`)·요약(`summary`)·경고(`warnings`). 가격: `_buy_zone()` 이 지지선·ATR 로 추천 매입가(`buy_price`, `buy_low/high`, `buy_gap_pct`, `buy_comment`), 목표가 = 현재가+2ATR, 손절가 = 매입가 아래. `quote.analyze_candles(..., symbol)` 가 대상일(`target_date`, `target_label`)과 `extras.get_extra()`, `ml_model.live_predict()` 를 붙인다. 학습 모델이 채택돼 있으면 최종 확률 = 모델 확률 + 뉴스·외부데이터 소폭 보정(`_apply_model`), 아니면 규칙 점수 확률 (`rule_probability`, `model_probability`, `method`, `model_status` 같이 반환).
 4. 분석한 예측은 `prediction_log.record()` 로 저장 → 대상일 장 마감 후 채점.
 5. `analysis.classify_investment_style()` — `long_term_score`, `short_term_score` 반환.
 

@@ -74,7 +74,8 @@ def calc_technical_indicators(candles: list) -> dict:
 
 
 # 학습 모델을 쓸 때 뉴스·외부 데이터는 과거 기록이 없어 학습에 못 넣음 → 확률을 소폭만 움직임 (최대 ±%p)
-_SHIFT = {"뉴스": 3, "거시환경": 2, "애널리스트": 3, "실적": 2, "공시": 3}
+# 공시(DART)는 회사가 직접 낸 공식 자료라 가장 크게 (±6%p)
+_SHIFT = {"뉴스": 3, "거시환경": 2, "애널리스트": 3, "실적": 2, "공시": 6}
 
 
 def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
@@ -207,7 +208,27 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
         add("이동평균", short, detail, got, 25)
 
     # 5. 뉴스 분위기 (15점) — news: {"pos": n, "neg": n, "total": n, "headlines": [...]} (news.py)
-    if news is not None:
+    #    국내 종목(weight_source="foreign")은 해외 주요 매체 영문 기사만 반영. 국내(네이버) 기사는 보여주기만 하고 점수 0
+    if news is not None and news.get("weight_source") == "foreign":
+        pos, neg, total, kr = news.get("pos", 0), news.get("neg", 0), news.get("total", 0), news.get("kr_total", 0)
+        kr_note = f" · 국내 기사 {kr}건은 참고만 (확률 미반영)" if kr else ""
+        if news.get("foreign_error"):
+            add("뉴스", "해외 기사 조회 실패", f"해외 기사 조회 실패 — 뉴스 요인 미반영 ({news['foreign_error'][:80]}){kr_note}", 0, 0)
+        elif total == 0:
+            add("뉴스", "해외 기사 없음", f"최근 2주 해외 주요 매체(Reuters·Bloomberg 등) 기사 없음 — 뉴스 요인 미반영{kr_note}", 0, 0)
+        else:
+            max_score += 15
+            if pos + neg == 0:
+                got, short = 7, "해외 뉴스 중립"
+                detail = f"해외 기사 {total}건, 뚜렷한 호재·악재 표현 없음"
+            else:
+                got = round(15 * pos / (pos + neg))
+                short = "해외 뉴스 " + ("호재 우세" if pos > neg else "악재 우세" if neg > pos else "호재·악재 혼재")
+                sample = next((h for h in news.get("headlines", []) if h.get("weighted") and h.get("tone") == ("pos" if pos >= neg else "neg")), None)
+                detail = f"해외 기사 {total}건 중 호재 {pos} · 악재 {neg}" + (f" — 예: [{sample['press']}] {sample['title'][:60]}" if sample else "")
+            score += got
+            add("뉴스", short, detail + kr_note, got, 15)
+    elif news is not None:
         max_score += 15
         pos, neg, total = news.get("pos", 0), news.get("neg", 0), news.get("total", 0)
         if news.get("error"):
@@ -459,7 +480,7 @@ def _f_disclosure(d: dict, full: int, warnings: list):
 
 
 _EXTRA_FACTORS = [("macro", 10, _f_macro), ("analyst", 15, _f_analyst),
-                  ("earnings", 10, _f_earnings), ("disclosure", 10, _f_disclosure)]
+                  ("earnings", 10, _f_earnings), ("disclosure", 20, _f_disclosure)]   # 공시 = 공식 자료라 2배
 _EXTRA_LABEL = {"macro": "거시환경", "analyst": "애널리스트", "earnings": "실적", "disclosure": "공시"}
 
 

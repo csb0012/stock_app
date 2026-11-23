@@ -45,7 +45,7 @@ export default function PredictionReasons({ pred, defaultOpen = false }: { pred:
                   <span style={{ fontWeight: 600, color }}>{f.name}</span>
                   <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>{f.detail}</span>
                 </div>
-                <span style={{ color: "var(--text-muted)", fontSize: 11, flexShrink: 0 }}>{f.score}/{f.max}</span>
+                <span style={{ color: "var(--text-muted)", fontSize: 11, flexShrink: 0 }}>{f.max ? `${f.score}/${f.max}` : "반영 안 함"}</span>
               </div>
             );
           })}

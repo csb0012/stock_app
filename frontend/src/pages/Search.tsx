@@ -4,7 +4,7 @@ import ChangeTag from "../components/common/ChangeTag";
 import StockSearchBox from "../components/common/StockSearchBox";
 import BuyPrice from "../components/common/BuyPrice";
 import PredictionReasons from "../components/common/PredictionReasons";
-import { safeUrl } from "../components/common/NewsLink";
+import { safeUrl, NewsSource } from "../components/common/NewsLink";
 
 export default function Search() {
   const [picked, setPicked] = useState<any>(null);
@@ -157,12 +157,19 @@ export default function Search() {
               <h3 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>
                 관련 뉴스
                 {data.news_source && <span style={{ fontWeight: 400, fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>출처: {data.news_source}</span>}
+                {data.news?.some((n: any) => n.weighted === false) && (
+                  <span style={{ display: "block", fontWeight: 400, fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                    국내 종목은 해외 주요 매체(Reuters·Bloomberg 등) 기사만 상승 확률에 반영합니다. "참고" 표시된 국내 기사는 보여주기만 합니다.
+                  </span>
+                )}
               </h3>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {data.news.filter((n: any) => n.title).map((n: any, i: number) => (
                   <a key={i} href={safeUrl(n.url)} target="_blank" rel="noopener noreferrer" className="news-link"
                     style={{ display: "flex", justifyContent: "space-between", textDecoration: "none", color: "inherit", padding: "8px 0", borderBottom: i < data.news.length - 1 ? "1px solid var(--border)" : "none" }}>
-                    <span style={{ fontSize: 13, color: "var(--text-primary)" }}>{n.title}</span>
+                    <span style={{ fontSize: 13, color: n.weighted === false ? "var(--text-secondary)" : "var(--text-primary)", display: "flex", gap: 6, alignItems: "baseline" }}>
+                      <NewsSource item={n} />{n.title}
+                    </span>
                     <span style={{ fontSize: 11, color: "var(--text-muted)", flexShrink: 0, marginLeft: 12 }}>{n.date}</span>
                   </a>
                 ))}

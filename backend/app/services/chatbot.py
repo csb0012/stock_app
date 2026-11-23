@@ -254,7 +254,9 @@ async def _stock(stock: dict) -> str:
                                     f"{f['name']}: {f['detail'][:140]}" for f in factors]
     news = (r.get("news") or {}).get("headlines") or []
     if news:
-        lines += ["", "**최근 뉴스**"] + [f"- {h.get('title', '')[:90]}" for h in news[:3]]
+        lines += ["", "**최근 뉴스**"] + [
+            f"- {'[' + h['press'] + '] ' if h.get('press') else ''}{h.get('title', '')[:90]}"
+            f"{' (국내 기사 · 참고, 확률 미반영)' if h.get('weighted') is False else ''}" for h in news[:4]]
     for w in p.get("warnings") or []:
         lines.append(f"\n⚠ {w}")
     lines += ["", await _accuracy_line()]

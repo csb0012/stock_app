@@ -106,7 +106,7 @@ def _memo_key(market, candles, per, pbr, news, extra, symbol):
     last = tuple((c["date"], c["close"], c["high"], c["low"], c.get("volume")) for c in candles[-2:])
     n = (news or {})
     return (market, symbol, len(candles), candles[0]["date"], last, per, pbr,
-            (n.get("pos"), n.get("neg"), n.get("total"), n.get("error")),
+            (n.get("pos"), n.get("neg"), n.get("total"), n.get("error"), n.get("kr_total"), n.get("foreign_error")),
             json.dumps(extra, sort_keys=True, default=str) if extra else None,
             ml_model._ctx.get("ts"), tuple(id(ml_model.load(v)) for v in ml_model.VARIANT_FEATURES),
             len(flows.series(symbol)) if symbol and market == "KR" else 0, events.version(),
@@ -225,10 +225,14 @@ def _us_result(symbol: str, candles: list, news: dict | None, val: dict | None =
     }
 
 
+# 화면·예측에 넘기는 뉴스 요약 항목 (weight_source="foreign" = 국내 종목은 해외 기사만 확률 반영)
+NEWS_KEYS = ("total", "pos", "neg", "error", "source", "weight_source", "kr_total", "foreign_error", "kr_error")
+
+
 def _news_brief(news: dict | None) -> dict | None:
     if not news:
         return None
-    return {k: news.get(k) for k in ("total", "pos", "neg", "error", "source")} | {"headlines": news.get("headlines", [])[:5]}
+    return {k: news.get(k) for k in NEWS_KEYS if k in news} | {"headlines": news.get("headlines", [])[:6]}
 
 
 async def analyze_kr(symbol: str, count: int = 100, with_news: bool = True) -> dict:

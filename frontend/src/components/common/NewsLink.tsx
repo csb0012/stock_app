@@ -9,9 +9,21 @@ export function safeUrl(url?: string): string | undefined {
   }
 }
 
+/** 출처 표시: [Reuters] 처럼 매체 이름, 국내 기사(확률 반영 안 함)는 "참고" 표시 */
+export function NewsSource({ item }: { item: any }) {
+  if (!item?.press && item?.weighted !== false) return null;
+  return (
+    <span style={{ flexShrink: 0, fontSize: 10, color: "var(--text-muted)", whiteSpace: "nowrap" }}
+          title={item?.weighted === false ? "국내 기사 — 확률에 반영하지 않고 참고로만 보여줌" : item?.weighted ? "해외 주요 매체 — 확률에 반영" : undefined}>
+      {item?.press && `[${item.press}]`}{item?.weighted === false && " 참고"}
+    </span>
+  );
+}
+
 export default function NewsLink({ item, style }: { item: any; style?: React.CSSProperties }) {
   const href = safeUrl(item?.url);
-  const title = [item?.press, item?.date].filter(Boolean).join(" · ");
+  const title = [item?.press, item?.date, item?.weighted === false ? "국내 기사 · 확률 미반영(참고)" : item?.weighted ? "해외 기사 · 확률 반영" : ""]
+    .filter(Boolean).join(" · ");
   if (!href) return <span style={style} title={title}>{item?.title}</span>;
   return (
     <a

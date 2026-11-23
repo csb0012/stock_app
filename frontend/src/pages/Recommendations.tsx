@@ -5,7 +5,7 @@ import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
-import NewsLink from "../components/common/NewsLink";
+import NewsLink, { NewsSource } from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice, fmtShares } from "../components/common/format";
 
@@ -165,6 +165,7 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
           {item.news.headlines.slice(0, 2).map((h: any, i: number) => (
             <div key={i} style={{ display: "flex", gap: 6, fontSize: 11, color: "var(--text-muted)" }}>
               <Newspaper size={11} style={{ flexShrink: 0, marginTop: 2, color: h.tone === "pos" ? "var(--green)" : h.tone === "neg" ? "var(--red)" : "var(--text-muted)" }} />
+              <NewsSource item={h} />
               <NewsLink item={h} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} />
             </div>
           ))}

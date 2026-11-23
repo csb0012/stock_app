@@ -9,7 +9,7 @@ from app.models.user import User
 from app.services.kis_api import kis_client, KISError
 from app.services import stock_master
 from app.services.quote import (analyze_kr, analyze_kr_many, analyze_us_many, strip_candles,
-                                live_prices, patch_candles, analyze_candles)
+                                live_prices, patch_candles, analyze_candles, _news_brief)
 from app.services.news import get_news_many, get_news_tone
 from app.services import prediction_log
 from app.services.extras import get_extra
@@ -226,7 +226,7 @@ async def _live_compute(kind: str) -> dict:
                 change = round((price / prev - 1) * 100, 2) if prev else 0.0
             n = news.get((r["market"], s))
             out[s] = {**r, "price": price, "change_rate": change, "candles": candles,
-                      "news": n and {k: n.get(k) for k in ("total", "pos", "neg", "error", "source")} | {"headlines": n.get("headlines", [])[:5]},
+                      "news": _news_brief(n),
                       "live_error": lp.get("error"),
                       **analyze_candles(r["market"], candles, r.get("per", 0), r.get("pbr", 0), n,
                                         get_extra(r["market"], s), s)}
@@ -368,7 +368,8 @@ async def get_kr_stock(symbol: str, current_user: User = Depends(get_current_use
     n = await get_news_tone("KR", symbol)
     return {"price": price, "candles": r["candles"], "indicators": r["indicators"],
             "prediction": r["prediction"], "style": r["style"],
-            "news": n["headlines"], "news_source": n.get("source"), "news_error": n.get("error")}
+            "news": n["headlines"], "news_source": n.get("source"),
+            "news_error": n.get("error") or " / ".join(f"{k}: {n[v]}" for k, v in (("해외", "foreign_error"), ("국내", "kr_error")) if n.get(v)) or None}
 
 
 @router.get("/us/{symbol}")
