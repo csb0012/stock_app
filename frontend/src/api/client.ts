@@ -1,4 +1,5 @@
 import axios from "axios";
+import { clearPersisted } from "./persist";
 
 const api = axios.create({ baseURL: "/api" });
 
@@ -13,6 +14,7 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem("token");
+      clearPersisted();
       window.location.href = "/login";
     }
     return Promise.reject(err);
@@ -44,6 +46,7 @@ export const chatApi = {
 // Market
 export const marketApi = {
   overview: () => api.get("/market/overview"),
+  section: (name: string) => api.get(`/market/overview/${name}`),
   calendar: () => api.get("/market/calendar"),
   status: () => api.get("/market/status"),
 };

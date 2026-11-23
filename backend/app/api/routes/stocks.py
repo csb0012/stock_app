@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 import yfinance as yf
 import asyncio
 import time
+from datetime import datetime
 
 from app.api.routes.auth import get_current_user
 from app.models.user import User
@@ -12,6 +13,7 @@ from app.services.quote import (analyze_kr, analyze_kr_many, analyze_us_many, st
 from app.services.news import get_news_many, get_news_tone
 from app.services import prediction_log
 from app.services.extras import get_extra
+from app.core.swr import SWRCache
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -22,8 +24,7 @@ _rec_cache: dict = {
 }
 _CACHE_TTL = 900.0
 
-# --- 스크리너 캐시 (1분 TTL) — 1분마다 화면이 갱신되므로 KIS 호출 수 절약 ---
-_screener_cache: dict = {}
+# --- 스크리너 캐시 — 화면이 자주 갱신되므로 KIS·Yahoo 호출 수 절약 ---
 _SCREENER_TTL = {"kr": 8.0, "us": 30.0}  # 화면은 10초마다 갱신 — 미국(Yahoo 스크리너)은 무거워서 30초
 
 # --- 추천 후보 종목 목록 ---
@@ -146,8 +147,6 @@ async def _build_shortterm() -> dict:
 _BUILDERS = {"longterm": _build_longterm, "shortterm": _build_shortterm}
 _LIVE_TTL = 10.0
 _build_locks = {k: asyncio.Lock() for k in _BUILDERS}
-# 여러 탭/요청이 동시에 와도 현재가 재계산은 한 번만 (KIS 호출 중복 방지)
-_live_locks = {k: asyncio.Lock() for k in _BUILDERS}
 
 
 async def _build(kind: str) -> dict:
@@ -170,7 +169,6 @@ async def _base(kind: str) -> dict:
             return cache["data"]
         data = await _build(kind)
         cache["data"], cache["ts"] = data, time.time()
-        cache["live"] = None
         return data
 
 
@@ -178,8 +176,7 @@ async def refresh_base(kind: str):
     """백그라운드 갱신 (scheduler) — 새로 만드는 동안에도 화면은 기존 캐시를 씀"""
     data = await _build(kind)
     cache = _rec_cache[kind]
-    cache["data"], cache["ts"] = data, time.time()
-    cache["live"] = None
+    cache["data"], cache["ts"] = data, time.time()  # 화면 값은 다음 현재가 갱신(10초 안) 때 새 기본 데이터로 바뀜
 
 
 def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
@@ -194,18 +191,18 @@ def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
     return {"items": rows, "errors": errors}
 
 
+# 현재가 재계산 결과: 10초 안이면 그대로, 30분 안이면 기존 결과를 바로 보여주고 뒤에서 재계산
+_live_cache = SWRCache("recommendations", fresh=_LIVE_TTL, max_stale=1800)
+
+
 async def _live(kind: str) -> dict:
-    """현재가 + 뉴스(10분 캐시)로 상승 확률을 다시 계산 (10초 캐시)"""
-    async with _live_locks[kind]:
-        return await _live_locked(kind)
+    """현재가 + 뉴스(10분 캐시)로 상승 확률을 다시 계산. 여러 탭/요청이 동시에 와도 재계산은 한 번만"""
+    return await _live_cache.get(kind, lambda: _live_compute(kind))
 
 
-async def _live_locked(kind: str) -> dict:
+async def _live_compute(kind: str) -> dict:
     base = await _base(kind)
-    cache = _rec_cache[kind]
-    live = cache.get("live")
-    if live and time.time() - live["ts"] < _LIVE_TTL:
-        return live["data"]
+    live = _live_cache.peek(kind)
 
     ok = {s: r for s, r in base["raw"].items() if "error" not in r}
     keys = [(r["market"], s) for s, r in ok.items()]
@@ -238,12 +235,11 @@ async def _live_locked(kind: str) -> dict:
     raw = await asyncio.get_event_loop().run_in_executor(None, recompute)
     data = _rows_from(raw, base["extra"], kind)
 
-    prev_probs = {(x["market"], x["symbol"]): x["prediction"]["probability"] for x in (live["data"]["items"] if live else [])}
+    prev_probs = {(x["market"], x["symbol"]): x["prediction"]["probability"] for x in (live["items"] if live else [])}
     for x in data["items"]:
         x["prev_probability"] = prev_probs.get((x["market"], x["symbol"]))
-    data["updated_at"] = time.strftime("%H:%M:%S")
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
     data["live_errors"] = sorted({r["live_error"] for r in raw.values() if r.get("live_error")})[:3]
-    cache["live"] = {"ts": time.time(), "data": data}
 
     await prediction_log.record(list(raw.values()), "AI추천")
     return data
@@ -292,16 +288,16 @@ def _us_screener_sync(mode: str) -> list:
 _MODES = ("volume_surge", "trading_value", "gainers", "losers")
 
 
+# 화면은 10초마다 갱신. 갱신 주기가 지난 값은 바로 보여주고 뒤에서 다시 받음 (오래된 건 기다림)
+_screener_swr = {"kr": SWRCache("screener_kr", fresh=_SCREENER_TTL["kr"], max_stale=60),
+                 "us": SWRCache("screener_us", fresh=_SCREENER_TTL["us"], max_stale=180)}
+
+
 async def _cached_screener(key: str, fn):
-    hit = _screener_cache.get(key)
-    if hit and time.time() - hit["ts"] < _SCREENER_TTL[key.split(":")[0]]:
-        return hit["data"]
     try:
-        data = await fn()
+        return await _screener_swr[key.split(":")[0]].get(key, fn, wrap=False)
     except Exception as e:
         _fail(e)
-    _screener_cache[key] = {"data": data, "ts": time.time()}
-    return data
 
 
 # ==================== ROUTES ====================

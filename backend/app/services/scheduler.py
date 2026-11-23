@@ -59,6 +59,8 @@ async def _run_job(name: str, market: str, source: str):
 
 
 async def loop():
+    from app.services.kis_api import mark_background
+    mark_background()  # 화면 요청보다 KIS 호출 순서를 뒤로
     await asyncio.sleep(30)
     while True:
         if time.time() - events.version() > 6 * 3600:   # 미국 지표 발표 일정 (경고용) 6시간마다
@@ -80,6 +82,8 @@ async def loop():
 async def warm_recommendations():
     """AI 추천 기본 데이터를 미리 만들어 둠 (캐시 15분 → 14분마다 갱신)"""
     from app.api.routes import stocks  # 순환 import 방지
+    from app.services.kis_api import mark_background
+    mark_background()
     await asyncio.sleep(45)
     while True:
         for kind in ("longterm", "shortterm"):

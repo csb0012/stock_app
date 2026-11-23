@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import FetchStatus from "../components/common/FetchStatus";
 import { marketApi, errMsg } from "../api/client";
 import { AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
 
@@ -84,7 +85,7 @@ function EventRow({ e, isPast }: { e: any; isPast: boolean }) {
 }
 
 export default function CalendarPage() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, isFetching } = useQuery({
     queryKey: ["calendar"],
     queryFn: () => marketApi.calendar().then((r) => r.data),
     staleTime: 60 * 60 * 1000,
@@ -143,15 +144,16 @@ export default function CalendarPage() {
         </div>
       </div>
 
+      {data && <div style={{ marginBottom: 12 }}><FetchStatus updatedAt={data.updated_at} fetching={isFetching || data.refreshing} error={data.refresh_error} /></div>}
       {error && (
         <div className="card" style={{ padding: 20, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)", marginBottom: 16 }}>
-          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>경제 캘린더 조회 실패</p>
+          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>경제 캘린더 조회 실패{data ? " — 아래는 이전 일정" : ""}</p>
           <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(error)}</p>
         </div>
       )}
       {isLoading ? (
         <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>
-      ) : error ? null : events.length === 0 ? (
+      ) : error && !data ? null : events.length === 0 ? (
         <p style={{ color: "var(--text-muted)" }}>이 기간에 해당하는 주요 일정이 없습니다.</p>
       ) : (
         <>

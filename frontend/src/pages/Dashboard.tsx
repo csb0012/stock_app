@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { marketApi } from "../api/client";
+import { marketApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
+import FetchStatus from "../components/common/FetchStatus";
 import { RefreshCw, AlertCircle } from "lucide-react";
 
 const INDEX_LABELS: Record<string, { label: string; unit: string }> = {
@@ -107,16 +108,67 @@ function UsRow({ item }: { item: any }) {
   );
 }
 
-export default function Dashboard() {
-  const { data, isLoading, isError, refetch, isFetching } = useQuery({
-    queryKey: ["market-overview"],
-    queryFn: () => marketApi.overview().then((r) => r.data),
-    refetchInterval: 60_000,
+/** 대시보드 한 구역 조회 — 구역마다 따로 받아서 먼저 온 것부터 표시 (느린 구역이 나머지를 막지 않음) */
+function useSection(name: string) {
+  return useQuery({
+    queryKey: ["market-section", name],
+    queryFn: () => marketApi.section(name).then((r) => r.data),
+    // 서버가 이전 값을 먼저 주고 뒤에서 갱신 중(refreshing)이면 3초 뒤 다시 받아 최신 값으로, 아니면 1분마다
+    refetchInterval: (q) => (q.state.data?.refreshing ? 3000 : 60_000),
   });
+}
+
+function SectionTitle({ title, q }: { title: string; q: any }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+      <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: 1 }}>
+        {title}
+      </h2>
+      <FetchStatus updatedAt={q.data?.updated_at} fetching={q.isFetching || q.data?.refreshing}
+                   error={q.data?.refresh_error || (q.isError && q.data ? errMsg(q.error) : null)} />
+    </div>
+  );
+}
+
+function SectionError({ q }: { q: any }) {
+  if (!q.isError || q.data) return null;  // 이전 데이터가 있으면 그걸 보여주고 제목 옆에 실패 표시
+  return (
+    <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--red)", fontSize: 13 }}>
+      <AlertCircle size={16} /> 불러오지 못했습니다 — {errMsg(q.error)}
+    </div>
+  );
+}
+
+function Skeleton({ height = 70, count = 1, grid = false }: { height?: number; count?: number; grid?: boolean }) {
+  const box = <div className="card" style={{ height, opacity: 0.45, animation: "pulse 1.4s ease-in-out infinite" }} />;
+  return grid ? (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+      {Array.from({ length: count }, (_, i) => <div key={i}>{box}</div>)}
+    </div>
+  ) : box;
+}
+
+const INDEX_ORDER = Object.keys(INDEX_LABELS);
+
+export default function Dashboard() {
+  const krQ = useSection("kr_indices");
+  const glQ = useSection("global_indices");
+  const bigQ = useSection("bigtech");
+  const etfQ = useSection("etfs");
+  const all = [krQ, glQ, bigQ, etfQ];
+  const anyFetching = all.some((q) => q.isFetching);
 
   const now = new Date();
   const timeStr = now.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
   const dateStr = now.toLocaleDateString("ko-KR", { month: "long", day: "numeric", weekday: "short" });
+
+  // 국내(KIS)·해외(Yahoo) 지수를 화면 순서대로 합침 — 먼저 온 쪽부터 카드가 채워지고 나머지는 자리만 표시
+  const indexCards = INDEX_ORDER.map((id) => {
+    const src = id === "kospi" || id === "kosdaq" ? krQ : glQ;
+    return { id, data: src.data?.[id], loading: !src.data && src.isLoading, failed: !src.data && src.isError };
+  });
+  const vix = glQ.data?.vix;
+  const latest = [krQ.data?.updated_at, glQ.data?.updated_at].filter(Boolean).sort().pop();
 
   return (
     <div>
@@ -129,70 +181,59 @@ export default function Dashboard() {
             국내 지수: KIS 실시간 · 해외 지수·종목·환율: Yahoo Finance (정규장 종가 기준, 미국 종목은 시간외 가격 따로 표시, 장중 최대 15분 지연)
           </p>
         </div>
-        <button className="btn btn-ghost" onClick={() => refetch()} disabled={isFetching}>
-          <RefreshCw size={14} style={{ animation: isFetching ? "spin 1s linear infinite" : "none" }} />
+        <button className="btn btn-ghost" onClick={() => all.forEach((q) => q.refetch())} disabled={anyFetching}>
+          <RefreshCw size={14} style={{ animation: anyFetching ? "spin 1s linear infinite" : "none" }} />
           새로고침
         </button>
       </div>
 
-      {isError && (
-        <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--red)", marginBottom: 20 }}>
-          <AlertCircle size={16} />
-          데이터를 불러오지 못했습니다. API 키를 확인하거나 잠시 후 다시 시도하세요.
+      {/* 주요 지수 */}
+      <section style={{ marginBottom: 32 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+          <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: 1 }}>
+            주요 지수 · 매크로
+          </h2>
+          <FetchStatus updatedAt={latest} fetching={krQ.isFetching || glQ.isFetching || krQ.data?.refreshing || glQ.data?.refreshing}
+                       error={krQ.data?.refresh_error || glQ.data?.refresh_error} />
         </div>
-      )}
-
-      {isLoading ? (
-        <div style={{ color: "var(--text-muted)", textAlign: "center", paddingTop: 60 }}>데이터 로딩 중...</div>
-      ) : (
-        <>
-          {/* 주요 지수 */}
-          <section style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-              주요 지수 · 매크로
-            </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
-              {Object.entries(data?.indices || {}).map(([id, val]: [string, any]) => (
-                <IndexCard key={id} id={id} data={val} />
-              ))}
-            </div>
-          </section>
-
-          {/* 빅테크 */}
-          <section style={{ marginBottom: 32 }}>
-            <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-              빅테크 동향
-            </h2>
-            <div className="card" style={{ padding: "4px 16px" }}>
-              {(data?.bigtech || []).map((item: any) => (
-                <UsRow key={item.symbol} item={item} />
-              ))}
-            </div>
-          </section>
-
-          {/* 미국 주요 ETF */}
-          {(data?.etfs || []).length > 0 && (
-            <section style={{ marginBottom: 32 }}>
-              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-                미국 주요 ETF
-              </h2>
-              <div className="card" style={{ padding: "4px 16px" }}>
-                {(data.etfs || []).map((item: any) => (
-                  <UsRow key={item.symbol} item={item} />
-                ))}
-              </div>
-            </section>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
+          {indexCards.map(({ id, data, loading, failed }) =>
+            loading ? <Skeleton key={id} height={78} /> :
+            failed ? <IndexCard key={id} id={id} data={{ error: errMsg((id === "kospi" || id === "kosdaq" ? krQ : glQ).error) }} /> :
+            <IndexCard key={id} id={id} data={data} />
           )}
+        </div>
+      </section>
 
-          {/* VIX 경고 배너 */}
-          {data?.indices?.vix?.price >= 25 && (
-            <div className="card" style={{ borderColor: "var(--yellow)", background: "color-mix(in srgb, var(--yellow) 5%, transparent)" }}>
-              <p style={{ color: "var(--yellow)", fontWeight: 600 }}>
-                ⚠ VIX {data.indices.vix.price.toFixed(1)} — 시장 불안 구간입니다. 신규 진입 시 주의하세요.
-              </p>
-            </div>
-          )}
-        </>
+      {/* 빅테크 */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionTitle title="빅테크 동향" q={bigQ} />
+        <SectionError q={bigQ} />
+        {bigQ.isLoading ? <Skeleton height={300} /> : bigQ.data && (
+          <div className="card" style={{ padding: "4px 16px" }}>
+            {(bigQ.data.items || []).map((item: any) => <UsRow key={item.symbol} item={item} />)}
+          </div>
+        )}
+      </section>
+
+      {/* 미국 주요 ETF */}
+      <section style={{ marginBottom: 32 }}>
+        <SectionTitle title="미국 주요 ETF" q={etfQ} />
+        <SectionError q={etfQ} />
+        {etfQ.isLoading ? <Skeleton height={220} /> : etfQ.data && (
+          <div className="card" style={{ padding: "4px 16px" }}>
+            {(etfQ.data.items || []).map((item: any) => <UsRow key={item.symbol} item={item} />)}
+          </div>
+        )}
+      </section>
+
+      {/* VIX 경고 배너 */}
+      {vix?.price >= 25 && !vix.error && (
+        <div className="card" style={{ borderColor: "var(--yellow)", background: "color-mix(in srgb, var(--yellow) 5%, transparent)" }}>
+          <p style={{ color: "var(--yellow)", fontWeight: 600 }}>
+            ⚠ VIX {vix.price.toFixed(1)} — 시장 불안 구간입니다. 신규 진입 시 주의하세요.
+          </p>
+        </div>
       )}
     </div>
   );

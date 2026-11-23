@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { stockApi, watchlistApi, errMsg } from "../api/client";
+import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
@@ -207,7 +208,8 @@ export default function Recommendations() {
     queryKey: ["longterm"],
     queryFn: () => stockApi.longterm().then((r) => r.data),
     enabled: tab === "long",
-    refetchInterval: REFRESH_SEC * 1000,
+    // 서버가 이전 결과를 먼저 주고 뒤에서 재계산 중이면 3초 뒤 다시
+    refetchInterval: (q) => (q.state.data?.refreshing ? 3000 : REFRESH_SEC * 1000),
     refetchIntervalInBackground: false,
   });
 
@@ -215,7 +217,8 @@ export default function Recommendations() {
     queryKey: ["shortterm"],
     queryFn: () => stockApi.shortterm().then((r) => r.data),
     enabled: tab === "short",
-    refetchInterval: REFRESH_SEC * 1000,
+    // 서버가 이전 결과를 먼저 주고 뒤에서 재계산 중이면 3초 뒤 다시
+    refetchInterval: (q) => (q.state.data?.refreshing ? 3000 : REFRESH_SEC * 1000),
     refetchIntervalInBackground: false,
   });
 
@@ -291,9 +294,10 @@ export default function Recommendations() {
       </div>
 
       {query.data?.updated_at && (
-        <p style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12, marginBottom: 14 }}>
-          <RefreshCw size={12} className={query.isFetching ? "spin" : undefined} />
-          마지막 갱신 {query.data.updated_at} · {REFRESH_SEC}초마다 자동 갱신
+        <p style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--text-muted)", fontSize: 12, marginBottom: 14, flexWrap: "wrap" }}>
+          <FetchStatus updatedAt={query.data.updated_at} fetching={query.isFetching || query.data.refreshing}
+                       error={query.data.refresh_error || (query.error ? errMsg(query.error) : null)} />
+          <span>· {REFRESH_SEC}초마다 자동 갱신</span>
           {query.data.live_errors?.length > 0 && (
             <span style={{ color: "var(--yellow)" }}> · 현재가 조회 실패: {query.data.live_errors.join(" / ")}</span>
           )}
@@ -305,7 +309,7 @@ export default function Recommendations() {
       )}
       {query.error && (
         <div className="card" style={{ padding: 20, borderColor: "color-mix(in srgb, var(--red) 40%, transparent)", marginBottom: 16 }}>
-          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>추천 분석 실패</p>
+          <p style={{ color: "var(--red)", fontWeight: 600, marginBottom: 6 }}>추천 분석 실패{query.data ? " — 아래는 이전 결과" : ""}</p>
           <p style={{ color: "var(--text-secondary)", fontSize: 13 }}>{errMsg(query.error)}</p>
         </div>
       )}

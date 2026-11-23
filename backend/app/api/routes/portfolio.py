@@ -12,6 +12,10 @@ from app.models.portfolio import PortfolioItem
 from app.services import stock_master
 from app.services.quote import analyze_items, get_usdkrw
 from app.services import prediction_log
+from app.core.swr import SWRCache
+
+# 같은 목록을 15초 안에 다시 요청하면 다시 분석하지 않음, 동시에 와도 분석은 한 번
+_analysis_cache = SWRCache("portfolio_analysis", fresh=15, max_stale=15)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
@@ -194,7 +198,11 @@ async def analyze_portfolio(
          "quantity": i.quantity, "avg_price": i.avg_price}
         for i in result.scalars().all()
     ]
+    key = (current_user.id, tuple(tuple(i.values()) for i in items))
+    return await _analysis_cache.get(key, lambda: _analyze(items))
 
+
+async def _analyze(items: list) -> dict:
     has_us = any(i["market"] == "US" for i in items)
 
     async def fx():

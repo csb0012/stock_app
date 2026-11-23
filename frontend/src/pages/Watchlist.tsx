@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { watchlistApi, stockApi, errMsg } from "../api/client";
 import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw } from "lucide-react";
+import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
@@ -37,7 +38,7 @@ export default function Watchlist() {
     enabled: debouncedQ.length >= 1,
   });
 
-  const { data: analysis = [], isFetching: analyzing, error: analysisError, refetch } = useQuery({
+  const { data: analysis = [], isFetching: analyzing, error: analysisError, refetch, dataUpdatedAt } = useQuery({
     queryKey: ["watchlist-analysis"],
     queryFn: () => watchlistApi.analysis().then((r) => r.data),
     enabled: (watchlist as any[]).length > 0,
@@ -226,6 +227,7 @@ export default function Watchlist() {
               {reachedCount > 0 && (
                 <span className="badge badge-up"><Target size={11} style={{ marginRight: 4 }} />목표가 도달 {reachedCount}종목</span>
               )}
+              <FetchStatus updatedAt={dataUpdatedAt} fetching={analyzing} />
               <button className="btn btn-ghost" style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => refetch()} disabled={analyzing}>
                 <RefreshCw size={13} />
                 {analyzing ? "분석 중..." : "새로고침"}
@@ -233,7 +235,7 @@ export default function Watchlist() {
             </div>
           </div>
           {analysisError && (
-            <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 10 }}>시세 조회 실패: {errMsg(analysisError)}</p>
+            <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 10 }}>시세 조회 실패{(analysis as any[]).length ? " (이전 값 표시 중)" : ""}: {errMsg(analysisError)}</p>
           )}
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

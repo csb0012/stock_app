@@ -73,43 +73,48 @@ def _daily_item(closes, expect_date=None) -> dict:
     return item
 
 
-async def get_index_data() -> dict:
-    """주요 지수/매크로: 국내 지수 = KIS 실시간, 나머지 = Yahoo Finance(yfinance) 일봉"""
+def _global_indices_sync() -> dict:
+    """해외 지수·매크로 (Yahoo Finance 일봉 5일)"""
+    from app.services.market_calendar import last_session_date
+    us_day = last_session_date("US")
+    keys = [k for k in INDEX_TICKERS if k not in KIS_INDEX]
+    data = yf.download([INDEX_TICKERS[k] for k in keys], period="5d", progress=False, auto_adjust=True, threads=True)
+    results = {}
+    for key in keys:
+        ticker = INDEX_TICKERS[key]
+        try:
+            item = _daily_item(_yf_closes(data, ticker), None if key in _NO_SESSION else us_day)
+            results[key] = {"ticker": ticker, **item}
+        except Exception as e:
+            results[key] = {"ticker": ticker, "price": 0, "change": 0, "change_rate": 0, "error": str(e)}
+    return results
+
+
+async def get_global_indices() -> dict:
+    return await asyncio.get_event_loop().run_in_executor(None, _global_indices_sync)
+
+
+async def get_kr_indices() -> dict:
+    """코스피·코스닥 = KIS 실시간 업종지수 (실패하면 Yahoo 로 대체하지 않고 오류 표시)"""
     from app.services.kis_api import kis_client
     from app.services.market_calendar import last_session_date
-
-    us_day = last_session_date("US")
     kr_day = last_session_date("KR")
-
-    def _fetch():
-        keys = [k for k in INDEX_TICKERS if k not in KIS_INDEX]
-        data = yf.download([INDEX_TICKERS[k] for k in keys], period="5d", progress=False, auto_adjust=True, threads=True)
-        results = {}
-        for key in keys:
-            ticker = INDEX_TICKERS[key]
-            try:
-                item = _daily_item(_yf_closes(data, ticker), None if key in _NO_SESSION else us_day)
-                results[key] = {"ticker": ticker, **item}
-            except Exception as e:
-                results[key] = {"ticker": ticker, "price": 0, "change": 0, "change_rate": 0, "error": str(e)}
-        return results
 
     async def kr(key, code):
         try:
             v = await kis_client.get_kr_index(code)
             return key, {"ticker": KIS_INDEX[key][1], **v, "as_of": kr_day.isoformat(), "source": "KIS 실시간"}
-        except Exception as e:  # Yahoo 로 대체하지 않고 오류를 그대로 표시
+        except Exception as e:
             return key, {"ticker": KIS_INDEX[key][1], "price": 0, "change": 0, "change_rate": 0,
                          "error": f"KIS 지수 조회 실패: {e}"}
 
-    yf_res, *kr_res = await asyncio.gather(
-        asyncio.get_event_loop().run_in_executor(None, _fetch),
-        *[kr(k, code) for k, (code, _) in KIS_INDEX.items()],
-    )
-    out = {}
-    for key in INDEX_TICKERS:  # 화면 순서 유지
-        out[key] = dict(kr_res)[key] if key in KIS_INDEX else yf_res[key]
-    return out
+    return dict(await asyncio.gather(*[kr(k, code) for k, (code, _) in KIS_INDEX.items()]))
+
+
+async def get_index_data() -> dict:
+    """주요 지수/매크로: 국내 지수 = KIS 실시간, 나머지 = Yahoo Finance(yfinance) 일봉 (화면 순서대로)"""
+    kr, gl = await asyncio.gather(get_kr_indices(), get_global_indices())
+    return {key: kr[key] if key in KIS_INDEX else gl[key] for key in INDEX_TICKERS}
 
 
 def _extended_prices(tickers: list) -> dict:
@@ -139,8 +144,12 @@ def _us_rows(names: dict) -> list:
     from app.services.market_calendar import last_session_date
     us_day = last_session_date("US")
     tickers = list(names)
-    data = yf.download(tickers, period="5d", progress=False, auto_adjust=True)
-    ext = _extended_prices(tickers)
+    # 일봉과 시간외 5분봉을 동시에 받음 (순서대로 받으면 두 배 걸림)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(2) as pool:
+        f_daily = pool.submit(yf.download, tickers, period="5d", progress=False, auto_adjust=True)
+        f_ext = pool.submit(_extended_prices, tickers)
+        data, ext = f_daily.result(), f_ext.result()
     results = []
     for symbol, name in names.items():
         row = {"symbol": symbol, "name": name}

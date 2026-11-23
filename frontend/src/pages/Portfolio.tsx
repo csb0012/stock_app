@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { portfolioApi, stockApi, errMsg } from "../api/client";
+import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import BuyPrice from "../components/common/BuyPrice";
@@ -49,11 +50,11 @@ export default function Portfolio() {
     queryFn: () => portfolioApi.list().then((r) => r.data),
   });
 
-  const { data: analysis, isFetching: analyzing, error: analysisError } = useQuery({
+  const { data: analysis, isFetching: analyzing, error: analysisError, dataUpdatedAt } = useQuery({
     queryKey: ["portfolio-analysis"],
     queryFn: () => portfolioApi.analysis().then((r) => r.data),
     enabled: (items as any[]).length > 0,
-    staleTime: 5 * 60 * 1000,
+    staleTime: 60_000,  // 저장된 이전 값은 바로 보여주고, 1분 지났으면 뒤에서 최신 값을 받아 바꿈
   });
 
   const { data: searchResults = [], isFetching: searching } = useQuery({
@@ -137,6 +138,10 @@ export default function Portfolio() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>투자종목</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>보유 종목별 수익/손실 · 다음 거래일 전망</p>
+          {(items as any[]).length > 0 && (
+            <FetchStatus updatedAt={analysis?.updated_at || dataUpdatedAt} fetching={analyzing}
+                         error={analysis && analysisError ? errMsg(analysisError) : null} />
+          )}
         </div>
         <button className="btn btn-primary" onClick={openModal}>
           <Plus size={14} />
@@ -169,7 +174,7 @@ export default function Portfolio() {
         </div>
       )}
       {analysisError && (
-        <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 12 }}>시세 조회 실패: {errMsg(analysisError)}</p>
+        <p style={{ color: "var(--red)", fontSize: 13, marginBottom: 12 }}>시세 조회 실패{analysis ? " (이전 값 표시 중)" : ""}: {errMsg(analysisError)}</p>
       )}
 
       {/* Add Modal */}
@@ -302,7 +307,7 @@ export default function Portfolio() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {analyzing && (
+          {analyzing && !analysis && (
             <p style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: "8px 0" }}>
               예측 분석 중...
             </p>

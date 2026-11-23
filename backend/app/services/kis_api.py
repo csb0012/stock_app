@@ -7,6 +7,7 @@ import time
 import json
 import hashlib
 import asyncio
+import contextvars
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -21,6 +22,17 @@ KIS_MOCK_BASE = "https://openapivts.koreainvestment.com:29443"
 
 # 발급받은 토큰 저장 파일 (git 제외)
 _TOKEN_FILE = Path(__file__).resolve().parents[2] / ".kis_token.json"
+
+
+# 백그라운드 작업(자동 예측 기록·추천 미리 계산·백테스트·수급 수집) 표시.
+# 이 표시가 있는 호출은 화면 요청이 KIS 호출 차례를 기다리는 동안 양보한다
+# → 백그라운드가 종목 수십 개를 받는 중에도 대시보드·관심종목 조회가 그 뒤에 줄 서지 않음.
+_background = contextvars.ContextVar("kis_background", default=False)
+
+
+def mark_background():
+    """지금 실행 중인 asyncio 작업(과 거기서 만드는 하위 작업)을 백그라운드 우선순위로"""
+    _background.set(True)
 
 
 class KISError(RuntimeError):
@@ -66,6 +78,7 @@ class KISClient:
         self._slow_until = 0.0
         self._rate_lock = asyncio.Lock()
         self._last_call = 0.0
+        self._fg_waiting = 0   # 차례를 기다리는 화면 요청 수
         self._http: Optional[httpx.AsyncClient] = None
 
     def _client(self) -> httpx.AsyncClient:
@@ -124,13 +137,25 @@ class KISClient:
             return self._access_token
 
     async def _throttle(self):
-        async with self._rate_lock:
-            if self._min_interval != self._base_interval and time.monotonic() > self._slow_until:
-                self._min_interval = self._base_interval  # 제한 걸린 뒤 1분 지나면 원래 속도로
-            wait = self._last_call + self._min_interval - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last_call = max(self._last_call, time.monotonic())
+        bg = _background.get()
+        if not bg:
+            self._fg_waiting += 1
+        try:
+            while True:
+                async with self._rate_lock:
+                    if not (bg and self._fg_waiting):
+                        if self._min_interval != self._base_interval and time.monotonic() > self._slow_until:
+                            self._min_interval = self._base_interval  # 제한 걸린 뒤 1분 지나면 원래 속도로
+                        wait = self._last_call + self._min_interval - time.monotonic()
+                        if wait > 0:
+                            await asyncio.sleep(wait)
+                        self._last_call = max(self._last_call, time.monotonic())
+                        return
+                # 백그라운드 호출: 화면 요청이 기다리는 중이면 차례를 넘기고 잠시 뒤 다시
+                await asyncio.sleep(self._min_interval)
+        finally:
+            if not bg:
+                self._fg_waiting -= 1
 
     async def _rate_limited(self, attempt: int):
         """EGW00201: 다른 요청들도 같이 멈추고(한 앱키 기준 제한이라) 점점 길게 기다린 뒤 느린 속도로 재개"""

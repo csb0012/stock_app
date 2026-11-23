@@ -7,6 +7,7 @@ from app.api.routes import auth, stocks, market, watchlist, portfolio, predictio
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
+from app.services.kis_api import mark_background
 
 
 @asynccontextmanager
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
     preopen_task = asyncio.create_task(scheduler.loop())
     # AI 추천 기본 데이터 미리 계산 (첫 화면 대기 없애기)
     warm_task = asyncio.create_task(scheduler.warm_recommendations())
+    # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
+    asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
     ctx_task.cancel()
     preopen_task.cancel()
@@ -47,6 +50,7 @@ def _warm_extras():
 
 
 async def _evaluate_loop():
+    mark_background()  # 화면 요청보다 KIS 호출 순서를 뒤로
     while True:
         try:
             await prediction_log.evaluate_pending()
@@ -56,12 +60,14 @@ async def _evaluate_loop():
 
 
 async def _model_ctx_loop():
+    mark_background()  # 화면 요청보다 KIS 호출 순서를 뒤로
     while True:
         await ml_model.refresh_ctx()
         await asyncio.sleep(600)
 
 
 async def _backtest_loop():
+    mark_background()  # 화면 요청보다 KIS 호출 순서를 뒤로
     await asyncio.sleep(20)  # 시작 직후 KIS 호출이 몰리지 않게
     while True:
         if backtest.due():

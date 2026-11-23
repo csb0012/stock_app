@@ -126,6 +126,8 @@ export default function Predictions() {
     queryFn: () => predictionApi.review(days, market, kind, filter, limit).then((r) => r.data),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+    // 채점이 오래 걸려 서버가 기존 기록을 먼저 준 경우(newly_evaluated = null) 5초 뒤 다시 받아 채점 결과 반영
+    refetchInterval: (q) => (q.state.data && q.state.data.newly_evaluated === null ? 5000 : false),
   });
 
   const shown: any[] = data?.items || [];
@@ -159,7 +161,7 @@ export default function Predictions() {
             {KIND_LABEL[k]}
           </button>
         ))}
-        {isFetching && !isLoading && <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>불러오는 중...</span>}
+        {(isFetching && !isLoading || data?.newly_evaluated === null) && <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>{data?.newly_evaluated === null ? "장 끝난 예측 채점 중… (끝나면 자동 반영)" : "불러오는 중..."}</span>}
       </div>
 
       {data && <BacktestPanel bt={data.backtest} onDone={() => qc.invalidateQueries({ queryKey: ["prediction-review"] })} />}

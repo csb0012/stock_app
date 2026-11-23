@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient as qc } from "./api/queryClient";
 import { useAuthStore } from "./store/auth";
 import Layout from "./components/common/Layout";
 import Login from "./pages/Login";
@@ -12,8 +13,6 @@ import CalendarPage from "./pages/Calendar";
 import Search from "./pages/Search";
 import Predictions from "./pages/Predictions";
 import Chat from "./pages/Chat";
-
-const qc = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();

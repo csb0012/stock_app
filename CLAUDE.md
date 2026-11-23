@@ -64,6 +64,7 @@ npm run dev
 
 ```
 core/
+  swr.py         — SWRCache: 기존 값을 바로 주고 뒤에서 갱신(stale-while-revalidate), 동시 요청 1회 실행. 응답에 updated_at·refreshing·refresh_error
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
@@ -109,7 +110,7 @@ api/routes/
   stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /screener/{kr,us}/{mode}
-  market.py      — /overview (지수 + 빅테크, 60초 캐시), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
+  market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   chat.py        — POST /chat ({messages:[{role,content}]} → {reply, tools, model, usage}), GET /chat/status
@@ -150,7 +151,9 @@ index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root
 
 Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `VITE_PROXY_TARGET=http://backend:8000`).
 
-데이터 조회는 전부 React Query. 인증 상태는 Zustand (`store/auth.ts`).
+데이터 조회는 전부 React Query (`api/queryClient.ts`). 성공한 조회는 `api/persist.ts` 가 localStorage(`rq-cache-v1`, 24시간)에 저장 → 다시 열면 이전 데이터를 바로 보여주고 뒤에서 갱신 (로그아웃·로그인 시 삭제). 이전 값을 보여줄 땐 `FetchStatus` 로 기준 시각·갱신 중 표시. 인증 상태는 Zustand (`store/auth.ts`).
+
+**속도 원칙:** 화면은 받은 데이터부터 바로 그린다 (한 번에 다 받을 때까지 비워 두지 않음). 느린 조회는 구역별로 나누고, 서버는 `SWRCache` 로 기존 값을 먼저 준다. 백그라운드 작업은 `kis_api.mark_background()` 로 KIS 호출 순서를 화면 요청 뒤로.
 
 ### KIS API 주의사항
 
