@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type React from "react";
 import { useQuery } from "@tanstack/react-query";
 import FetchStatus from "../components/common/FetchStatus";
 import { marketApi, errMsg } from "../api/client";
@@ -20,67 +21,113 @@ const KNOWN_EVENTS = [
   { event: "옵션 만기일", country: "KR", impact: "medium", description: "매월 둘째 목요일. 3·6·9·12월은 '네 마녀의 날'." },
 ];
 
-function ResultBadge({ result }: { result: string | null }) {
-  if (!result) return null;
-  const color = result.includes("상회") ? "var(--green)" : result.includes("하회") ? "var(--red)" : "var(--text-muted)";
+const TH: React.CSSProperties = { padding: "11px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600 };
+const TD: React.CSSProperties = { padding: "11px 16px", fontSize: 12 };
+
+/** 이전 대비 변화 — 오름·내림이 좋은지 나쁜지는 지표마다 달라서 색은 중립, 화살표로만 구분 */
+function ChangeBadge({ e }: { e: any }) {
+  if (!e.change_text) return null;
+  const arrow = e.change === "up" || e.change === "down";
   return (
-    <span style={{ fontSize: 11, padding: "2px 7px", borderRadius: 4, background: "rgba(128,128,128,0.1)", color, fontWeight: 600, whiteSpace: "nowrap" }}>
-      {result}
+    <span className="badge badge-neutral" style={{ fontWeight: 600, whiteSpace: "nowrap", color: arrow ? "var(--text-primary)" : undefined }}>
+      {e.change_text}
     </span>
   );
 }
 
-function EventRow({ e, isPast }: { e: any; isPast: boolean }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasAnalysis = !!e.analysis;
+function Explain({ e }: { e: any }) {
+  const x = e.explain;
+  if (!x) return null;
+  const scenarios = Object.entries(x.scenarios || {}) as [string, string][];
+  return (
+    <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7, display: "flex", flexDirection: "column", gap: 8 }}>
+      <p><strong style={{ color: "var(--text-primary)" }}>어떤 지표?</strong> {x.about}</p>
+      {e.released && x.effect ? (
+        <p>
+          <strong style={{ color: "var(--text-primary)" }}>이번 결과 — {e.change_text}</strong>
+          {e.period ? ` (${e.period}, ${x.metric} ${e.prev} → ${e.actual})` : ` (${e.prev} → ${e.actual})`}
+          <br />→ {x.effect}
+        </p>
+      ) : (
+        <div>
+          <strong style={{ color: "var(--text-primary)" }}>
+            {e.note ? "발표값을 아직 못 받음 — 결과에 따라 생길 수 있는 현상" : "발표 결과에 따라 생길 수 있는 현상"}
+          </strong>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {scenarios.map(([word, text]) => (
+              <li key={word}><strong>{word}</strong>: {text}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
+function EventRow({ e, past }: { e: any; past: boolean }) {
+  const [open, setOpen] = useState(false);
+  const cols = past ? 5 : 3;
   return (
     <>
       <tr
-        style={{ borderBottom: "1px solid var(--border)", background: isPast ? "rgba(255,255,255,0.01)" : "transparent" }}
-        onClick={() => hasAnalysis && setExpanded(!expanded)}
-        onMouseEnter={(el) => hasAnalysis && ((el.currentTarget as HTMLElement).style.background = "var(--bg-hover)")}
-        onMouseLeave={(el) => ((el.currentTarget as HTMLElement).style.background = isPast ? "rgba(255,255,255,0.01)" : "transparent")}
+        style={{ borderBottom: open ? "none" : "1px solid var(--border)", cursor: "pointer" }}
+        onClick={() => setOpen(!open)}
+        onMouseEnter={(el) => ((el.currentTarget as HTMLElement).style.background = "var(--bg-hover)")}
+        onMouseLeave={(el) => ((el.currentTarget as HTMLElement).style.background = "transparent")}
       >
-        <td style={{ padding: "11px 16px", fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>
-          {isPast && <span style={{ marginRight: 4, color: "var(--text-muted)", fontSize: 10 }}>●</span>}
-          {e.date?.slice(0, 10)}
-        </td>
-        <td style={{ padding: "11px 16px" }}>
-          <span className="badge badge-neutral">{e.country}</span>
-        </td>
-        <td style={{ padding: "11px 16px", fontWeight: 500, fontSize: 13 }}>
+        <td style={{ ...TD, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{e.date?.slice(0, 10)}</td>
+        <td style={{ ...TD, fontWeight: 500, fontSize: 13 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
             {e.event}
           </div>
+          {e.period && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, marginLeft: 15 }}>{e.period} · {e.explain?.metric}</div>}
         </td>
-        <td style={{ padding: "11px 16px", fontSize: 12 }}>
-          {e.actual
-            ? <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{e.actual}</span>
-            : <span style={{ color: "var(--text-muted)" }}>{e.estimate ?? "-"}</span>}
-        </td>
-        <td style={{ padding: "11px 16px", color: "var(--text-muted)", fontSize: 12 }}>{e.estimate ?? "-"}</td>
-        <td style={{ padding: "11px 16px", color: "var(--text-muted)", fontSize: 12 }}>{e.prev ?? "-"}</td>
-        <td style={{ padding: "11px 16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <ResultBadge result={e.result} />
-            {hasAnalysis && (
-              <span style={{ color: "var(--text-muted)" }}>{expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</span>
-            )}
-          </div>
-        </td>
+        {past ? (
+          <>
+            <td style={TD}>
+              {e.released
+                ? <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{e.actual}</span>
+                : <span style={{ color: "var(--text-muted)" }} title={e.note}>{e.note ? "값 없음" : "-"}</span>}
+            </td>
+            <td style={{ ...TD, color: "var(--text-muted)" }}>{e.released ? e.prev : "-"}</td>
+            <td style={TD}><ChangeBadge e={e} /></td>
+          </>
+        ) : (
+          <td style={{ ...TD, color: "var(--text-muted)" }}>{e.explain?.metric}</td>
+        )}
+        <td style={{ ...TD, color: "var(--text-muted)", width: 24 }}>{open ? <ChevronUp size={13} /> : <ChevronDown size={13} />}</td>
       </tr>
-      {expanded && e.analysis && (
+      {open && (
         <tr style={{ borderBottom: "1px solid var(--border)" }}>
-          <td colSpan={7} style={{ padding: "12px 16px 14px 32px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
-            <p style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.7 }}>
-              💬 {e.analysis}
-            </p>
+          <td colSpan={cols + 1} style={{ padding: "4px 16px 14px 31px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
+            {e.note && <p style={{ fontSize: 12, color: "var(--yellow)", margin: "8px 0" }}>⚠ {e.note}</p>}
+            <div style={{ paddingTop: 8 }}><Explain e={e} /></div>
           </td>
         </tr>
       )}
     </>
+  );
+}
+
+function EventTable({ title, events, past }: { title: string; events: any[]; past: boolean }) {
+  const heads = past ? ["날짜", "이벤트", "실제", "이전", "변화", ""] : ["날짜", "이벤트", "발표 내용", ""];
+  return (
+    <section style={{ marginBottom: 32 }}>
+      <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, letterSpacing: 1 }}>{title}</h2>
+      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)" }}>
+              {heads.map((h, i) => <th key={i} style={TH}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((e: any) => <EventRow key={`${e.key}-${e.date}`} e={e} past={past} />)}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -91,19 +138,23 @@ export default function CalendarPage() {
     staleTime: 60 * 60 * 1000,
   });
 
-  const today = new Date().toISOString().slice(0, 10);
+  // 브라우저 기준 오늘 (toISOString 은 UTC 라 한국 오전 9시 전엔 어제 날짜가 됨)
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const events: any[] = data?.events || [];
-  const pastEvents = events.filter((e: any) => e.date?.slice(0, 10) < today);
-  const futureEvents = events.filter((e: any) => e.date?.slice(0, 10) >= today);
+  const isPast = (e: any) => e.released || e.date?.slice(0, 10) < today;   // 오늘 발표돼 값이 있으면 '최근 발표'로
+  const pastEvents = events.filter(isPast);
+  const futureEvents = events.filter((e: any) => !isPast(e));
 
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>경제 캘린더</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          최근 2주 발표 + 앞으로 4주 일정 · 발표치 vs 예상치
+          최근 2주 발표 + 앞으로 4주 일정 · 실제 발표값과 이전 대비 변화 · 결과에 따른 시장 영향 해설
           {data?.source && <span> · 출처: {data.source}</span>}
         </p>
+        {data?.disclaimer && <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>ⓘ {data.disclaimer}</p>}
         {data?.errors?.length > 0 && (
           <p style={{ color: "var(--yellow)", fontSize: 12, marginTop: 4 }}>⚠ {data.errors.join(" / ")}</p>
         )}
@@ -157,55 +208,8 @@ export default function CalendarPage() {
         <p style={{ color: "var(--text-muted)" }}>이 기간에 해당하는 주요 일정이 없습니다.</p>
       ) : (
         <>
-          {/* 과거 이벤트 */}
-          {pastEvents.length > 0 && (
-            <section style={{ marginBottom: 32 }}>
-              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-                최근 발표 결과
-              </h2>
-              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["날짜", "국가", "이벤트", "실제", "예상", "이전", "결과"].map((h) => (
-                        <th key={h} style={{ padding: "11px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pastEvents.map((e: any, i: number) => (
-                      <EventRow key={i} e={e} isPast={true} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-
-          {/* 향후 일정 */}
-          {futureEvents.length > 0 && (
-            <section>
-              <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
-                향후 주요 일정
-              </h2>
-              <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["날짜", "국가", "이벤트", "예상", "이전", "", ""].map((h, i) => (
-                        <th key={i} style={{ padding: "11px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase" }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {futureEvents.map((e: any, i: number) => (
-                      <EventRow key={i} e={e} isPast={false} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
+          {pastEvents.length > 0 && <EventTable title="최근 발표 결과 (행을 누르면 해설)" events={[...pastEvents].reverse()} past />}
+          {futureEvents.length > 0 && <EventTable title="향후 주요 일정 (행을 누르면 결과별 시나리오)" events={futureEvents} past={false} />}
         </>
       )}
     </div>

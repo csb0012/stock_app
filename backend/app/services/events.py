@@ -3,8 +3,8 @@
 - 옵션 만기일 (날짜 규칙으로 계산)
   - 국내: 매월 둘째 목요일 (휴장이면 앞 거래일). 3·6·9·12월은 "네 마녀의 날"
   - 미국: 매월 셋째 금요일 (휴장이면 앞 거래일). 3·6·9·12월은 "쿼드러플 위칭"
-- 미국 주요 지표 발표일 (6시간마다 갱신): CPI·고용·GDP·PCE = FRED 공식 발표 일정 (market_data._fred_calendar),
-  FOMC 금리 결정일 = 연준 공식 일정 페이지 (market_data._fomc_calendar)
+- 미국 주요 지표 발표일 (6시간마다 갱신): CPI·고용·GDP·PCE = FRED 공식 발표 일정 (econ_calendar._fred_calendar),
+  FOMC 금리 결정일 = 연준 공식 일정 페이지 (econ_calendar._fomc_calendar)
   - 미국 종목: 대상일 당일 발표
   - 국내 종목: 직전 국내 거래일 ~ 대상일 전날 밤 발표 → "간밤 미국 ○○ 결과가 반영되는 날",
                대상일 당일 발표 → "오늘 밤 미국 ○○ 발표 예정"
@@ -36,7 +36,7 @@ def due() -> bool:
 
 
 async def refresh():
-    from app.services.market_data import _fred_calendar, _fomc_calendar, err_text  # 순환 import 방지
+    from app.services.econ_calendar import _fred_calendar, _fomc_calendar, err_text
     _cache["tried"] = time.time()
     today = date.today()
     start, end = (today - timedelta(days=7)).isoformat(), (today + timedelta(days=60)).isoformat()

@@ -21,9 +21,9 @@ PC마다 아래 방법 중 **하나만** 쓴다 (섞으면 포트 충돌·DB 갈
 | 서비스 | 발급 | 용도 | 필수 |
 |---|---|---|---|
 | KIS API | [apiportal.koreainvestment.com](https://apiportal.koreainvestment.com) | 국내 시세·일봉·순위, 종목마스터, 미국 PER/PBR | 필수 |
-| Finnhub | [finnhub.io](https://finnhub.io) | 경제 캘린더, 미국 애널리스트·실적 | 선택 |
+| Finnhub | [finnhub.io](https://finnhub.io) | 미국 애널리스트·실적 | 선택 |
 | DART | [opendart.fss.or.kr](https://opendart.fss.or.kr) | 국내 공시 요인 | 선택 |
-| FRED | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | 거시환경 요인, 미국 지표 발표 일정 | 선택 |
+| FRED | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | 거시환경 요인, 경제 캘린더(미국 지표 발표 일정·발표값) | 선택 |
 
 ## Google Authenticator (선택)
 화면에는 설정 메뉴가 없어 API 로 켠다 (직접 설치·Docker 방식: `http://localhost:8000/docs` → Authorize 에 로그인 토큰).

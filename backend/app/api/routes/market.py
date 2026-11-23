@@ -5,7 +5,8 @@ from app.api.routes.auth import get_current_user
 from app.core.swr import SWRCache
 from app.models.user import User
 from app.services.market_data import (get_kr_indices, get_global_indices, get_bigtech_data,
-                                      get_economic_calendar, get_us_etf_data, INDEX_TICKERS, KIS_INDEX)
+                                      get_us_etf_data, INDEX_TICKERS, KIS_INDEX)
+from app.services.econ_calendar import get_economic_calendar
 
 router = APIRouter(prefix="/market", tags=["market"])
 

@@ -54,9 +54,9 @@ npm run dev
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
-| `FINNHUB_API_KEY` | 선택 | 경제 캘린더 + 미국 종목 애널리스트 의견·실적 요인 |
+| `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
 | `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
-| `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) |
+| `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) + 경제 캘린더 일정·발표값 |
 
 ## 아키텍처
 
@@ -65,7 +65,7 @@ npm run dev
 ```
 core/
   swr.py         — SWRCache: 기존 값을 바로 주고 뒤에서 갱신(stale-while-revalidate), 동시 요청 1회 실행. 응답에 updated_at·refreshing·refresh_error
-                   fresh_for(값) 로 값마다 신선 기간 조절 (경제 캘린더: 일부 출처 일시 실패면 5분)
+                   fresh_for(값) 로 값마다 신선 기간 조절 (경제 캘린더: 일정·발표값 일시 실패면 5분)
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
@@ -108,13 +108,15 @@ services/
   themes.py      — 테마별 종목: 네이버 증권 모바일 API(m.stock.naver.com/api/stocks/theme, JSON) → 하루 1회 app/data/themes.json
                    (테마 설명·종목별 편입 사유 포함, 종목코드는 종목마스터로 확인). 예전 PC 화면 finance.naver.com/sise/theme.naver 는 폐지됨.
                    테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수)
-  events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
+  events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일 (econ_calendar 일정 사용)
                    + FOMC 금리 결정일(연준 공식 일정 페이지 — FRED 의 FOMC 항목은 매일 나와서 안 씀)
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
-                   (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext);
-                   경제 캘린더 = Finnhub → 안 되면 FRED 공식 발표 일정 + 연준 FOMC 일정(federalreserve.gov, 하루 캐시)
-                   → 다 안 되면 오류 (가짜 일정 없음). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음
+                   (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext)
+  econ_calendar.py — 경제 캘린더: FRED 공식 발표 일정 + 연준 FOMC 일정(federalreserve.gov 파싱, 하루 캐시) → 일정을 하나도 못 받으면 오류.
+                   실제·이전 값 = FRED 시리즈를 발표 당일 기준(vintage, realtime_start=그날)으로 조회해 전날 기준과 비교(수정 발표도 구분),
+                   FOMC = DFEDTARL·DFEDTARU 결정 전날 vs 다음 날. 발표된 값은 메모리 캐시. 예상치(컨센서스)는 무료 공식 출처가 없어 안 다룸.
+                   INDICATORS(지표별 시리즈·계산·해설: about + 오름/내림/같음 시장 영향). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음 (err_text)
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
