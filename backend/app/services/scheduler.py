@@ -86,7 +86,7 @@ async def warm_recommendations():
     mark_background()
     await asyncio.sleep(45)
     while True:
-        for kind in ("longterm", "shortterm"):
+        for kind in ("shortterm", "longterm"):
             try:
                 await stocks.refresh_base(kind)
             except Exception as e:  # 화면에서 열면 그때 오류가 그대로 표시됨

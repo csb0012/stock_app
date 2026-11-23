@@ -13,16 +13,16 @@ const PAGE = 20;
 const REFRESH_SEC = 10;
 
 const MODES: { key: Mode; label: string; icon: any; desc: string }[] = [
-  { key: "volume_surge",   label: "거래량 급증", icon: Activity,       desc: "평균 대비 거래량 폭증 종목" },
   { key: "trading_value",  label: "거래대금",    icon: BarChart3,       desc: "오늘 거래대금 상위 종목" },
   { key: "gainers",        label: "급등",        icon: Flame,           desc: "오늘 상승률 상위 종목" },
   { key: "losers",         label: "급하향",      icon: ArrowDownRight,  desc: "오늘 하락률 상위 종목" },
+  { key: "volume_surge",   label: "거래량 급증", icon: Activity,       desc: "평균 대비 거래량 폭증 종목" },
 ];
 
 export default function Screener() {
   const qc = useQueryClient();
   const [market, setMarket] = useState<Market>("KR");
-  const [mode, setMode] = useState<Mode>("volume_surge");
+  const [mode, setMode] = useState<Mode>("trading_value");  // 첫 탭 = 거래대금
   const [added, setAdded] = useState<Set<string>>(new Set());
   const [shown, setShown] = useState(PAGE);
   const [picked, setPicked] = useState<any>(null);

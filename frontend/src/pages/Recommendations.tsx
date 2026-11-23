@@ -199,7 +199,7 @@ const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
 const REFRESH_SEC = 15;
 
 export default function Recommendations() {
-  const [tab, setTab] = useState<"long" | "short">("long");
+  const [tab, setTab] = useState<"long" | "short">("short");  // 단기/스윙이 기본
   const [group, setGroup] = useState<Group>("KR");
   const [sort, setSort] = useState<Sort>("default");
 
@@ -259,15 +259,15 @@ export default function Recommendations() {
         </p>
       </div>
 
-      {/* 장기/단기 탭 */}
+      {/* 단기/장기 탭 (단기/스윙 먼저) */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <button className={`btn ${tab === "long" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("long")}>
-          <TrendingUp size={14} />
-          장기투자 추천
-        </button>
         <button className={`btn ${tab === "short" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("short")}>
           <Zap size={14} />
           단기/스윙 추천
+        </button>
+        <button className={`btn ${tab === "long" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("long")}>
+          <TrendingUp size={14} />
+          장기투자 추천
         </button>
       </div>
 
