@@ -56,6 +56,8 @@ export const stockApi = {
   us: (symbol: string, exchange = "NAS") => api.get(`/stocks/us/${symbol}?exchange=${exchange}`),
   volumeSurge: () => api.get("/stocks/volume-surge"),
   longterm: () => api.get("/stocks/recommendations/longterm"),
+  // 장기 보유 분석 (과거 월봉 통계 — 처음엔 수십 초 걸릴 수 있음)
+  longtermHorizon: () => api.get("/stocks/recommendations/longterm/horizon", { timeout: 180_000 }),
   shortterm: () => api.get("/stocks/recommendations/shortterm"),
   search: (q: string, market = "ALL", limit = 30) =>
     api.get(`/stocks/search?q=${encodeURIComponent(q)}&market=${market}&limit=${limit}`),

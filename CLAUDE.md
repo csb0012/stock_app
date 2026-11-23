@@ -77,7 +77,7 @@ models/
   flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
 services/
   kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
-                   국내 현재가·일봉(get_kr_chart, 오름차순)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
+                   국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
   stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
   quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치(60초 캐시), 실시간 현재가 패치(국내는 멀티종목 시세 30개씩),
                    analyze_candles 결과 메모(입력 같으면 재계산 안 함), 미국 PER/PBR(KIS 해외 상세), USD/KRW 환율
@@ -107,7 +107,9 @@ services/
                    하루 1회(scheduler accum_kr 16:30~, 결과 없으면 시작 2분 뒤), mark_background, 결과 app/data/accumulation.json
   themes.py      — 테마별 종목: 네이버 증권 모바일 API(m.stock.naver.com/api/stocks/theme, JSON) → 하루 1회 app/data/themes.json
                    (테마 설명·종목별 편입 사유 포함, 종목코드는 종목마스터로 확인). 예전 PC 화면 finance.naver.com/sise/theme.naver 는 폐지됨.
-                   테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수)
+                   테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수).
+                   네이버는 등락률 순·페이지당 최대 100개라 장중엔 페이지 사이 순서가 바뀜 → 번호로 중복 제거 + 전체 개수 찰 때까지 다시 훑음(_paged),
+                   예전 중복 파일은 불러올 때 정리하고 바로 다시 받음
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일 (econ_calendar 일정 사용)
                    + FOMC 금리 결정일(연준 공식 일정 페이지 — FRED 의 FOMC 항목은 매일 나와서 안 씀)
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
@@ -117,11 +119,16 @@ services/
                    실제·이전 값 = FRED 시리즈를 발표 당일 기준(vintage, realtime_start=그날)으로 조회해 전날 기준과 비교(수정 발표도 구분),
                    FOMC = DFEDTARL·DFEDTARU 결정 전날 vs 다음 날. 발표된 값은 메모리 캐시. 예상치(컨센서스)는 무료 공식 출처가 없어 안 다룸.
                    INDICATORS(지표별 시리즈·계산·해설: about + 오름/내림/같음 시장 영향). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음 (err_text)
+  longterm.py    — 장기 보유 분석: 월봉(국내 KIS 수정주가·배당 제외 / 미국·지수 yfinance 배당 포함)으로 모든 달을 '산 달'로 놓고
+                   1·3·5·10년(계산은 1~20년) 보유 수익률 → 이익 확률·하위10%/중간/상위10%·최악·최고·지수보다 나은 비율,
+                   보유 기간 제안(그 기간 '이상' 모두 90%↑ / 손실 0 인 가장 짧은 기간), 최대 낙폭·회복 기간, 장기 점수
+                   (5년 이익 확률 40 + 지수 대비 30 + 낙폭 20 + 데이터 길이 10). 비교 지수 = 코스피 / 나스닥 종합(나스닥 상장) / S&P 500. SWR 6시간
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
   stocks.py      — /search, /test/kis (인증 불필요), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
+                   /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
                    /screener/{kr,us}/{mode}
   market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
@@ -161,7 +168,8 @@ pages/             — Dashboard, Recommendations, Screener, Themes(테마별 �
 components/common/ — Layout (사이드바 메뉴·장 운영 상태 + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃) + ChatWidget),
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거), BuyPrice (추천 매입가),
-                     NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard, format.ts
+                     NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard,
+                     LongTermPanel (장기 보유 분석 표·지수 카드), format.ts
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
                      색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)
                      ThemeToggle.tsx 가 <html data-theme> + localStorage("theme") 변경, index.html 인라인 스크립트가 첫 화면 깜빡임 방지

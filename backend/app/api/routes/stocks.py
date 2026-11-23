@@ -413,6 +413,17 @@ async def get_recommendations(kind: str, current_user: User = Depends(get_curren
         _fail(e)
 
 
+@router.get("/recommendations/longterm/horizon")
+async def get_longterm_horizon(current_user: User = Depends(get_current_user)):
+    """장기투자 추천 후보의 보유 기간 분석 (과거 월봉: 1·3·5·10년 보유 시 이익 확률·수익률 범위, 보유 기간 제안, 최대 낙폭)
+    — 6시간 캐시, 일주일 안이면 이전 값을 먼저 주고 뒤에서 갱신"""
+    from app.services import longterm
+    try:
+        return await longterm.get(KR_LONGTERM + US_LONGTERM)
+    except Exception as e:
+        _fail(e)
+
+
 @router.get("/screener/kr/{mode}")
 async def screener_kr(mode: str, current_user: User = Depends(get_current_user)):
     """국내 스크리너 (KIS 순위 API, KOSPI+KOSDAQ 합산 최대 60종목)"""

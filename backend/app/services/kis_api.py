@@ -290,6 +290,37 @@ class KISClient:
             "candles": candles,
         }
 
+    async def get_kr_monthly(self, symbol: str, years: int = 30) -> list:
+        """국내 월봉 (수정주가, 오래된 것 → 최신) — 장기 보유 분석용.
+        일봉과 같은 API(FHKST03010100)에 기간 구분 M. 한 번에 최대 100개(약 8년)라 기간을 나눠 받음.
+        상장 전 구간은 빈 응답 → 거기서 멈춤."""
+        rows: dict = {}
+        end = datetime.now()
+        stop = end - timedelta(days=365 * years)
+        while end > stop:
+            start = max(stop, end - timedelta(days=365 * 8))
+            data = await self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE": "M",
+                    "FID_ORG_ADJ_PRC": "0",  # 0 = 수정주가 (액면분할 등 반영)
+                },
+            )
+            batch = [r for r in (data.get("output2") or []) if r.get("stck_bsop_date") and _int(r.get("stck_clpr")) > 0]
+            for r in batch:
+                rows[r["stck_bsop_date"]] = _int(r["stck_clpr"])
+            if not batch:
+                break
+            oldest = min(r["stck_bsop_date"] for r in batch)
+            end = datetime.strptime(oldest, "%Y%m%d") - timedelta(days=1)
+        if not rows:
+            raise KISError(f"KIS 월봉 데이터 없음: {symbol}")
+        return [{"date": f"{d[:4]}-{d[4:6]}-{d[6:]}", "close": rows[d]} for d in sorted(rows)]
+
     async def get_kr_stock_history(self, symbol: str, count: int = 120) -> list:
         """국내 일봉 (오래된 것 → 최신 순)"""
         return (await self.get_kr_chart(symbol, count))["candles"]

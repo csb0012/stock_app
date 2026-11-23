@@ -28,6 +28,7 @@ _PAGE = 100
 
 _data: dict | None = None      # {"updated_at", "themes": [{"no", "name", "symbols", "description", "reasons"}]}
 _by_symbol: dict = {}          # symbol -> [테마 이름]
+_stale = False                 # 불러온 파일에 중복이 있었음 → 바로 다시 받기
 _status: dict = {"running": False, "done": 0, "total": 0, "error": None, "finished_at": None}
 
 
@@ -58,21 +59,32 @@ async def _get_json(client: httpx.AsyncClient, url: str) -> dict:
     return r.json()
 
 
-async def _paged(client: httpx.AsyncClient, url: str, key: str) -> dict:
-    """page=1,2,... 를 전체 개수(totalCount)만큼 받아 key 목록을 합침"""
-    items, total = [], None
+async def _paged(client: httpx.AsyncClient, url: str, key: str, id_field: str) -> dict:
+    """page=1,2,... 를 받아 key 목록을 합침 (id_field 로 중복 제거).
+    네이버는 목록을 '오늘 등락률 순'으로 주고 한 페이지 최대 100개라, 장중엔 페이지를 받는 사이 순서가 바뀌어
+    같은 항목이 두 페이지에 나오고 다른 항목은 빠짐 → 고유 개수가 전체 개수(totalCount)가 될 때까지 최대 8번 다시 훑음"""
+    found: dict = {}
     first: dict = {}
-    for page in range(1, 30):
-        j = await _get_json(client, f"{url}{'&' if '?' in url else '?'}page={page}&pageSize={_PAGE}")
-        if page == 1:
-            first = j
-        batch = j.get(key) or []
-        items += batch
-        total = int(j.get("totalCount") or 0) if total is None else total
-        if not batch or len(items) >= total:
+    total = None
+    for _ in range(8):
+        for page in range(1, 30):
+            j = await _get_json(client, f"{url}{'&' if '?' in url else '?'}page={page}&pageSize={_PAGE}")
+            if not first:
+                first = j
+            batch = j.get(key) or []
+            for it in batch:
+                k = it.get(id_field)
+                if k is not None and k not in found:
+                    found[k] = it
+            if total is None:
+                total = int(j.get("totalCount") or 0)
+            if not batch or page * _PAGE >= (total or 0):
+                break
+            await asyncio.sleep(0.2)
+        if len(found) >= (total or 0):
             break
-        await asyncio.sleep(0.2)
-    return {**first, key: items}
+        await asyncio.sleep(1)
+    return {**first, key: list(found.values()), "missing": max(0, (total or 0) - len(found))}
 
 
 async def refresh() -> dict:
@@ -83,7 +95,7 @@ async def refresh() -> dict:
     try:
         await stock_master.load()
         async with httpx.AsyncClient(headers=_UA, timeout=10.0, follow_redirects=True) as client:
-            listing = await _paged(client, _API, "groups")
+            listing = await _paged(client, _API, "groups", "no")
             themes, _ = parse_list(listing)
             if len(themes) < 10:
                 raise RuntimeError(f"테마 목록을 읽지 못함 ({len(themes)}개) — 네이버 응답 형식이 바뀌었을 수 있음")
@@ -91,7 +103,7 @@ async def refresh() -> dict:
             out, fails = [], []
             for no, name in themes:
                 try:
-                    j = await _paged(client, f"{_API}/{no}", "stocks")
+                    j = await _paged(client, f"{_API}/{no}", "stocks", "itemCode")
                     codes, _, desc, reasons = parse_detail(j)
                     syms = [c for c in codes if stock_master.get("KR", c)]   # KIS 종목마스터에 있는 코드만
                     if syms:
@@ -120,13 +132,28 @@ async def refresh() -> dict:
     return status()
 
 
+def _dedupe(themes: list) -> list:
+    """같은 테마 번호·같은 종목이 두 번 들어간 것 정리 (예전 버전이 저장한 파일 포함)"""
+    out, seen = [], set()
+    for t in themes:
+        if t["no"] in seen:
+            continue
+        seen.add(t["no"])
+        out.append({**t, "symbols": list(dict.fromkeys(t["symbols"]))})
+    return out
+
+
 def _set(data: dict):
-    global _data, _by_symbol
-    _data = data
+    global _data, _by_symbol, _stale
+    themes = _dedupe(data["themes"])
+    # 중복이 있던 파일은 페이지가 어긋나 빠진 테마도 있을 수 있음 → 다시 받기
+    _stale = len(themes) != len(data["themes"])
+    _data = {**data, "themes": themes}
     m: dict = {}
-    for t in data["themes"]:
+    for t in themes:
         for s in t["symbols"]:
-            m.setdefault(s, []).append(t["name"])
+            if t["name"] not in m.setdefault(s, []):
+                m[s].append(t["name"])
     _by_symbol = m
 
 
@@ -168,7 +195,7 @@ async def loop():
     """하루 1번 테마 구성 갱신 (없으면 시작 1분 뒤)"""
     await asyncio.sleep(60)
     while True:
-        if _age() > _REFRESH_SEC:
+        if _age() > _REFRESH_SEC or _stale:
             await refresh()
         await asyncio.sleep(3600)
 

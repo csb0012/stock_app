@@ -8,6 +8,7 @@ import BuyPrice from "../components/common/BuyPrice";
 import NewsLink, { NewsSource } from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
 import { sessionLabel, fmtPrice, fmtShares } from "../components/common/format";
+import { LongTermDetail, BenchmarkCard, yrs } from "../components/common/LongTermPanel";
 
 function Delta({ now, prev }: { now: number; prev?: number | null }) {
   if (prev === undefined || prev === null || prev === now) return null;
@@ -56,9 +57,12 @@ function WatchButton({ item, inList }: { item: any; inList: boolean }) {
   );
 }
 
-function StockCard({ item, type, inWatchlist, downView = false }: { item: any; type: "long" | "short"; inWatchlist: boolean; downView?: boolean }) {
+function StockCard({ item, type, inWatchlist, downView = false, horizon, horizonLoading }: {
+  item: any; type: "long" | "short"; inWatchlist: boolean; downView?: boolean; horizon?: any; horizonLoading?: boolean;
+}) {
   const pred = item.prediction || {};
   const isKR = item.market === "KR";
+  const isLong = type === "long";
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -72,6 +76,7 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
           </div>
           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
             {fmtPrice(item.price, item.market)}
+            {isLong && item.per > 0 && <span> · PER {item.per.toFixed(1)} · PBR {item.pbr?.toFixed(1)}</span>}
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -80,7 +85,25 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
         </div>
       </div>
 
+      {/* 장기투자: 내일 확률 대신 과거 월봉 보유 기간 분석 */}
+      {isLong && (
+        <>
+          {horizon?.score != null && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}
+              title={Object.entries(horizon.score_parts || {}).map(([k, v]) => `${k} ${v}`).join(" · ")}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>장기 점수 {horizon.score}/100</span>
+              <span style={{ color: "var(--text-muted)" }}>
+                {Object.entries(horizon.score_parts || {}).map(([k, v]) => `${k} ${v}`).join(" · ")}
+              </span>
+            </div>
+          )}
+          {horizon ? <LongTermDetail stats={horizon} price={item.price} market={item.market} />
+            : <p style={{ fontSize: 12, color: "var(--text-muted)" }}>{horizonLoading ? "과거 월봉으로 장기 보유 분석 중…" : "장기 분석 데이터 없음"}</p>}
+        </>
+      )}
+
       {/* 다음 거래일 상승 확률 */}
+      {!isLong && <>
       <div>
         {/* 하락확률 정렬이면 하락 확률을 크게, 아니면 상승 확률을 크게 (둘의 합은 항상 100) */}
         <p style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
@@ -158,6 +181,7 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 2 }}>
         <PredictionReasons pred={pred} />
       </div>
+      </>}
 
       {/* 최근 뉴스 */}
       {item.news?.headlines?.length > 0 && (
@@ -172,24 +196,12 @@ function StockCard({ item, type, inWatchlist, downView = false }: { item: any; t
         </div>
       )}
 
-      {/* 장기 점수 */}
-      {type === "long" && item.long_term_score > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-muted)" }}>
-          <span>장기 적합도 {item.long_term_score}/100</span>
-          {item.per > 0 && <span>PER {item.per.toFixed(1)} | PBR {item.pbr?.toFixed(1)}</span>}
-          {item.trend_6m !== undefined && (
-            <span style={{ color: item.trend_6m >= 0 ? "var(--green)" : "var(--red)" }}>
-              6개월 {item.trend_6m >= 0 ? "+" : ""}{item.trend_6m?.toFixed(1)}%
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
 type Group = "KR" | "US" | "ETF";
-type Sort = "default" | "prob_desc" | "down_desc";
+type Sort = "default" | "prob_desc" | "down_desc" | "win5" | "p50_5" | "mdd";
 
 const GROUPS: { key: Group; label: string; match: (x: any) => boolean }[] = [
   { key: "KR", label: "🇰🇷 국내 주식", match: (x) => x.market === "KR" && x.category === "stock" },
@@ -223,6 +235,17 @@ export default function Recommendations() {
     refetchIntervalInBackground: false,
   });
 
+  // 장기 보유 분석 (과거 월봉 통계) — 서버 6시간 캐시라 화면에서도 30분 동안은 다시 안 받음
+  const horizonQuery = useQuery({
+    queryKey: ["longterm-horizon"],
+    queryFn: () => stockApi.longtermHorizon().then((r) => r.data),
+    enabled: tab === "long",
+    staleTime: 30 * 60 * 1000,
+    refetchInterval: (q) => (q.state.data?.refreshing ? 5000 : false),
+  });
+  const hz = (x: any) => horizonQuery.data?.items?.[`${x.market}-${x.symbol}`];
+  const h5 = (x: any) => hz(x)?.horizons?.["60"];
+
   const query = tab === "long" ? longQuery : shortQuery;
   const { data: watchlist = [] } = useQuery({ queryKey: ["watchlist"], queryFn: () => watchlistApi.list().then((r) => r.data) });
   const watchSet = new Set((watchlist as any[]).map((w) => `${w.market}-${w.symbol}`));
@@ -232,12 +255,17 @@ export default function Recommendations() {
 
   // 15~85% 로 잘리기 전 값으로 정렬 (같은 85% 끼리도 순서가 정해지도록)
   const prob = (x: any) => x.prediction?.probability_exact ?? x.prediction?.probability ?? 0;
+  const num = (v: any) => (typeof v === "number" ? v : -Infinity);
   const items = all
     .filter(g.match)
     .sort((a, b) =>
-      sort === "prob_desc" ? prob(b) - prob(a)
+      tab === "long"
+        ? sort === "win5" ? num(h5(b)?.win) - num(h5(a)?.win)
+          : sort === "p50_5" ? num(h5(b)?.p50) - num(h5(a)?.p50)
+          : sort === "mdd" ? num(hz(b)?.max_drawdown) - num(hz(a)?.max_drawdown)
+          : num(hz(b)?.score) - num(hz(a)?.score)
+      : sort === "prob_desc" ? prob(b) - prob(a)
       : sort === "down_desc" ? prob(a) - prob(b)
-      : tab === "long" ? (b.long_term_score || 0) - (a.long_term_score || 0)
       : prob(b) - prob(a)
     );
 
@@ -246,11 +274,22 @@ export default function Recommendations() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>AI 주식 추천</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          학습 모델·기술적 분석 + 뉴스 분위기 · {REFRESH_SEC}초마다 현재가·뉴스로 확률 재계산 · 투자 손실에 대한 책임은 본인에게 있습니다
+          {tab === "long"
+            ? "과거 월봉으로 1·3·5·10년 보유 시 이익 확률·수익률 범위와 보유 기간 분석"
+            : `학습 모델·기술적 분석 + 뉴스 분위기 · ${REFRESH_SEC}초마다 현재가·뉴스로 확률 재계산`} · 투자 손실에 대한 책임은 본인에게 있습니다
         </p>
       </div>
 
       {/* Disclaimer */}
+      {tab === "long" ? (
+        <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "color-mix(in srgb, var(--yellow) 30%, transparent)", background: "color-mix(in srgb, var(--yellow) 4%, transparent)" }}>
+          <AlertTriangle size={15} style={{ color: "var(--yellow)", flexShrink: 0, marginTop: 1 }} />
+          <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
+            {horizonQuery.data?.disclaimer || "과거 월봉으로 '그때 사서 N년 보유했다면'을 모든 달에 대해 계산한 통계입니다. 미래를 보장하지 않습니다."}
+            {" "}예상 가격 = 지금 가격 × (1 + 과거 수익률). 장기 점수 = 5년 이익 확률 40 + 지수 대비 30 + 최대 낙폭 20 + 데이터 길이 10.
+          </p>
+        </div>
+      ) : (
       <div className="card" style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 20, borderColor: "color-mix(in srgb, var(--yellow) 30%, transparent)", background: "color-mix(in srgb, var(--yellow) 4%, transparent)" }}>
         <AlertTriangle size={15} style={{ color: "var(--yellow)", flexShrink: 0, marginTop: 1 }} />
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
@@ -259,14 +298,15 @@ export default function Recommendations() {
           실제 적중률은 사이드바의 "예측 검증"에서 확인할 수 있습니다.
         </p>
       </div>
+      )}
 
       {/* 단기/장기 탭 (단기/스윙 먼저) */}
       <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-        <button className={`btn ${tab === "short" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("short")}>
+        <button className={`btn ${tab === "short" ? "btn-primary" : "btn-ghost"}`} onClick={() => { setTab("short"); setSort("default"); }}>
           <Zap size={14} />
           단기/스윙 추천
         </button>
-        <button className={`btn ${tab === "long" ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab("long")}>
+        <button className={`btn ${tab === "long" ? "btn-primary" : "btn-ghost"}`} onClick={() => { setTab("long"); setSort("default"); }}>
           <TrendingUp size={14} />
           장기투자 추천
         </button>
@@ -282,11 +322,16 @@ export default function Recommendations() {
           ))}
         </div>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {([
-            ["default", tab === "long" ? "장기 적합도순" : "추천순"],
+          {((tab === "long" ? [
+            ["default", "장기 점수순"],
+            ["win5", "5년 이익 확률순"],
+            ["p50_5", "5년 보통 수익률순"],
+            ["mdd", "낙폭 작은 순"],
+          ] : [
+            ["default", "추천순"],
             ["prob_desc", "상승확률 높은 순"],
             ["down_desc", "하락확률 높은 순"],
-          ] as [Sort, string][]).map(([k, label]) => (
+          ]) as [Sort, string][]).map(([k, label]) => (
             <button key={k} className={`btn ${sort === k ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setSort(k)}>
               {label}
             </button>
@@ -303,6 +348,34 @@ export default function Recommendations() {
             <span style={{ color: "var(--yellow)" }}> · 현재가 조회 실패: {query.data.live_errors.join(" / ")}</span>
           )}
         </p>
+      )}
+
+      {/* 장기: 비교 지수 + 분석 상태 */}
+      {tab === "long" && (
+        <div style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+          {horizonQuery.data && (
+            <p style={{ display: "flex", gap: 6, color: "var(--text-muted)", fontSize: 12, flexWrap: "wrap" }}>
+              <span>장기 분석</span>
+              <FetchStatus updatedAt={horizonQuery.data.updated_at} fetching={horizonQuery.isFetching || horizonQuery.data.refreshing}
+                           error={horizonQuery.data.refresh_error} />
+            </p>
+          )}
+          {horizonQuery.isLoading && <p style={{ color: "var(--text-muted)", fontSize: 12 }}>과거 월봉으로 장기 보유 분석 중… (처음엔 KIS·Yahoo 에서 수십 년치를 받느라 30초~1분)</p>}
+          {horizonQuery.error && (
+            <p style={{ color: "var(--red)", fontSize: 12 }}>장기 분석 실패 — {errMsg(horizonQuery.error)}</p>
+          )}
+          {horizonQuery.data && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 8 }}>
+              {(group === "KR" ? ["KR"] : ["NAS", "US"]).map((k) => <BenchmarkCard key={k} b={horizonQuery.data.benchmarks?.[k]} />)}
+            </div>
+          )}
+          {(horizonQuery.data?.errors || []).filter((e: any) => (group === "KR" ? e.market === "KR" : e.market === "US")).length > 0 && (
+            <p style={{ color: "var(--yellow)", fontSize: 12 }}>
+              장기 분석 못한 종목: {(horizonQuery.data.errors as any[]).filter((e) => (group === "KR" ? e.market === "KR" : e.market === "US"))
+                .slice(0, 3).map((e) => `${e.symbol}: ${e.error}`).join(" / ")}
+            </p>
+          )}
+        </div>
       )}
 
       {query.isLoading && (
@@ -327,7 +400,8 @@ export default function Recommendations() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))", gap: 16 }}>
         {items.map((item: any) => (
-          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} inWatchlist={watchSet.has(`${item.market}-${item.symbol}`)} downView={sort === "down_desc"} />
+          <StockCard key={`${item.market}-${item.symbol}`} item={item} type={tab} inWatchlist={watchSet.has(`${item.market}-${item.symbol}`)} downView={sort === "down_desc"}
+            horizon={tab === "long" ? hz(item) : undefined} horizonLoading={horizonQuery.isLoading} />
         ))}
       </div>
     </div>
