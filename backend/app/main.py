@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat
+from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -32,12 +32,18 @@ async def lifespan(app: FastAPI):
     preopen_task = asyncio.create_task(scheduler.loop())
     # AI 추천 기본 데이터 미리 계산 (첫 화면 대기 없애기)
     warm_task = asyncio.create_task(scheduler.warm_recommendations())
+    # 테마 구성(네이버) 하루 1번 갱신 + 매집 탐지 결과가 없으면 시작 2분 뒤 전 종목 스캔
+    from app.services import themes as themes_svc, accumulation
+    theme_task = asyncio.create_task(themes_svc.loop())
+    accum_task = asyncio.create_task(accumulation.startup())
     # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
     asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
     ctx_task.cancel()
     preopen_task.cancel()
     warm_task.cancel()
+    theme_task.cancel()
+    accum_task.cancel()
     task.cancel()
     extras_task.cancel()
     bt_task.cancel()
@@ -92,6 +98,8 @@ app.include_router(watchlist.router, prefix="/api")
 app.include_router(portfolio.router, prefix="/api")
 app.include_router(predictions.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(themes_route.router, prefix="/api")
+app.include_router(accumulation_route.router, prefix="/api")
 
 
 @app.get("/api/health")

@@ -31,3 +31,5 @@ deploy/auth.caddy
 backups/
 backend/app/data/extras_cache.json
 backend/app/data/kr_en_names.json
+backend/app/data/themes.json
+backend/app/data/accumulation.json

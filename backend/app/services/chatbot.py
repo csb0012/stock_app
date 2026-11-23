@@ -36,6 +36,8 @@ _STOP = {"오늘", "내일", "지금", "종목", "주식", "추천", "매수", "
 _KW = [
     ("portfolio", r"투자\s*종목|보유|포트폴리오|내\s*(주식|종목)|손익|수익률?|평가\s*금액|물렸"),
     ("watchlist", r"관심\s*종목|관심\s*목록|찜"),
+    ("theme", r"테마"),
+    ("accum", r"매집|바닥\s*(다지|권|주)|다지기|급등\s*전|터질|세력"),
     ("sell", r"매도|팔(까|아|고|야|지|면)|파는|팔\s|하락|떨어|위험|손절|빠질|약세"),
     ("buy", r"매수|추천|살\s*만|사(도|면|야|고|볼|자|려)|오를|상승|유망|강세|좋은\s*종목|뭐\s*살"),
     ("track", r"적중|정확도|맞(췄|았|나|아)|믿을|신뢰|성적|성능"),
@@ -100,6 +102,10 @@ def route(q: str) -> tuple:
     stock = _find_stock(q)
     ql = q.lower()
     intents = [name for name, pat in _KW if re.search(pat, ql)]
+    if "theme" in intents:          # "로봇 테마", "삼성전자 테마"
+        return "theme", stock
+    if "accum" in intents:          # "매집 종목", "삼성전자 매집 점수"
+        return "accum", stock
     if stock and not ({"portfolio", "watchlist"} & set(intents)):
         return "stock", stock
     if "buy" in intents and "sell" in intents:
@@ -411,6 +417,77 @@ async def _events(q: str) -> str:
     return "\n".join(lines)
 
 
+async def _theme(q: str, stock: dict | None) -> str:
+    from app.services import themes
+    from app.api.routes import themes as themes_route
+    if stock:
+        names = themes.themes_of(stock["symbol"])
+        return (f"**{stock['name']}** 이 속한 테마: " + ", ".join(names)) if names else f"{stock['name']} 은 등록된 테마가 없습니다."
+    data = themes.load()
+    if not data:
+        st = themes.status()
+        return "테마 데이터가 아직 없습니다 — " + (st.get("error") or "서버 시작 후 몇 분 뒤 자동으로 받습니다.")
+    # 질문 속 단어로 테마 찾기 ("로봇 테마" → 이름에 '로봇' 이 들어간 테마)
+    words = [w for w in _tokens(q) if len(w) >= 2 and "테마" not in w and w not in _STOP]
+    hits = [t for t in data["themes"] if any(w.lower() in t["name"].lower() for w in words)]
+    if hits:
+        t = hits[0]
+        try:
+            d = await themes_route._detail.get(t["no"], lambda: themes.detail(t["no"]))
+        except Exception as e:
+            return f"{t['name']} 테마 조회 실패: {e}"
+        lines = [f"**{t['name']}** 테마 {len(d['items'])}종목 (오늘 등락률 순)"
+                 + (f" · 비슷한 테마: {', '.join(h['name'] for h in hits[1:4])}" if len(hits) > 1 else ""), "",
+                 "| 종목 | 현재가 | 등락률 | 매집 점수 |", "|---|---|---|---|"]
+        for r in d["items"][:_count(q, 10)]:
+            lines.append(f"| {r['name']} ({r['symbol']}) | {_px(r['price'], 'KR')} | {_pct(r['change_rate'])} | "
+                         f"{r['accum_score'] if r['accum_score'] is not None else '-'} |")
+        return "\n".join(lines)
+    try:
+        ov = await themes_route._overview.get("all", themes.overview)
+    except Exception as e:
+        return f"테마 조회 실패: {e}"
+    lines = ["**오늘 많이 움직인 테마** (테마 종목 평균 등락률 순)", "", "| 테마 | 평균 | 상승/하락 | 주도주 |", "|---|---|---|---|"]
+    for t in ov["themes"][:_count(q, 5)]:
+        lead = ", ".join(f"{x['name']} {_pct(x['change_rate'])}" for x in t["leaders"][:2])
+        lines.append(f"| {t['name']} | {_pct(t['avg_change'])} | {t['up']}/{t['down']} | {lead} |")
+    lines += ["", "특정 테마는 \"로봇 테마\"처럼 물어보세요. 전체는 사이드바 **테마별 주식**에서 볼 수 있습니다."]
+    return "\n".join(lines)
+
+
+async def _accum(q: str, stock: dict | None) -> str:
+    from app.services import accumulation
+    r = accumulation.result()
+    if not r:
+        st = accumulation.status()
+        return ("매집 탐지 결과가 아직 없습니다 — " +
+                (f"전 종목 계산 중 ({st['done']}/{st['total']})" if st["running"] else "국내 장 마감 후 자동으로 계산합니다."))
+    val = {v["min_score"]: v for v in r.get("validation", [])}
+    base, v60 = val.get(0, {}), val.get(60, {})
+    proof = (f"검증: 점수 60 이상일 때 20거래일 안 +20% 도달 **{v60.get('hit_rate')}%** "
+             f"(전체 평균 {base.get('hit_rate')}%, {v60.get('n', 0):,}건)" if v60.get("n") else "검증 표본이 아직 부족합니다.")
+    if stock:
+        sc = r.get("scores", {}).get(stock["symbol"])
+        c = next((x for x in r["candidates"] if x["symbol"] == stock["symbol"]), None)
+        if sc is None:
+            return f"{stock['name']} 은 매집 점수가 없습니다 (국내 일반 주식만, 상장 120거래일 이상)."
+        lines = [f"**{stock['name']}** 매집 점수 **{sc}/100** ({r['base_date']} 종가 기준)"]
+        if c:
+            lines += [f"- {p['name']} {p['score']}/{p['max']}: {p['detail']}" for p in c["parts"]]
+        return "\n".join(lines + ["", proof])
+    cands = r["candidates"][:_count(q, 10)]
+    if not cands:
+        return f"{r['base_date']} 기준 매집 점수 50 이상 후보가 없습니다.\n\n{proof}"
+    lines = [f"**매집·바닥 다지기 후보** ({r['base_date']} 종가 기준, {r['scanned']:,}종목 중)", "",
+             "| 종목 | 점수 | 현재가 | 20일 | 주요 근거 |", "|---|---|---|---|---|"]
+    for c in cands:
+        top = sorted(c["parts"], key=lambda p: -p["score"] / p["max"])[:2]
+        lines.append(f"| {c['name']} ({c['symbol']}) | {c['score']} | {_px(c['price'], 'KR')} | {_pct(c['ret20'])} | "
+                     f"{' · '.join(p['detail'] for p in top)} |")
+    lines += ["", proof, "급등을 보장하지 않습니다 — 몇 주~몇 달 횡보가 이어지거나 그대로 내려가는 경우도 많습니다."]
+    return "\n".join(lines)
+
+
 HELP = """이 챗봇은 앱 데이터를 조회해서 정해진 형식으로 답합니다. 이렇게 물어보세요:
 
 - **종목 분석**: "삼성전자 어때?", "NVDA 사도 돼?", "005930"
@@ -421,11 +498,14 @@ HELP = """이 챗봇은 앱 데이터를 조회해서 정해진 형식으로 답
 - **시장 현황**: "오늘 시장 어때?", "환율", "VIX"
 - **예측 적중률**: "적중률 알려줘"
 - **이벤트 일정**: "이번 주 이벤트", "옵션 만기 언제야?"
+- **테마**: "오늘 테마", "로봇 테마", "삼성전자 테마"
+- **매집·바닥 다지기**: "매집 종목", "바닥 다지는 종목 5개", "휴림로봇 매집 점수"
 
 조건: "국내/미국"으로 시장을, "3개"처럼 개수를 정할 수 있습니다."""
 
 TOOL = {"stock": "analyze_stock", "buy": "today_picks", "sell": "today_picks", "portfolio": "my_portfolio",
-        "watchlist": "my_watchlist", "market": "market_overview", "track": "track_record", "events": "upcoming_events"}
+        "watchlist": "my_watchlist", "market": "market_overview", "track": "track_record", "events": "upcoming_events",
+        "theme": "themes", "accum": "accumulation"}
 
 
 class ChatError(RuntimeError):
@@ -454,10 +534,14 @@ async def chat(user, history: list) -> dict:
         reply = await _track()
     elif intent == "events":
         reply = await _events(q)
+    elif intent == "theme":
+        reply = await _theme(q, stock)
+    elif intent == "accum":
+        reply = await _accum(q, stock)
     elif intent == "help":
         reply = HELP
     else:
         reply = "질문을 이해하지 못했습니다. 종목명은 정확히(예: 삼성전자, NVDA) 적어 주세요.\n\n" + HELP
-    if intent in ("stock", "buy", "sell", "portfolio"):
+    if intent in ("stock", "buy", "sell", "portfolio", "accum"):
         reply += DISCLAIMER
     return {"reply": reply, "tools": [TOOL[intent]] if intent in TOOL else [], "model": "규칙 기반"}

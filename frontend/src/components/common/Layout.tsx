@@ -5,14 +5,16 @@ import { marketApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  Search, LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, MessageCircle,
+  Search, LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar,
 } from "lucide-react";
+import ChatWidget from "./ChatWidget";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "대시보드" },
   { to: "/recommendations", icon: TrendingUp, label: "AI 추천" },
-  { to: "/chat", icon: MessageCircle, label: "챗봇" },
   { to: "/screener", icon: BarChart2, label: "종목탐색" },
+  { to: "/themes", icon: Layers, label: "테마별 주식" },
+  { to: "/accumulation", icon: Radar, label: "매집 탐지" },
   { to: "/watchlist", icon: Star, label: "관심종목" },
   { to: "/portfolio", icon: Briefcase, label: "투자종목" },
   { to: "/predictions", icon: ClipboardCheck, label: "예측 검증" },
@@ -90,6 +92,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </main>
+
+      {/* 챗봇: 오른쪽 아래 떠 있는 버튼 (모든 화면) */}
+      <ChatWidget />
     </div>
   );
 }

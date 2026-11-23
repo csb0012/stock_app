@@ -97,8 +97,14 @@ services/
                    + AI 추천 기본 데이터 14분마다 미리 계산 + 이벤트 일정 6시간마다 갱신
   flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음)
   chatbot.py     — 규칙 기반 챗봇 (외부 AI 없음): route() 가 질문 키워드로 의도(종목 분석·매수/매도 후보·투자종목·관심종목·
-                   시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
+                   테마·매집·시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
                    prediction_log.review·events)를 조회해 정해진 마크다운 형식으로 답함. 종목은 종목마스터 정확 일치 우선
+  accumulation.py— 매집·바닥 다지기 탐지: 국내 전 종목(일반 주식, 스팩 제외) 일봉 200개로 점수(횡보25·변동성 축소15·OBV 매집20·
+                   거래량 꿈틀15·저점 상승10·바닥권15). 그날까지 데이터만 사용(score_frame). 제외: 20일 +25% 이상·거래대금 1억 미만·상장 120일 미만.
+                   검증 = 과거 날짜별 점수 → 이후 20거래일 안 +20% 도달률을 점수 구간별로 전체 평균과 비교(lift).
+                   하루 1회(scheduler accum_kr 16:30~, 결과 없으면 시작 2분 뒤), mark_background, 결과 app/data/accumulation.json
+  themes.py      — 테마별 종목: 네이버 증권 테마 화면(HTML) 파싱 → 하루 1회 app/data/themes.json (종목코드는 종목마스터로 확인).
+                   테마 등락은 KIS 멀티종목 시세로 직접 계산 (overview: 평균 등락률·상승/하락 수·주도주, detail: 종목별 + 매집 점수)
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
@@ -114,10 +120,12 @@ api/routes/
   watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
   portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
   chat.py        — POST /chat ({messages:[{role,content}]} → 마지막 질문만 보고 {reply, tools, model:"규칙 기반"}), GET /chat/status
+  themes.py      — GET /themes (테마 전체, SWR 60초), GET /themes/{no} (테마 종목), POST /themes/refresh, GET /themes/status
+  accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산)
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원) (추천 후보 종목 미리 수집 예약).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과 없으면 전 종목 스캔), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원) (추천 후보 종목 미리 수집 예약).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -141,8 +149,8 @@ api/routes/
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
 Layout.tsx         — 사이드바(메뉴·장 운영 상태) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃)
 store/auth.ts      — Zustand: token + user 상태
-pages/             — Dashboard, Recommendations, Chat(규칙 기반 챗봇), Screener, Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
-components/common/ — Layout (사이드바 네비), ChangeTag, LoadingSpinner,
+pages/             — Dashboard, Recommendations, Screener, Themes(테마별 주식), Accumulation(매집 탐지), Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
+components/common/ — Layout (사이드바 네비 + 오른쪽 아래 ChatWidget 챗봇), ChangeTag, LoadingSpinner, WatchButton (관심 추가), AccumBadge (매집 점수),
                      PredictionReasons (전망 근거), BuyPrice (추천 매입가), StockSearchBox (자동완성), StockQuoteCard, format.ts
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
                      색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)

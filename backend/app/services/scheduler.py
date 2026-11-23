@@ -26,6 +26,8 @@ JOBS = [
     ("close_us", "US", 16 * 60 + 10, 16 * 60 + 50, "장마감 자동"),
     # 외국인·기관 수급은 장 마감 후 확정치가 늦게 나와 저녁에 수집 (KIS 는 최근 30일만 줘서 매일 쌓음)
     ("flow_kr", "KR", 18 * 60 + 10, 18 * 60 + 50, None),
+    # 매집·바닥 다지기 전 종목 스캔 (종가 확정 후, 7~10분 걸림)
+    ("accum_kr", "KR", 16 * 60 + 30, 23 * 60 + 30, None),
 ]
 _done: dict = {}   # 작업 이름 -> 마지막 실행 날짜
 _last: dict = {}   # 작업 이름 -> 결과 문자열 (점검용)
@@ -38,6 +40,16 @@ def status() -> dict:
 
 async def _run_job(name: str, market: str, source: str):
     from app.services.quote import analyze_kr_many, analyze_us_many  # 순환 import 방지
+    if name == "accum_kr":
+        from app.services import accumulation
+        if not accumulation.stale():
+            _last[name] = "오늘 결과 이미 있음 (건너뜀)"
+            return
+        st = await accumulation.scan()
+        _last[name] = st.get("message") or "실행"
+        if (st.get("message") or "").startswith("실패"):
+            raise RuntimeError(st["message"])
+        return
     if name == "flow_kr":
         stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == "KR"]
         r = await flows.collect(stocks)

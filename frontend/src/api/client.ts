@@ -74,6 +74,19 @@ export const watchlistApi = {
   analysis: () => api.get("/watchlist/analysis"),
 };
 
+// 테마별 주식 (네이버 테마 분류 + KIS 시세)
+export const themeApi = {
+  list: () => api.get("/themes"),
+  detail: (no: string) => api.get(`/themes/${no}`),
+  refresh: () => api.post("/themes/refresh"),
+};
+
+// 매집·바닥 다지기 탐지
+export const accumApi = {
+  result: (minScore = 50) => api.get("/accumulation", { params: { min_score: minScore } }),
+  scan: () => api.post("/accumulation/scan"),
+};
+
 // 예측 검증
 export const predictionApi = {
   review: (days = 90, market = "ALL", kind = "all", outcome = "all", limit = 200) =>
