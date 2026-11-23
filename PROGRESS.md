@@ -331,7 +331,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   - 가짜 데이터 검증: 수급에 패턴을 심으면 KRF 방향 67.7% 로 학습·사용. 패턴이 없으면 사용 안 함.
   - **실데이터로는 약 2~3개월 쌓여야 학습·검증 가능** (학습 800건 + 검증 구간 필요). 그 전에는 예측 검증 화면에 쌓인 건수 표시.
 
-### 2026-11-23 — AI 챗봇 (commit `COMMIT_HASH`)
+### 2026-11-23 — AI 챗봇 (commit `e80f88a`)
 - 사이드바 "AI 챗봇" (`pages/Chat.tsx`, `api/routes/chat.py`, `services/chatbot.py`)
   - Claude API (anthropic SDK 2.x, `claude-opus-5-5`, effort medium) + tool runner.
   - Claude 가 질문에 맞춰 앱 데이터를 직접 조회 (도구는 전부 읽기 전용):
