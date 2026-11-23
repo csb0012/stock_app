@@ -395,7 +395,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - AI 추천: "단기/스윙 추천" 탭을 앞으로, 처음 열면 단기/스윙이 보임. 서버도 단기 후보를 먼저 미리 계산
 - 종목탐색: 탭 순서 거래대금 → 급등 → 급하향 → 거래량 급증, 처음 열면 거래대금
 
-### 2026-11-23 — 국내 종목 뉴스 근거: 해외 주요 매체만 반영, 네이버는 참고, 공시 비중 2배 (commit `PENDING`)
+### 2026-11-23 — 국내 종목 뉴스 근거: 해외 주요 매체만 반영, 네이버는 참고, 공시 비중 2배 (commit `09fd29e`)
 - 요청: 네이버 뉴스는 믿음이 안 감 → 해외 매체 기사 사용, 네이버 뉴스는 확률 비중에서 빼고 보여주기만
 - **해외 영문 기사 = 확률 반영** (`news.py`): Yahoo Finance 종목 뉴스(`005930.KS`) + Google 뉴스 영문 검색(영문 회사명, 최근 14일)
   - 신뢰 매체만 남김 (`TRUSTED_FOREIGN`): Reuters, Bloomberg, CNBC, FT, WSJ, Nikkei Asia, AP, Barron's, MarketWatch, The Economist, Investing.com, Yahoo Finance, Korea Herald, Korea JoongAng Daily, Korea Times, Yonhap(영문)
