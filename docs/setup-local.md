@@ -99,6 +99,8 @@ npm run dev
 cd C:\claude\stock_app
 git pull origin claude/dazzling-darwin-et76zj
 ```
+push 된 코드는 테스트를 마친 것이다 (수정 → 충분한 테스트 → push → pull, [PROGRESS.md](../PROGRESS.md) 맨 위 규칙). pull 후 화면이 이상하면 PROGRESS.md 의 최근 작업 이력 `검증:` 줄과 "알려진 이슈"의 실서버 미검증 항목부터 확인한다.
+
 pull 후 `requirements.txt` 가 바뀌었으면 (가상환경 켜진 상태):
 ```powershell
 cd C:\claude\stock_app\backend

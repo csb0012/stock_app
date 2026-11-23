@@ -43,7 +43,7 @@ npm run dev
 
 ## 최초 설치
 
-방법별 전체 절차(필요 프로그램, 파일 복사 위치, 문제 해결)는 `docs/setup-local.md` / `docs/setup-docker.md` 에 있다. 설치 절차를 바꾸면 해당 docs 파일을 고친다.
+방법별 전체 절차(필요 프로그램, 파일 복사 위치, 문제 해결)는 `docs/setup-local.md` / `docs/setup-docker.md` / `docs/setup-cloud.md` 에 있다. 설치 절차를 바꾸면 해당 docs 파일을 고친다.
 
 ## 주요 환경변수 (backend/.env)
 
@@ -53,6 +53,7 @@ npm run dev
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
+| `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
 | `FINNHUB_API_KEY` | 선택 | 경제 캘린더 + 미국 종목 애널리스트 의견·실적 요인 |
 | `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
 | `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) |
@@ -114,7 +115,7 @@ services/
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
   auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
-  stocks.py      — /search, /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol},
+  stocks.py      — /search, /test/kis (인증 불필요), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /screener/{kr,us}/{mode}
   market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
@@ -126,7 +127,7 @@ api/routes/
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과 없으면 전 종목 스캔), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원) (추천 후보 종목 미리 수집 예약).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과 없으면 전 종목 스캔), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -134,7 +135,7 @@ api/routes/
 
 **종목코드:** 종목을 손으로 적은 코드표로 관리하지 않는다. 검색·추가·검증은 모두 `stock_master` (KIS 공식 파일, `backend/app/data/master_cache.json` 에 하루 단위 캐시)로 한다.
 
-모든 라우트는 `main.py`에서 `/api` 접두사로 마운트.
+모든 라우트는 `main.py`에서 `/api` 접두사로 마운트. 헬스체크 `GET /api/health`.
 
 ### 주식 분석 데이터 흐름
 
@@ -148,11 +149,14 @@ api/routes/
 
 ```
 api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
-Layout.tsx         — 사이드바(메뉴·장 운영 상태) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃)
+api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener, Themes(테마별 주식), Accumulation(매집 탐지), Search, Watchlist, Portfolio, Predictions(예측 검증), Calendar, Login
-components/common/ — Layout (사이드바 네비 + 오른쪽 아래 ChatWidget 챗봇), ChangeTag, LoadingSpinner, WatchButton (관심 추가), AccumBadge (매집 점수),
-                     PredictionReasons (전망 근거), BuyPrice (추천 매입가), StockSearchBox (자동완성), StockQuoteCard, format.ts
+                     (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
+components/common/ — Layout (사이드바 메뉴·장 운영 상태 + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃) + ChatWidget),
+                     ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
+                     ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거), BuyPrice (추천 매입가),
+                     NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard, format.ts
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
                      색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)
                      ThemeToggle.tsx 가 <html data-theme> + localStorage("theme") 변경, index.html 인라인 스크립트가 첫 화면 깜빡임 방지
@@ -183,10 +187,30 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 ## Git
 
 개발 브랜치: `claude/dazzling-darwin-et76zj`. 로컬 PC에서 작업 전 반드시 pull 후 편집, 완료 후 이 브랜치로 push.
+**push 는 아래 "테스트 후 반영 규칙"을 통과한 뒤에만** 한다 — 사용자가 PC·서버에서 pull 하는 브랜치는 항상 테스트를 마친 상태여야 한다.
+
+## 테스트 후 반영 규칙 (수정 → 충분한 테스트 → push → 사용자가 pull)
+
+수정한 내용은 아래를 **모두** 확인한 뒤에 커밋·push 한다. 하나라도 실패하면 push 하지 않고 고친다.
+
+1. **백엔드 문법·import** (backend 폴더에서, `.env` 가 없으면 가짜 KIS 값으로):
+   ```bash
+   python -m compileall -q app
+   KIS_APP_KEY=test KIS_APP_SECRET=test KIS_ACCOUNT_NO=00000000-01 python -c "import app.main"
+   ```
+2. **프론트엔드 타입 검사·빌드** (frontend 폴더에서): `npm run build` (`tsc -b` 포함 — 클라우드 서버는 이 빌드 결과를 그대로 씀)
+3. **바꾼 기능을 직접 실행해서 확인**
+   - 백엔드: 서버를 띄워 바꾼 API 를 실제로 호출하고 응답(형식·오류 메시지)을 확인. 계산 로직은 경계값(빈 목록·NaN·0·데이터 부족)까지 넣어 본다.
+   - 화면: 바꾼 페이지를 브라우저(Playwright)로 열어 표시·콘솔 오류 확인.
+   - 외부 API(KIS·Yahoo·네이버 등)가 이 환경에서 막혀 있으면 가짜 응답·가짜 서버로 흐름을 검증한다. 가짜 데이터로 화면을 채우는 코드는 넣지 않는다 (오류 처리 원칙).
+   - 예측·학습 로직은 "미래 데이터 미사용"을 함께 확인 (이후 데이터를 바꿔도 그날 결과가 같아야 함).
+4. **실행 방법별 영향 확인**: `requirements.txt`·`package.json`·Dockerfile·`docker-compose*.yml`·`deploy/` 를 바꿨으면 해당 방법(직접 설치 / Docker / 클라우드)의 설치·실행 절차와 docs 가 맞는지 확인.
+5. **문서만 바꾼 경우**: 문서에 적은 파일 경로·명령어·API 경로·설정값이 실제 코드와 같은지 확인.
+6. **기록**: PROGRESS.md 작업 이력에 `검증:` 줄로 무엇을 어떻게 테스트했는지 적는다. 실제 KIS·외부 API 로 확인하지 못한 부분은 **"실서버 미검증"** 으로 분명히 적고 "알려진 이슈"에 남긴다 (사용자가 pull 후 그 부분을 확인할 수 있게).
 
 ## 작업 기록 규칙
 
-`PROGRESS.md`가 작업 이력·명령어·알려진 이슈의 단일 기록이다 (설치 절차만 `docs/setup-local.md`, `docs/setup-docker.md` 로 분리). 작업 시작 전 먼저 읽고, 작업을 마칠 때마다(커밋 전) 다음을 갱신한다:
-- "작업 이력"에 이번 작업 요약 추가 (날짜, 커밋 해시)
+`PROGRESS.md`가 작업 이력·명령어·알려진 이슈의 단일 기록이다 (설치 절차만 `docs/setup-local.md`, `docs/setup-docker.md`, `docs/setup-cloud.md` 로 분리). 작업 시작 전 먼저 읽고, 작업을 마칠 때마다(커밋 전) 다음을 갱신한다:
+- "작업 이력"에 이번 작업 요약 + `검증:` 줄 추가 (날짜, 커밋 해시) — "테스트 후 반영 규칙" 6번
 - 새로 생긴 명령어/점검 URL은 "자주 쓰는 명령어"에 추가
 - 해결된 이슈는 체크, 새로 발견한 이슈는 "알려진 이슈"에 추가

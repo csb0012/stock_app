@@ -1,59 +1,40 @@
-# StockApp - AI 주식 분석 플랫폼
+# StockApp — 개인용 주식 분석 웹앱
 
-## 처음 설치
+국내(KOSPI/KOSDAQ) + 미국(NYSE/NASDAQ) 시세·내일 전망·AI 추천·매집 탐지·테마·예측 검증.
+백엔드 FastAPI + SQLite, 프론트엔드 React + TypeScript + Vite.
 
-### 1. 백엔드 환경 설정
-```bash
-cd backend
-pip install -r requirements.txt
-cp .env.example .env
-# .env 파일을 열어 KIS API 키 등 입력
-```
+## 설치·실행
 
-### 2. 필수 API 키 발급 (전부 무료)
-| 서비스 | 발급 경로 | 용도 |
-|--------|----------|------|
-| KIS API | [apiportal.koreainvestment.com](https://apiportal.koreainvestment.com) | 국내/미국 주식 |
-| Finnhub | [finnhub.io](https://finnhub.io) | 경제 캘린더 |
-| DART | [opendart.fss.or.kr](https://opendart.fss.or.kr) | 한국 공시 |
-| FRED | [fred.stlouisfed.org/docs/api](https://fred.stlouisfed.org/docs/api/api_key.html) | 미국 경제 지표 |
+PC마다 아래 방법 중 **하나만** 쓴다 (섞으면 포트 충돌·DB 갈라짐).
 
-### 3. 첫 계정 생성
-```bash
-cd backend
-python create_admin.py 내아이디 내비밀번호
-```
+| 방법 | 설치·실행 안내 | 실행 |
+|---|---|---|
+| 직접 설치 (Python 3.13 + Node + venv) | [docs/setup-local.md](docs/setup-local.md) | `start.bat` |
+| Docker (Python·Node 설치 안 함) | [docs/setup-docker.md](docs/setup-docker.md) | `start-docker.bat` |
+| 클라우드 24시간 (Oracle Cloud 무료 VM) | [docs/setup-cloud.md](docs/setup-cloud.md) | 서버에서 `bash deploy/setup-server.sh` |
 
-### 4. 프론트엔드
-```bash
-cd frontend
-npm install
-```
+접속: http://localhost:5173 (클라우드는 `https://<이름>.duckdns.org`)
 
-## 실행
-```
-start.bat 더블클릭
-```
-또는 각각:
-```bash
-# 백엔드
-cd backend && python -m uvicorn app.main:app --reload
+`.env`·`stock_app.db`·`.secret_key` 는 모두 `backend/` 에 둔다. KIS 키(`KIS_APP_KEY`·`KIS_APP_SECRET`·`KIS_ACCOUNT_NO`)가 없으면 서버가 시작되지 않는다.
 
-# 프론트엔드
-cd frontend && npm run dev
-```
+## API 키 (전부 무료)
+| 서비스 | 발급 | 용도 | 필수 |
+|---|---|---|---|
+| KIS API | [apiportal.koreainvestment.com](https://apiportal.koreainvestment.com) | 국내 시세·일봉·순위, 종목마스터, 미국 PER/PBR | 필수 |
+| Finnhub | [finnhub.io](https://finnhub.io) | 경제 캘린더, 미국 애널리스트·실적 | 선택 |
+| DART | [opendart.fss.or.kr](https://opendart.fss.or.kr) | 국내 공시 요인 | 선택 |
+| FRED | [fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html) | 거시환경 요인, 미국 지표 발표 일정 | 선택 |
 
-접속: http://localhost:5173
+## Google Authenticator (선택)
+화면에는 설정 메뉴가 없어 API 로 켠다 (직접 설치·Docker 방식: `http://localhost:8000/docs` → Authorize 에 로그인 토큰).
+1. `POST /api/auth/setup-totp` → QR 코드(`qr_code`, base64) 발급
+2. Google Authenticator 앱에서 QR 스캔
+3. `POST /api/auth/enable-totp` `{"totp_code": "123456"}` 로 활성화
+4. 이후 로그인할 때 6자리 코드 입력
 
-## Google Authenticator 등록
-1. 로그인 후 (우선 비밀번호만으로 가능)
-2. `GET /api/auth/setup-totp` 호출 → QR 코드 발급
-3. Google Authenticator 앱에서 QR 스캔
-4. `POST /api/auth/enable-totp` {"totp_code": "123456"} 로 활성화
-5. 이후 로그인 시 항상 6자리 코드 요구
+## 문서
+- [CLAUDE.md](CLAUDE.md) — 구조·설계 원칙·**테스트 후 반영 규칙**
+- [PROGRESS.md](PROGRESS.md) — 작업 이력, 자주 쓰는 명령어·점검 URL, 알려진 이슈
 
-## 나중에 Windows 데스크탑 앱 (Electron)
-```bash
-npm install -g electron
-# 별도 electron 래퍼 추가 예정
-```
+## 나중에
+- Electron 데스크탑 래퍼 (추후 목표)

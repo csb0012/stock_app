@@ -7,7 +7,7 @@ set "VENV="
 if exist "%~dp0.venv\Scripts\activate.bat" set "VENV=%~dp0.venv"
 if exist "%~dp0backend\.venv\Scripts\activate.bat" set "VENV=%~dp0backend\.venv"
 if "%VENV%"=="" (
-  echo [오류] 가상환경을 찾지 못했습니다. PROGRESS.md 의 "최초 설치"를 먼저 진행하세요.
+  echo [오류] 가상환경을 찾지 못했습니다. docs\setup-local.md 의 "처음 한 번 (설치)"를 먼저 진행하세요.
   pause
   exit /b 1
 )

@@ -135,7 +135,7 @@ bash deploy/setup-server.sh
 ## 자주 쓰는 명령어 (서버, `cd ~/stock_app` 에서)
 | 하는 일 | 명령 |
 |---|---|
-| 코드 업데이트 (git pull + 재빌드 + 재시작) | `bash deploy/update.sh` |
+| 코드 업데이트 (git pull + 재빌드 + 재시작) | `bash deploy/update.sh` — push 된 코드는 테스트를 마친 것 (PROGRESS.md 맨 위 규칙) |
 | 상태 보기 | `sudo docker compose -f docker-compose.cloud.yml ps` |
 | 로그 보기 | `sudo docker compose -f docker-compose.cloud.yml logs -f --tail 100 backend` |
 | 재시작 | `sudo docker compose -f docker-compose.cloud.yml restart` |
@@ -145,7 +145,8 @@ bash deploy/setup-server.sh
 | 도메인 바꾸기 | `rm deploy/.env && bash deploy/setup-server.sh` |
 
 ## 백업
-- `setup-server.sh` 가 **매일 새벽 4시** DB 백업을 예약한다. `~/stock_app/backups/` 에 최근 14개를 보관한다.
+- `setup-server.sh` 가 **매일 04:00(서버 시간)** DB 백업을 예약한다(crontab). `~/stock_app/backups/` 에 최근 14개를 보관한다.
+  - Oracle Ubuntu 이미지의 서버 시간은 기본 UTC 라서 한국 시간으로는 **13:00** 이다 (앱 컨테이너만 `TZ=Asia/Seoul`). 서버 시간은 `timedatectl` 로 확인.
 - PC 로 가져오기 (PowerShell):
   ```powershell
   scp -i $env:USERPROFILE\.ssh\oracle.key "ubuntu@서버IP:~/stock_app/backups/*.db" C:\claude\stock_app\backups\

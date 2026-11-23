@@ -86,4 +86,6 @@ C:\claude\stock_app\
 | pull 후 `requirements.txt`·`package.json` 이 바뀌었을 때 | `start-docker.bat` 다시 실행 (이미지 재빌드) |
 | 계정 추가 | `docker compose exec backend python create_admin.py <아이디> <비밀번호>` |
 
+push 된 코드는 테스트를 마친 것이다 (수정 → 충분한 테스트 → push → pull, [PROGRESS.md](../PROGRESS.md) 맨 위 규칙). pull 후 화면이 이상하면 PROGRESS.md 의 최근 작업 이력 `검증:` 줄과 "알려진 이슈"의 실서버 미검증 항목부터 확인한다.
+
 ⚠️ 같은 PC에서 `start.bat`(직접 설치 방식)과 동시에 켜지 말 것 — 포트 8000·5173 충돌.

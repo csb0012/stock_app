@@ -2,6 +2,10 @@
 
 작업 이력과 자주 쓰는 명령어를 관리하는 파일. 작업이 끝날 때마다 갱신한다.
 
+> **규칙: 수정 → 충분한 테스트 → push → PC·서버에서 pull.** 테스트를 통과하지 못한 수정은 push 하지 않는다.
+> 테스트 항목은 [CLAUDE.md "테스트 후 반영 규칙"](CLAUDE.md), 각 작업에서 실제로 무엇을 테스트했는지는 아래 작업 이력의 `검증:` 줄.
+> "실서버 미검증" 으로 적힌 부분은 pull 후 실제 KIS·외부 API 로 확인이 필요한 부분 ("알려진 이슈" 참고).
+
 ## 자주 쓰는 명령어
 
 ### 어떤 방법으로 실행하나? (PC마다 하나만 — 섞지 말 것)
@@ -9,10 +13,13 @@
 |---|---|---|---|
 | 회사 PC | 직접 설치 (Python 3.13 + Node + venv) | [docs/setup-local.md](docs/setup-local.md) | `start.bat` |
 | 집 PC | Docker (Python·Node 설치 안 함, venv·pip 안 씀) | [docs/setup-docker.md](docs/setup-docker.md) | `start-docker.bat` |
+| 서버 (24시간) | 클라우드 (Oracle Cloud 무료 VM + DuckDNS) | [docs/setup-cloud.md](docs/setup-cloud.md) | `bash deploy/setup-server.sh` / `bash deploy/update.sh` |
 
-두 방법 모두 `.env`·`stock_app.db`·`.secret_key` 위치는 **`C:\claude\stock_app\backend\`** 로 같다.
+클라우드 서버를 켜 두면 PC 에서는 `start.bat`·`start-docker.bat` 를 켜지 않고 브라우저로 접속만 한다 (같은 KIS 키 동시 사용 → 호출 제한·DB 갈라짐).
 
-### 최신 코드 받기 (두 방법 공통, 작업 전 필수)
+세 방법 모두 `.env`·`stock_app.db`·`.secret_key` 위치는 **`C:\claude\stock_app\backend\`** 로 같다.
+
+### 최신 코드 받기 (공통, 작업 전 필수 — 클라우드 서버는 `bash deploy/update.sh` 가 pull 까지 함)
 ```powershell
 cd C:\claude\stock_app
 git pull origin claude/dazzling-darwin-et76zj
@@ -44,7 +51,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - KIS 토큰 저장 파일: `backend\.kis_token.json` (재시작해도 23시간 재사용. 키를 바꾸면 자동으로 새로 받음)
 - 예측 검증 API: `http://localhost:8000/api/predictions/review?days=90&kind=all` (호출 시 장 끝난 예측 채점, kind = all/live/backtest)
 - 백테스트 진행 상황: 로그인 후 `http://localhost:5173/api/predictions/backtest/status` (화면: 예측 검증 > 과거 90일 백테스트). 백엔드 로그 `[backtest] ... 실패` 도 확인
-- 학습 모델 상태·방식별 적중률: 예측 검증 화면 "예측 방식별 적중률" 카드 (API: `/api/predictions/review` 의 `method_accuracy`, `model`). 학습 결과 파일 `backend\app\data\model_{KR,KR_base,US}.json` (지우면 다음 백테스트 때 다시 학습)
+- 학습 모델 상태·방식별 적중률: 예측 검증 화면 "예측 방식별 적중률" 카드 (API: `/api/predictions/review` 의 `method_accuracy`, `model`). 학습 결과 파일 `backend\app\data\model_{US,KR,KR_base,KRF,KRF_base}.json` (지우면 다음 백테스트 때 다시 학습)
 - 외국인·기관 수급 수집 현황·변동성 이벤트 일정: 로그인 후 `/api/market/scheduler-status` 의 `flows`(쌓인 건수·마지막 수집·오류), `events`(FRED 발표 일정 갱신 시각·오류)
 - 자동 예측 기록 현황: 로그인 후 `/api/market/scheduler-status` (국내 장 시작 전·장 마감 후, 미국 장 마감 후 마지막 실행 결과)
 - 외부 데이터 수집 결과 파일: `backend\app\data\extras_cache.json` (재시작해도 다시 안 받음, 지워도 됨)
@@ -66,7 +73,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 처음 설치: 서버에서 `cd ~/stock_app && bash deploy/setup-server.sh`
 - 업데이트: `bash deploy/update.sh` (git pull + 화면 재빌드 + 백엔드 재시작)
 - 로그: `sudo docker compose -f docker-compose.cloud.yml logs -f --tail 100 backend`
-- 백업: 매일 04:00 자동 → `~/stock_app/backups/` (수동: `bash deploy/backup.sh`)
+- 백업: 매일 04:00(서버 시간, 기본 UTC = 한국 13:00) 자동 → `~/stock_app/backups/` (수동: `bash deploy/backup.sh`)
 - 접속: `https://<이름>.duckdns.org` → 접속 비밀번호(Caddy) → 앱 로그인
 
 ## 작업 이력
@@ -78,7 +85,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - **추천 전부 50% 표시 버그**: pandas-ta 버전별 볼린저밴드 컬럼명 차이(`BBU_20_2.0` KeyError) → `analysis.py`에서 `startswith("BBU_")`로 동적 탐색
 
 ### 2026-11 — 기능 추가 1차
-- 관심종목 추가 모달에 자동완성 검색 (한글/영문/코드) — `backend/app/data/stock_list.json` + `GET /api/stocks/search`
+- 관심종목 추가 모달에 자동완성 검색 (한글/영문/코드) — `backend/app/data/stock_list.json` + `GET /api/stocks/search` *(이후 stock_list.json 삭제, KIS 종목마스터로 교체)*
 - 대시보드에 KOSPI/KOSDAQ 지수, 미국 주요 ETF(SPY/QQQ/SOXL/TQQQ/TLT) 추가
 - 경제캘린더: 과거 3개월(실제 vs 예상 + 행 클릭 시 해설) + 향후 3개월
 
@@ -219,7 +226,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 
 ### 2026-11-20 — 클라우드 서버 배포 (commit `1ae8c2a`)
 - 목적: PC 를 켜두지 않고 24시간 운영 (08:20 장 시작 전 예측·채점·백테스트)
-- 조사: Render·Koyeb 등 무료 PaaS 는 유휴 시 잠듦/파일 초기화 → 부적합. 무료로 계속 켜지는 건 Oracle Cloud Always Free VM(2026-08부터 Ampere 2 OCPU/12GB 한도)·Google Cloud e2-micro 정도 → Oracle 한국 리전 선택 (KIS 를 국내 IP 에서 호출)
+- 조사: Render·Koyeb 등 무료 PaaS 는 유휴 시 잠듦/파일 초기화 → 부적합. 무료로 계속 켜지는 건 Oracle Cloud Always Free VM(2026-08부터 Ampere 2 OCPU/12GB 한도)·Google Cloud e2-micro 정도 → Oracle 한국 리전 선택 (KIS 를 국내 IP 에서 호출) — *이후 무료 가입 목록에 한국 리전이 없어 일본 오사카·도쿄로 변경, 현재 기준은 docs/setup-cloud.md*
 - `docker-compose.cloud.yml` + `deploy/` (Dockerfile.web: React 빌드 → Caddy, Caddyfile: 자동 HTTPS·보안 헤더·basic auth·/api 프록시, setup-server.sh: Docker 설치·스왑·iptables 80/443·도메인/비밀번호·매일 백업 cron·실행, update.sh, backup.sh: SQLite 온라인 백업 14개 보관)
 - 보안: backend 비공개, 앱 로그인 앞 basic auth, 로그인 5회 실패 시 IP 15분 차단(`auth.py`), FastAPI 문서는 /api 밖이라 비공개
 - 문서: `docs/setup-cloud.md` (가입·VM·DuckDNS·SSH·배포 키·파일 복사·설치·백업·문제 해결)
@@ -336,6 +343,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   - **실데이터로는 약 2~3개월 쌓여야 학습·검증 가능** (학습 800건 + 검증 구간 필요). 그 전에는 예측 검증 화면에 쌓인 건수 표시.
 
 ### 2026-11-23 — AI 챗봇 (commit `e80f88a`)
+- *(이후 규칙 기반으로 교체, 챗봇 페이지도 오른쪽 아래 위젯으로 변경 — 아래 2026-11-23 항목들 참고)*
 - 사이드바 "AI 챗봇" (`pages/Chat.tsx`, `api/routes/chat.py`, `services/chatbot.py`)
   - Claude API (anthropic SDK 2.x, `claude-opus-5-5`, effort medium) + tool runner.
   - Claude 가 질문에 맞춰 앱 데이터를 직접 조회 (도구는 전부 읽기 전용):
@@ -435,6 +443,16 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 테마를 받는 동안(서버 시작 1분 뒤부터 1~2분) 화면에 진행 상황 표시, 5초마다 자동 재확인
 - **실제 네이버 API 로 확인**: 테마 265개 전부 성공(실패 0), 약 2분, 가장 큰 테마 146종목(페이지 넘김 정상), 로봇 테마 77종목(휴림로봇·코스모로보틱스·빅웨이브로보틱스 0035S0 등)
 
+### 2026-11-23 — md 문서 정리 + "테스트 후 반영" 규칙 (commit `HASH`)
+- **규칙 추가**: 수정 → 충분한 테스트 → push → PC·서버에서 pull. CLAUDE.md 에 "테스트 후 반영 규칙"(백엔드 compileall·import, 프론트 `npm run build`, 바꾼 기능 직접 실행, 실행 방법별 영향, 문서 경로 대조, PROGRESS `검증:` 줄·실서버 미검증 표시), PROGRESS.md 맨 위·docs 의 pull 안내에 요약
+- **코드와 달랐던 부분 수정**
+  - README.md: 가상환경 없이 `pip install` 하던 옛 절차 → 3가지 실행 방법(docs)으로 안내, TOTP 발급 `GET` → `POST /api/auth/setup-totp`, API 키 용도 갱신
+  - CLAUDE.md: 없는 `LoadingSpinner` 삭제, `Layout.tsx` 위치(components/common), 빠진 컴포넌트(ChatWidget·Markdown·ThemeToggle·FetchStatus·NewsLink)·`/volume-surge`·`/test/kis`·`/api/health`·`TOTP_ISSUER`, lifespan 의 `flows.load_all`·`market.warm_overview`, setup-cloud.md 안내 추가
+  - PROGRESS.md: 실행 방법 표에 클라우드 추가, 학습 모델 파일에 `KRF`·`KRF_base` 추가, 규칙 기반으로 바뀐 챗봇의 옛 이슈(Claude API 과금·10~60초 대기) 해결 처리, 옛 이력에 이후 변경(한국 → 일본 리전, stock_list.json 삭제, 챗봇 교체) 메모
+  - setup-cloud.md: 백업 cron 은 서버 시간(기본 UTC) 04:00 = 한국 13:00 임을 명시
+  - `start.bat`: 가상환경 없을 때 안내가 없는 "PROGRESS.md 최초 설치" → `docs\setup-local.md`
+- 검증: md 에 적힌 파일 경로·md 링크·API 경로·컴포넌트·페이지를 스크립트로 실제 파일·라우트와 대조(없는 것 0), `python -m compileall -q app` · 가짜 KIS 값으로 `import app.main` 성공, `npm run build` 성공. 코드 동작 변경 없음 (start.bat 은 안내 문구만, CRLF 유지)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
@@ -467,8 +485,8 @@ pull 후 패키지 목록이 바뀌었을 때:
 - [ ] 클라우드: 2026-11 무료 가입 목록에 한국 리전이 없음 → 일본 오사카(우선)·도쿄 리전 사용. **해외 IP 에서 KIS API 호출은 미검증** — 설치 직후 setup-cloud.md 의 KIS 확인 명령으로 확인
 - [ ] 백테스트가 국내 종목마다 KIS 일봉 500개(호출 5~6회)를 받음 → 첫 실행 2~3분
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능). 대시보드는 정규장 종가 + 시간외 가격을 따로 표시
-- [ ] AI 챗봇은 Claude API 유료 (질문 1번에 보통 수십 원, 도구 조회가 많으면 더). 실제 API 키로 미검증 — 처음 몇 번 답변 품질·속도 확인 필요
-- [ ] 챗봇은 한 번에 답을 받아 보여줌 (스트리밍 아님) → 답이 길면 10~60초 기다림
+- [x] ~~AI 챗봇은 Claude API 유료·미검증~~ → 규칙 기반 챗봇으로 교체 (2026-11-23, 외부 API·과금 없음)
+- [x] ~~챗봇 답변 10~60초 대기~~ → 규칙 기반이라 캐시된 데이터면 수 ms
 - [ ] KIS 투자자(FHKST01010900) 응답 필드(stck_bsop_date·frgn_ntby_qty·orgn_ntby_qty·prsn_ntby_qty) 실서버 미검증 — `/api/market/scheduler-status` 의 flows.errors 확인
 - [ ] 수급 모델은 데이터가 2~3개월 쌓일 때까지 학습 안 됨. 서버가 18:10~18:50 에 꺼져 있던 날은 다음 백테스트(또는 다음 날 수집) 때 최근 30일 범위 안이면 채워짐
 - [ ] 한국은행 금통위 일정은 무료 공식 데이터 출처가 없어 이벤트 경고에 없음
