@@ -11,6 +11,7 @@ import Portfolio from "./pages/Portfolio";
 import CalendarPage from "./pages/Calendar";
 import Search from "./pages/Search";
 import Predictions from "./pages/Predictions";
+import Chat from "./pages/Chat";
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } } });
 
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/predictions" element={<ProtectedRoute><Predictions /></ProtectedRoute>} />
           <Route path="/calendar" element={<ProtectedRoute><CalendarPage /></ProtectedRoute>} />
           <Route path="/search" element={<ProtectedRoute><Search /></ProtectedRoute>} />
+          <Route path="/chat" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

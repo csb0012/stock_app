@@ -5,12 +5,13 @@ import { marketApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  Search, LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle,
+  Search, LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, MessageCircle,
 } from "lucide-react";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "대시보드" },
   { to: "/recommendations", icon: TrendingUp, label: "AI 추천" },
+  { to: "/chat", icon: MessageCircle, label: "AI 챗봇" },
   { to: "/screener", icon: BarChart2, label: "종목탐색" },
   { to: "/watchlist", icon: Star, label: "관심종목" },
   { to: "/portfolio", icon: Briefcase, label: "투자종목" },

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions
+from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -85,6 +85,7 @@ app.include_router(market.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
 app.include_router(portfolio.router, prefix="/api")
 app.include_router(predictions.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
 
 
 @app.get("/api/health")

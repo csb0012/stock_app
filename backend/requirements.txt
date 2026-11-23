@@ -25,3 +25,4 @@ python-dotenv
 pydantic
 pydantic-settings
 fredapi
+anthropic>=2.12.0   # AI 챗봇 (Claude API)

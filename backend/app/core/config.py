@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     dart_api_key: str = ""
     fred_api_key: str = ""
+    # AI 챗봇 (Claude API) — console.anthropic.com 에서 발급, 없으면 챗봇만 "키 없음" 오류
+    anthropic_api_key: str = ""
+    chat_model: str = "claude-opus-5-5"
+    chat_effort: str = "medium"   # low / medium / high — 높을수록 신중하지만 느리고 비쌈
 
     # App
     app_env: str = "development"

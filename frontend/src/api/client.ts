@@ -35,6 +35,12 @@ export const authApi = {
   enableTotp: (totp_code: string) => api.post("/auth/enable-totp", { totp_code }),
 };
 
+// AI 챗봇 (도구 조회 때문에 오래 걸릴 수 있어 3분까지 기다림)
+export const chatApi = {
+  status: () => api.get("/chat/status"),
+  send: (messages: { role: string; content: string }[]) => api.post("/chat", { messages }, { timeout: 180_000 }),
+};
+
 // Market
 export const marketApi = {
   overview: () => api.get("/market/overview"),
