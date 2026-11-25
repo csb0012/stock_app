@@ -12,10 +12,13 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    // 로그인 만료 → 로그인 화면으로. 단, 로그인 요청 자체의 401(비밀번호 틀림)은 화면에 오류를 보여줘야 하므로
+    // 새로고침하지 않음 (예전엔 새로고침돼서 '틀렸다'는 문구가 사라졌음)
+    const isLoginCall = String(err.config?.url || "").includes("/auth/login");
+    if (err.response?.status === 401 && !isLoginCall) {
       localStorage.removeItem("token");
       clearPersisted();
-      window.location.href = "/login";
+      if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     return Promise.reject(err);
   }
@@ -25,7 +28,11 @@ export default api;
 
 /** 백엔드가 보낸 오류 메시지(detail)를 꺼낸다 — 화면에 그대로 보여주기 위함 */
 export function errMsg(e: any): string {
-  return e?.response?.data?.detail || e?.message || "알 수 없는 오류";
+  const d = e?.response?.data?.detail;
+  // 입력 검증 오류(422)는 [{loc, msg}] 목록으로 옴 → 문장만 꺼냄 (예전엔 '[object Object]')
+  if (Array.isArray(d)) return d.map((x: any) => String(x?.msg || x).replace(/^Value error, /, "")).join(" / ");
+  if (d && typeof d === "object") return JSON.stringify(d);
+  return d || e?.message || "알 수 없는 오류";
 }
 
 // Auth
@@ -35,6 +42,7 @@ export const authApi = {
   me: () => api.get("/auth/me"),
   setupTotp: () => api.post("/auth/setup-totp"),
   enableTotp: (totp_code: string) => api.post("/auth/enable-totp", { totp_code }),
+  disableTotp: (totp_code: string) => api.post("/auth/disable-totp", { totp_code }),
 };
 
 // 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)

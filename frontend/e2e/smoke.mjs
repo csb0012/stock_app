@@ -46,6 +46,10 @@ function makeApi(overrides = {}) {
     calls.push({ key, body: req.postData() });
     let body = table[key];
     if (typeof body === "function") body = body(req);
+    if (body && body.__status) {   // 오류 응답 흉내: { __status: 401, detail: "..." }
+      const { __status, ...rest } = body;
+      return route.fulfill({ status: __status, contentType: "application/json", body: JSON.stringify(rest) });
+    }
     if (body === undefined && req.method() !== "GET") body = { ok: true };
     if (body === undefined) {
       // 가짜 응답이 없는 화면 데이터 → 서버 오류처럼 (화면이 오류 문구를 보여야 하고 멈추면 안 됨)
@@ -286,6 +290,89 @@ async function run() {
     await page.getByText("브로드컴").waitFor();
     expect(await page.getByTestId("regime-warning").count() === 0, "미국은 상승 추세인데 경고가 뜸");
     expect((await page.getByTestId("watch-grid").innerText()).includes("예측 적중 75%"), "표본 적은 적중 기록도 흐리게 표시돼야 함");
+  });
+
+  await test("로그인: 비밀번호 틀리면 새로고침 없이 오류 문구", { token: false, api: makeApi({
+    "POST /api/auth/login": { __status: 401, detail: "아이디 또는 비밀번호가 틀렸습니다" } }) }, async (page) => {
+    await page.goto(`${BASE}/login`);
+    let navs = 0;
+    const navUrls = [];
+    await page.waitForLoadState("networkidle");
+    page.on("load", () => { navs++; navUrls.push(page.url()); });   // 실제 새로고침만 셈 (같은 화면 안 주소 갱신은 제외)
+    await page.locator("input").nth(0).fill("me"); await page.locator("input").nth(1).fill("wrong");
+    await page.keyboard.press("Enter");
+    await page.getByText("아이디 또는 비밀번호가 틀렸습니다").waitFor();
+    expect(navs === 0, `로그인 실패 후 화면이 새로고침됨 (${navs}번: ${navUrls.join(', ')})`);
+  });
+
+  await test("로그인: 성공하면 대시보드로", { token: false, api: makeApi({ "POST /api/auth/login": { access_token: "x", token_type: "bearer" } }) }, async (page) => {
+    await page.goto(`${BASE}/login`);
+    await page.locator("input").nth(0).fill("me"); await page.locator("input").nth(1).fill("pw");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(`${BASE}/`);
+  });
+
+  await test("버튼 요청 실패 → 화면 아래 알림 (투자종목 삭제 404)", { api: makeApi({
+    "DELETE /api/portfolio/1": { __status: 404, detail: "이미 없는 종목입니다" } }) }, async (page) => {
+    await page.goto(`${BASE}/portfolio`);
+    await page.getByText("브로드컴").first().waitFor();
+    page.once("dialog", (d) => d.accept());
+    await page.locator("main button:has(svg.lucide-trash2), main button:has(svg.lucide-trash-2)").first().click();
+    const t = page.getByTestId("toast");
+    await t.waitFor();
+    expect((await t.innerText()).includes("이미 없는 종목입니다"), "알림 문구가 다름");
+  });
+
+  await test("투자종목: 삭제 확인 · 추가 창 Esc 로 닫기 · 수량 0 이면 추가 불가", {}, async (page, api) => {
+    await page.goto(`${BASE}/portfolio`);
+    await page.getByText("브로드컴").first().waitFor();
+    page.once("dialog", (d) => d.dismiss());
+    await page.locator("main button:has(svg.lucide-trash2), main button:has(svg.lucide-trash-2)").first().click();
+    await page.waitForTimeout(200);
+    expect(!api.calls.some((c) => c.key.startsWith("DELETE")), "취소했는데 삭제 요청이 감");
+    await page.getByRole("button", { name: /종목 추가/ }).click();
+    await page.getByText("투자종목 추가").waitFor();
+    await page.locator("body").click({ position: { x: 5, y: 5 }, force: true }).catch(() => {});
+    await page.getByRole("button", { name: /종목 추가/ }).click().catch(() => {});
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    expect(await page.getByText("투자종목 추가").count() === 0, "Esc 로 추가 창이 안 닫힘");
+  });
+
+  await test("관심종목: 입력 검증 오류(422)가 [object Object] 가 아니라 문장으로", { api: makeApi({
+    "PUT /api/watchlist/1": { __status: 422, detail: [{ loc: ["body", "target_price"], msg: "Value error, 목표가가 이상합니다", type: "value_error" }] } }) }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("tab-KR").click();
+    await page.getByRole("button", { name: "메모·목표 매수가 수정" }).first().click();
+    await page.getByRole("button", { name: "저장" }).click();
+    await page.getByText("저장 실패: 목표가가 이상합니다").waitFor();
+    expect(!(await page.locator("body").innerText()).includes("[object Object]"), "[object Object] 가 보임");
+  });
+
+  await test("보안: 2단계 인증 켜기(QR → 코드 확인) · 끄기", { api: makeApi({
+    "GET /api/auth/me": (() => { let n = 0; return () => ({ id: 1, username: "tester", totp_enabled: n++ > 0 }); })(),
+    "POST /api/auth/setup-totp": { qr_code: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", secret: "ABCDEF234567", uri: "otpauth://x" },
+    "POST /api/auth/enable-totp": { message: "ok" },
+    "POST /api/auth/disable-totp": { message: "ok" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/`);
+    await page.getByRole("button", { name: "보안 설정" }).click();
+    const dlg = page.getByTestId("security-dialog");
+    await dlg.getByRole("button", { name: /켜기/ }).click();
+    await dlg.getByAltText("2단계 인증 QR 코드").waitFor();
+    expect((await dlg.innerText()).includes("ABCDEF234567"), "직접 입력용 비밀값이 안 보임");
+    const ok = dlg.getByRole("button", { name: "확인" });
+    await dlg.getByLabel("인증 코드").fill("12ab3");
+    expect(await ok.isDisabled(), "6자리 숫자가 아닌데 확인 버튼이 눌림");
+    await dlg.getByLabel("인증 코드").fill("123456");
+    await ok.click();
+    await page.getByText(/2단계 인증을 켰습니다/).waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/enable-totp").body).totp_code === "123456", "코드가 그대로 안 감");
+    await dlg.getByText("켜져 있음").waitFor();
+    await dlg.getByLabel("인증 코드").fill("654321");
+    await dlg.getByRole("button", { name: "끄기" }).click();
+    await page.getByText("2단계 인증을 껐습니다").waitFor();
+    await page.keyboard.press("Escape");
+    expect(await page.getByTestId("security-dialog").count() === 0, "Esc 로 보안 창이 안 닫힘");
   });
 
   await test("대시보드: 빅테크 브로드컴 주간거래 표시", {}, async (page) => {

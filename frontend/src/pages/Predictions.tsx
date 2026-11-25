@@ -6,7 +6,7 @@ import { fmtPrice, fmtSigned } from "../components/common/format";
 
 type Filter = "all" | "miss" | "hit" | "pending";
 type Kind = "all" | "live" | "backtest";
-const PAGE = 200;
+const PAGE = 50;   // 한 번에 50건 (200건이면 화면이 1만 px 넘게 길어짐) — 아래 "더 보기"
 
 const KIND_LABEL: Record<Kind, string> = { all: "실제 + 백테스트", live: "실제 예측만", backtest: "백테스트만" };
 

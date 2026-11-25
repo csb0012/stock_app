@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { authApi } from "../api/client";
+import { authApi, errMsg } from "../api/client";
 import { useAuthStore } from "../store/auth";
 import { TrendingUp, Lock, User, Shield } from "lucide-react";
 import ThemeToggle from "../components/common/ThemeToggle";
@@ -30,7 +30,7 @@ export default function Login() {
         navigate("/");
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || "로그인 실패");
+      setError(errMsg(err) || "로그인 실패");
     } finally {
       setLoading(false);
     }

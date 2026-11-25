@@ -138,14 +138,14 @@ services/
                    (5년 이익 확률 40 + 지수 대비 30 + 낙폭 20 + 데이터 길이 10). 비교 지수 = 코스피 / 나스닥 종합(나스닥 상장) / S&P 500. SWR 6시간
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
-  auth.py        — /register, /login (TOTP 지원), /setup-totp, /enable-totp, /me
+  auth.py        — /register, /login (TOTP 지원, 오류 문구 한국어), /setup-totp (이미 켜져 있으면 거부), /enable-totp, /disable-totp (현재 코드 필요), /me
   stocks.py      — /search, /test/kis (인증 불필요), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
                    /screener/{kr,us}/{mode}
   market.py      — /overview/{kr_indices|global_indices|bigtech|etfs} (구역별 SWR 캐시, 화면이 따로 받아 먼저 온 것부터 표시), /overview (전체), /status (장 운영 상태), /regime (시장 상태, SWR 1시간), /extras-status (외부 데이터 수집 현황), /scheduler-status, /calendar
-  watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis
-  portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합)
+  watchlist.py   — 관심종목 CRUD + PUT(메모·목표가) + /analysis. 입력 검증: market KR/US, 중복 = 시장+코드, 없는 항목 삭제 404
+  portfolio.py   — 투자종목 CRUD + /analysis (통화별 합계 + 원화 환산 총합). 수량 > 0·평단가 ≥ 0 검증(422), 없는 항목 삭제 404
   chat.py        — POST /chat ({messages:[{role,content}]} → 마지막 질문만 보고 {reply, tools, model:"규칙 기반"}), GET /chat/status
   themes.py      — GET /themes (테마 전체, SWR 60초), GET /themes/{no} (테마 종목), POST /themes/refresh, GET /themes/status
   accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산),
@@ -183,6 +183,7 @@ pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검�
 components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃) + ChatWidget.
                      폭 860px 이하(휴대폰)는 사이드바가 ☰ 버튼으로 여닫는 메뉴 — index.css .app-shell/.sidebar/.page-body),
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
+                     Toast (버튼 요청 실패 알림), SecuritySettings (상단 바 '보안' — 2단계 인증 켜기/끄기),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
@@ -195,7 +196,10 @@ index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root
 
 Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `VITE_PROXY_TARGET=http://backend:8000`).
 
-데이터 조회는 전부 React Query (`api/queryClient.ts`). 성공한 조회는 `api/persist.ts` 가 localStorage(`rq-cache-v1`, 24시간)에 저장 → 다시 열면 이전 데이터를 바로 보여주고 뒤에서 갱신 (로그아웃·로그인 시 삭제).
+데이터 조회는 전부 React Query (`api/queryClient.ts`). **버튼 요청(useMutation)이 실패하면 전역 MutationCache 가 화면 아래 알림(Toast)으로 사유를 띄운다** —
+화면 안에 이미 오류 칸이 있는 요청만 `meta: { inlineError: true }` 로 뺀다. `errMsg()` 는 입력 검증 오류(422 목록)도 문장으로 바꾼다.
+401 은 로그인 만료로 보고 /login 으로 보내되, 로그인 요청 자체의 401(비밀번호 틀림)은 새로고침하지 않고 화면에 문구를 보여준다.
+ 성공한 조회는 `api/persist.ts` 가 localStorage(`rq-cache-v1`, 24시간)에 저장 → 다시 열면 이전 데이터를 바로 보여주고 뒤에서 갱신 (로그아웃·로그인 시 삭제).
 불러온 저장본은 모두 '오래됨'으로 표시해서 staleTime 과 상관없이 화면을 열면 한 번은 새로 받는다 (업데이트 전 형식의 저장본이 남아 보이던 문제 방지). 이전 값을 보여줄 땐 `FetchStatus` 로 기준 시각·갱신 중 표시. 인증 상태는 Zustand (`store/auth.ts`).
 
 **속도 원칙:** 화면은 받은 데이터부터 바로 그린다 (한 번에 다 받을 때까지 비워 두지 않음). 느린 조회는 구역별로 나누고, 서버는 `SWRCache` 로 기존 값을 먼저 준다. 백그라운드 작업은 `kis_api.mark_background()` 로 KIS 호출 순서를 화면 요청 뒤로.

@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.database import get_db
 from app.api.routes.auth import get_current_user
@@ -25,6 +25,13 @@ class WatchlistAddRequest(BaseModel):
     symbol: str
     market: str  # KR / US
     name: str = ""
+
+    @field_validator("market")
+    @classmethod
+    def _market(cls, v):
+        if v not in ("KR", "US"):
+            raise ValueError("market 은 KR 또는 US")
+        return v
 
 
 class WatchlistUpdateRequest(BaseModel):
@@ -71,6 +78,7 @@ async def add_to_watchlist(
         select(WatchlistItem).where(
             WatchlistItem.user_id == current_user.id,
             WatchlistItem.symbol == req.symbol,
+            WatchlistItem.market == req.market,
         )
     )
     if existing.scalar_one_or_none():
@@ -110,13 +118,15 @@ async def remove_from_watchlist(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await db.execute(
+    res = await db.execute(
         delete(WatchlistItem).where(
             WatchlistItem.id == item_id,
             WatchlistItem.user_id == current_user.id,
         )
     )
     await db.commit()
+    if not res.rowcount:
+        raise HTTPException(status_code=404, detail="이미 없는 종목입니다")
     return {"message": "Removed"}
 
 

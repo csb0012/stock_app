@@ -57,6 +57,20 @@ def validate(f: pd.DataFrame) -> list:
     return rows
 
 
+def last_closed_session(market: str, now=None) -> date:
+    """종가가 나온 마지막 거래일 — 장중이면 어제(직전 거래일). 일봉 기준 판단이라 장중에 '최신 아님' 경고를 띄우지 않으려고"""
+    from datetime import datetime, timedelta
+    from app.services.market_calendar import _TZ, is_trading_day, session_hours
+    now = (now or datetime.now(_TZ[market])).astimezone(_TZ[market])
+    d = now.date()
+    if is_trading_day(market, d) and now.hour * 60 + now.minute > session_hours(market, d)[1]:
+        return d
+    d -= timedelta(days=1)
+    while not is_trading_day(market, d):
+        d -= timedelta(days=1)
+    return d
+
+
 def summarize(key: str, candles: list, expect_date: date | None = None) -> dict:
     ticker, name, market = INDICES[key]
     if len(candles) < 220:
@@ -87,12 +101,11 @@ def summarize(key: str, candles: list, expect_date: date | None = None) -> dict:
 async def get_all() -> dict:
     """4개 지수 상태 (yfinance 5년 일봉). 지수별 실패는 그 지수에만 error"""
     from app.services.quote import batch_yf_history
-    from app.services.market_calendar import last_session_date
     hist = await batch_yf_history([t for t, _, _ in INDICES.values()], "5y")
     items = {}
     for key, (ticker, name, market) in INDICES.items():
         try:
-            items[key] = summarize(key, hist.get(ticker) or [], last_session_date(market))
+            items[key] = summarize(key, hist.get(ticker) or [], last_closed_session(market))
         except Exception as e:
             items[key] = {"key": key, "name": name, "market": market, "error": f"시장 상태 계산 실패: {e}"}
     if all("error" in v for v in items.values()):

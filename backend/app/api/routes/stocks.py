@@ -338,6 +338,9 @@ async def test_kis_connection():
 async def get_quote(market: str, symbol: str, current_user: User = Depends(get_current_user)):
     """종목 1개 시세 + 내일 전망 (종목탐색 검색 결과용)"""
     market = market.upper()
+    if market in ("KR", "US") and not stock_master.get(market, symbol):
+        # 없는 코드로 시세를 받거나 예측 기록을 남기지 않음 (주소를 직접 친 경우 등)
+        raise HTTPException(status_code=404, detail=f"종목마스터에 없는 종목입니다: {market} {symbol}")
     try:
         if market == "KR":
             r = await analyze_kr(symbol)

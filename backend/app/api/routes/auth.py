@@ -100,7 +100,7 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
 
     if not user or not verify_password(req.password, user.hashed_password):
         _record_fail(ip)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 틀렸습니다")
 
     # TOTP 검증
     if user.totp_enabled:
@@ -108,7 +108,7 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
             return {"requires_totp": True}
         if not verify_totp(user.totp_secret, req.totp_code):
             _record_fail(ip)
-            raise HTTPException(status_code=401, detail="Invalid TOTP code")
+            raise HTTPException(status_code=401, detail="인증 코드가 틀렸습니다 (Google Authenticator 의 6자리, 30초마다 바뀜)")
 
     _fails.pop(ip, None)
     token = create_access_token({"sub": user.username})
@@ -117,6 +117,9 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
 
 @router.post("/setup-totp")
 async def setup_totp(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # 이미 켜져 있는데 새 비밀값으로 덮으면 휴대폰 앱의 코드와 안 맞아 로그인을 못 하게 됨 → 먼저 끄게 함
+    if current_user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2단계 인증이 이미 켜져 있습니다 — 다시 등록하려면 먼저 끄세요")
     secret = generate_totp_secret()
     uri = get_totp_uri(secret, current_user.username)
     qr_base64 = generate_qr_code_base64(uri)
@@ -135,13 +138,30 @@ async def enable_totp(
     db: AsyncSession = Depends(get_db),
 ):
     if not current_user.totp_secret:
-        raise HTTPException(status_code=400, detail="TOTP not set up")
+        raise HTTPException(status_code=400, detail="먼저 QR 코드를 만드세요 (setup-totp)")
     if not verify_totp(current_user.totp_secret, req.totp_code):
-        raise HTTPException(status_code=400, detail="Invalid TOTP code")
+        raise HTTPException(status_code=400, detail="인증 코드가 틀렸습니다 — 앱에 보이는 6자리를 다시 입력하세요")
 
     current_user.totp_enabled = True
     await db.commit()
-    return {"message": "TOTP enabled successfully"}
+    return {"message": "2단계 인증을 켰습니다"}
+
+
+@router.post("/disable-totp")
+async def disable_totp(
+    req: TOTPVerifyRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """2단계 인증 끄기 — 지금 앱에 보이는 코드가 맞아야 함 (로그인 토큰만 훔친 사람이 끄지 못하게)"""
+    if not current_user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2단계 인증이 꺼져 있습니다")
+    if not verify_totp(current_user.totp_secret, req.totp_code):
+        raise HTTPException(status_code=400, detail="인증 코드가 틀렸습니다")
+    current_user.totp_enabled = False
+    current_user.totp_secret = None
+    await db.commit()
+    return {"message": "2단계 인증을 껐습니다"}
 
 
 @router.get("/me")

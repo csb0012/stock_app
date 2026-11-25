@@ -88,6 +88,7 @@ export default function Watchlist() {
 
   const addMutation = useMutation({
     mutationFn: (item: any) => watchlistApi.add(item.symbol, item.market, item.name),
+    meta: { inlineError: true },
     onSuccess: (_, item: any) => { refresh(); if (item.market === "KR" || item.market === "US") setMarket(item.market); },
   });
 
@@ -99,6 +100,7 @@ export default function Watchlist() {
   const updateMutation = useMutation({
     mutationFn: ({ id, memo, target }: { id: number; memo: string; target: string }) =>
       watchlistApi.update(id, { memo, target_price: target ? parseFloat(target) : 0 }),
+    meta: { inlineError: true },
     onSuccess: () => { setEditId(null); refresh(); },
   });
 
@@ -133,6 +135,13 @@ export default function Watchlist() {
   const confirmRemove = (item: any) => {
     if (item && window.confirm(`${item.name || item.symbol} 을(를) 관심종목에서 삭제할까요? (메모·목표 매수가도 지워짐)`)) removeMutation.mutate(item.id);
   };
+
+  useEffect(() => {
+    if (!showAdd) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeModal(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showAdd]);
 
   function openModal() {
     setShowAdd(true);

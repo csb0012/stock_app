@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-from pydantic import BaseModel
+import math
+
+from pydantic import BaseModel, field_validator
 from typing import Optional
 import asyncio
 
@@ -21,18 +23,57 @@ _analysis_cache = SWRCache("portfolio_analysis", fresh=15, max_stale=15)
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 
 
+def _check_qty(v):
+    if v is not None and (not math.isfinite(v) or v <= 0):
+        raise ValueError("수량은 0보다 커야 합니다")
+    return v
+
+
+def _check_price(v):
+    if v is not None and (not math.isfinite(v) or v < 0):
+        raise ValueError("평단가는 0 이상이어야 합니다 (모르면 0)")
+    return v
+
+
 class PortfolioAddRequest(BaseModel):
     symbol: str
     market: str
     name: str = ""
-    quantity: float = 0.0
+    quantity: float
     avg_price: float = 0.0
+
+    @field_validator("quantity")
+    @classmethod
+    def _quantity(cls, v):
+        return _check_qty(v)
+
+    @field_validator("avg_price")
+    @classmethod
+    def _avg_price(cls, v):
+        return _check_price(v)
+
+    @field_validator("market")
+    @classmethod
+    def _market(cls, v):
+        if v not in ("KR", "US"):
+            raise ValueError("market 은 KR 또는 US")
+        return v
 
 
 class PortfolioUpdateRequest(BaseModel):
     quantity: Optional[float] = None
     avg_price: Optional[float] = None
     name: Optional[str] = None
+
+    @field_validator("quantity")
+    @classmethod
+    def _quantity(cls, v):
+        return _check_qty(v)
+
+    @field_validator("avg_price")
+    @classmethod
+    def _avg_price(cls, v):
+        return _check_price(v)
 
 
 @router.get("/")
@@ -67,6 +108,7 @@ async def add_to_portfolio(
         select(PortfolioItem).where(
             PortfolioItem.user_id == current_user.id,
             PortfolioItem.symbol == req.symbol,
+            PortfolioItem.market == req.market,
         )
     )
     if existing.scalar_one_or_none():
@@ -139,13 +181,15 @@ async def remove_from_portfolio(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await db.execute(
+    res = await db.execute(
         delete(PortfolioItem).where(
             PortfolioItem.id == item_id,
             PortfolioItem.user_id == current_user.id,
         )
     )
     await db.commit()
+    if not res.rowcount:
+        raise HTTPException(status_code=404, detail="이미 없는 종목입니다")
     return {"message": "Removed"}
 
 

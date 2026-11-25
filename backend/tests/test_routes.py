@@ -147,6 +147,7 @@ def test_quote_us_daytime(api_client, monkeypatch, daytime_on):
     monkeypatch.setattr(stocks, "analyze_us_many", fake_us_many)
     monkeypatch.setattr(stocks, "live_prices", fake_live)
     monkeypatch.setattr(stocks, "get_news_many", fake_news)
+    monkeypatch.setattr(stock_master, "get", lambda m, s: {"name": "브로드컴"} if (m, s) == ("US", "AVGO") else None)
     body = client.get("/api/stocks/quote/US/AVGO").json()
     assert body["daytime"]["price"] == 320.53 and "candles" not in body
     assert client.get("/api/stocks/quote/XX/AVGO").status_code == 400

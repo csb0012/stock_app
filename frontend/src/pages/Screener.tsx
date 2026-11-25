@@ -46,6 +46,7 @@ export default function Screener() {
 
   const addMutation = useMutation({
     mutationFn: (item: any) => watchlistApi.add(item.symbol, item.market || market, item.name),
+    meta: { inlineError: true },
     onSuccess: (_, item) => {
       setAdded((prev) => new Set(prev).add(item.symbol));
       qc.invalidateQueries({ queryKey: ["watchlist"] });

@@ -126,7 +126,9 @@ bash deploy/setup-server.sh
 
 ## 7. 접속
 - 브라우저에서 `https://mystock.duckdns.org` 를 연다 → 접속 아이디/비밀번호 → 앱 로그인 (PC 에서 쓰던 계정)
-- **TOTP(Google Authenticator) 2단계 인증을 켜는 것을 권장한다** (인터넷 공개).
+- **2단계 인증(Google Authenticator)을 켜는 것을 권장한다** (인터넷 공개): 앱 오른쪽 위 **보안** → 켜기 → QR 을 휴대폰 앱으로 스캔 → 6자리 입력 → 확인.
+  끌 때도 같은 창에서 지금 코드를 입력한다. 휴대폰을 잃어버렸으면 서버에서
+  `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-totp <아이디>` 로 끈다 (관심종목·투자종목은 그대로).
 - 앱 로그인을 5번 틀리면 그 IP 는 15분 동안 차단된다.
 - **회사 PC·집 PC 에서는 이제 `start.bat` / `start-docker.bat` 를 켜지 않는다.** 이유는 두 가지다.
   - 같은 KIS 키로 두 곳이 동시에 호출하면 초당 호출 제한(EGW00201)에 더 자주 걸린다.

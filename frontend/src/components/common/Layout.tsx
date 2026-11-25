@@ -9,6 +9,8 @@ import {
   LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge,
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
+import Toaster from "./Toast";
+import SecuritySettings from "./SecuritySettings";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "대시보드" },
@@ -89,6 +91,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <UserCircle size={15} /> {username}
             </span>
           )}
+          <SecuritySettings />
           <ThemeToggle pill />
           <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}>
             <LogOut size={13} />
@@ -102,6 +105,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
       {/* 챗봇: 오른쪽 아래 떠 있는 버튼 (모든 화면) */}
       <ChatWidget />
+      <Toaster />
     </div>
   );
 }

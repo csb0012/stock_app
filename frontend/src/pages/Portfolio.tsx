@@ -67,6 +67,7 @@ export default function Portfolio() {
   const addMutation = useMutation({
     mutationFn: (item: any) =>
       portfolioApi.add(item.symbol, item.market, item.name, parseFloat(item.qty), parseFloat(item.price)),
+    meta: { inlineError: true },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["portfolio"] });
       qc.invalidateQueries({ queryKey: ["portfolio-analysis"] });
@@ -92,6 +93,13 @@ export default function Portfolio() {
     },
   });
 
+  useEffect(() => {
+    if (!showAdd) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeModal(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showAdd]);
+
   function openModal() {
     setShowAdd(true);
     setQuery("");
@@ -115,7 +123,7 @@ export default function Portfolio() {
   }
 
   function handleAdd() {
-    if (!selectedStock || !quantity) return;
+    if (!selectedStock || !(parseFloat(quantity) > 0)) return;
     addMutation.mutate({ ...selectedStock, qty: quantity, price: avgPrice || "0" });
   }
 
@@ -288,7 +296,7 @@ export default function Portfolio() {
               <button
                 className="btn btn-primary"
                 onClick={handleAdd}
-                disabled={!quantity || addMutation.isPending}
+                disabled={!(parseFloat(quantity) > 0) || addMutation.isPending}
                 style={{ width: "100%" }}
               >
                 {addMutation.isPending ? "추가 중..." : "추가하기"}
@@ -347,7 +355,7 @@ export default function Portfolio() {
                   <button
                     className="btn btn-ghost"
                     style={{ padding: "5px 8px", color: "var(--red)" }}
-                    onClick={() => removeMutation.mutate(item.id)}
+                    onClick={() => { if (window.confirm(`${item.name || item.symbol} 을(를) 투자종목에서 삭제할까요? (수량·평단가도 지워짐)`)) removeMutation.mutate(item.id); }}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -446,7 +454,9 @@ export default function Portfolio() {
                         <button
                           className="btn btn-primary"
                           style={{ padding: "5px 12px", fontSize: 12 }}
-                          onClick={() => updateMutation.mutate({ id: item.id, q: parseFloat(editQ), p: parseFloat(editP) })}
+                          disabled={!(parseFloat(editQ) > 0) || !(parseFloat(editP || "0") >= 0) || updateMutation.isPending}
+                          title={!(parseFloat(editQ) > 0) ? "수량은 0보다 커야 합니다" : undefined}
+                          onClick={() => updateMutation.mutate({ id: item.id, q: parseFloat(editQ), p: parseFloat(editP || "0") })}
                         >
                           <Check size={13} />
                           저장
