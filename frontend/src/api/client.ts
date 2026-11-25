@@ -79,6 +79,25 @@ export const adminApi = {
   revokeInvite: (id: number) => api.delete(`/admin/invites/${id}`),
   users: () => api.get("/admin/users"),
   setActive: (id: number, active: boolean, totp_code: string) => api.put(`/admin/users/${id}/active`, { active, totp_code }),
+  summary: () => api.get("/admin/summary"),
+  user: (id: number) => api.get(`/admin/users/${id}`),
+  events: () => api.get("/admin/events"),
+};
+
+// KIS 모의투자 주문 (관리자만) — AI 제안 → 2단계 코드로 승인 → 모의투자 서버 주문
+export const kisApi = {
+  status: () => api.get("/kis/status"),
+  orders: (kind: "open" | "all") => api.get("/kis/orders", { params: { kind } }),
+  log: () => api.get("/kis/log"),
+  propose: () => api.post("/kis/propose", {}, { timeout: 600_000 }),
+  approve: (ids: number[], totp_code: string) => api.post("/kis/orders/approve", { ids, totp_code }, { timeout: 120_000 }),
+  reject: (ids: number[]) => api.post("/kis/orders/reject", { ids }),
+  cancel: (id: number) => api.post(`/kis/orders/${id}/cancel`),
+  halt: (reason: string) => api.post("/kis/halt", { reason }),
+  resume: (totp_code: string) => api.post("/kis/resume", { totp_code }),
+  baseline: (totp_code: string) => api.post("/kis/baseline", { totp_code }),
+  config: (limits: Record<string, number>, params: Record<string, any> | null, totp_code: string) =>
+    api.put("/kis/config", { limits, params, totp_code }),
 };
 
 // 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)

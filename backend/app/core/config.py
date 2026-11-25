@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     kis_app_secret: str = Field(default="", validate_default=True)
     kis_account_no: str = Field(default="", validate_default=True)
     kis_is_real: bool = False
+    # KIS 모의투자 주문 (AI 제안 → 관리자 승인 → 모의투자 서버로 주문). 시세용 키와 따로 — 비우면 주문 기능 꺼짐.
+    # KIS_IS_REAL=false (시세용 키가 모의투자 키) 면 비워 둬도 위 키·계좌를 그대로 씀. 실거래 서버로는 절대 주문하지 않음
+    kis_mock_app_key: str = ""
+    kis_mock_app_secret: str = ""
+    kis_mock_account_no: str = ""    # 모의투자 계좌번호 (예: 50123456-01)
 
     # Auth
     secret_key: str = "change-this-secret-key-in-production"

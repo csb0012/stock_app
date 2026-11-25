@@ -343,19 +343,19 @@ async def create_account(user_id: int, market: str, capital, params: dict | None
     return acc
 
 
-async def _live_universe(acc: PaperAccount, state: dict) -> tuple:
+async def _live_universe(market: str, user_id: int, positions: dict) -> tuple:
     """→ (종목 목록, 덮어쓸 퀀트·매집 값)"""
     from app.services import accumulation
-    items = {i["symbol"]: i for i in base_universe(acc.market)}
+    items = {i["symbol"]: i for i in base_universe(market)}
     async with AsyncSessionLocal() as db:
         for model in (WatchlistItem, PortfolioItem):
-            rows = (await db.execute(select(model).where(model.user_id == acc.user_id, model.market == acc.market))).scalars().all()
+            rows = (await db.execute(select(model).where(model.user_id == user_id, model.market == market))).scalars().all()
             for r in rows:
                 items.setdefault(r.symbol, {"symbol": r.symbol, "name": r.name or r.symbol})
-    for sym, p in state["positions"].items():
+    for sym, p in positions.items():
         items.setdefault(sym, {"symbol": sym, "name": p["name"]})
     overrides = {}
-    if acc.market == "KR":
+    if market == "KR":
         r = accumulation.result() or {}
         cands = r.get("candidates") or []
         ok = {c["symbol"] for c in cands}
@@ -386,10 +386,43 @@ async def _record_trade(db, acc_id: int, t: dict, ts: str):
                       reason=t["reason"]))
 
 
-async def decide_account(acc_id: int, manual: bool = False) -> dict:
-    """확정된 마지막 종가로 판단 → 대기 주문. 장중이면(수동 실행·계좌 개설) 바로 현재가로 체결"""
+async def analyze_live(market: str, user_id: int, positions: dict, params: dict) -> dict:
+    """실시간 판단에 쓰는 오늘 점수 — 확정된 마지막 종가 기준 (실시간 모의투자 계좌와 KIS 모의투자 주문 제안이 같이 씀).
+    → {rows: {종목: 그날 행}, regime, events(다음 거래일), aw(학습형 비중), last(기준일), errors, index}"""
     from app.services.quote import analyze_candles
     from app.services import events
+    items, overrides = await _live_universe(market, user_id, positions)
+    stocks, errors = await fetch_stocks(market, items, 320, "2y")
+    for s in stocks.values():
+        s["candles"] = _closed_only(market, s["candles"])
+    stocks = {k: v for k, v in stocks.items() if len(v["candles"]) >= 60}
+    if not stocks:
+        raise RuntimeError("일봉을 받은 종목이 없음 — " + " / ".join(errors[:3]))
+    last = max(s["candles"][-1]["date"][:10] for s in stocks.values())
+    stocks = {k: v for k, v in stocks.items() if v["candles"][-1]["date"][:10] == last}
+    probs = {}
+    for sym, s in stocks.items():
+        try:
+            a = await asyncio.to_thread(analyze_candles, market, s["candles"], 0, 0, None, None, sym)
+            probs[sym] = a["prediction"]["probability"]
+        except Exception as e:   # 학습 모델 포함 확률 실패 → 규칙 점수 확률 (build_features 가 계산)
+            print(f"[paper] {sym} AI 추천 확률 실패: {e}")
+    adaptive = bool(params.get("adaptive"))
+    # 학습형 비중: 최근 약 140거래일 점수와 그 뒤 결과로 (오늘 판단엔 오늘까지 확정된 결과만)
+    feat_from = (date.fromisoformat(last) - timedelta(days=200)).isoformat() if adaptive else last
+    feats = await asyncio.to_thread(pe.build_features, stocks, market, feat_from, probs, overrides)
+    rows = feats.get(last) or {}
+    aw = (await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(stocks), last)) if adaptive else None
+    pe.rescore(rows, aw["weights"] if aw else pe.WEIGHTS)
+    index = _closed_only(market, await fetch_index(market, "2y"))
+    regime = pe.regime_on(pe.regime_map(index), last)
+    nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
+    ev = pe.event_labels(market, nxt, events._cache["events"])
+    return {"rows": rows, "regime": regime, "events": ev, "aw": aw, "last": last, "errors": errors, "index": index}
+
+
+async def decide_account(acc_id: int, manual: bool = False) -> dict:
+    """확정된 마지막 종가로 판단 → 대기 주문. 장중이면(수동 실행·계좌 개설) 바로 현재가로 체결"""
     async with _lock(acc_id):
         async with AsyncSessionLocal() as db:
             acc = await db.get(PaperAccount, acc_id)
@@ -399,33 +432,10 @@ async def decide_account(acc_id: int, manual: bool = False) -> dict:
             if not manual and acc.last_decision_day == market_today(market).isoformat():
                 return {"ok": True, "skipped": "오늘 판단 이미 함"}   # 자동 실행이 기다리는 사이 다른 판단이 끝남
             try:
-                items, overrides = await _live_universe(acc, state)
-                stocks, errors = await fetch_stocks(market, items, 320, "2y")
-                for s in stocks.values():
-                    s["candles"] = _closed_only(market, s["candles"])
-                stocks = {k: v for k, v in stocks.items() if len(v["candles"]) >= 60}
-                if not stocks:
-                    raise RuntimeError("일봉을 받은 종목이 없음 — " + " / ".join(errors[:3]))
-                last = max(s["candles"][-1]["date"][:10] for s in stocks.values())
-                stocks = {k: v for k, v in stocks.items() if v["candles"][-1]["date"][:10] == last}
-                probs = {}
-                for sym, s in stocks.items():
-                    try:
-                        a = await asyncio.to_thread(analyze_candles, market, s["candles"], 0, 0, None, None, sym)
-                        probs[sym] = a["prediction"]["probability"]
-                    except Exception as e:   # 학습 모델 포함 확률 실패 → 규칙 점수 확률 (build_features 가 계산)
-                        print(f"[paper] {sym} AI 추천 확률 실패: {e}")
+                a = await analyze_live(market, acc.user_id, state["positions"], params)
+                rows, regime, ev, aw, last, errors, index = (a["rows"], a["regime"], a["events"], a["aw"], a["last"],
+                                                             a["errors"], a["index"])
                 adaptive = bool(params.get("adaptive"))
-                # 학습형 비중: 최근 약 140거래일 점수와 그 뒤 결과로 (오늘 판단엔 오늘까지 확정된 결과만)
-                feat_from = (date.fromisoformat(last) - timedelta(days=200)).isoformat() if adaptive else last
-                feats = await asyncio.to_thread(pe.build_features, stocks, market, feat_from, probs, overrides)
-                rows = feats.get(last) or {}
-                aw = (await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(stocks), last)) if adaptive else None
-                pe.rescore(rows, aw["weights"] if aw else pe.WEIGHTS)
-                index = _closed_only(market, await fetch_index(market, "2y"))
-                regime = pe.regime_on(pe.regime_map(index), last)
-                nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
-                ev = pe.event_labels(market, nxt, events._cache["events"])
                 # 종가 반영(하루 한 번): 보유일·최고가·추격 손절
                 if state.get("last_close") != last:
                     closes = {s: r["close"] for s, r in rows.items() if s in state["positions"]}

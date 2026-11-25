@@ -13,39 +13,34 @@ const when = (t?: number | string | null) => {
   const d = typeof t === "number" ? new Date(t * 1000) : new Date(String(t) + (/[Z+]/.test(String(t)) ? "" : "Z"));
   return Number.isNaN(d.getTime()) ? "-" : d.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 };
-const codeInput = (v: string, set: (s: string) => void, label: string) => (
+export const th = { padding: "6px 8px", fontWeight: 500 } as const;
+export const td = { padding: "6px 8px", whiteSpace: "nowrap" } as const;
+export { when };
+export const codeInput = (v: string, set: (s: string) => void, label: string) => (
   <input value={v} onChange={(e) => set(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" placeholder="2단계 코드"
     aria-label={label} style={{ ...inputStyle, width: 120, letterSpacing: 2 }} autoComplete="one-time-code" />
 );
 
-/** 마이페이지 '관리자' 구역 (앱 주인만): 초대 코드 만들기·목록·취소 + 회원 목록·차단. 만들기·차단은 2단계 코드를 다시 받음 */
-export default function AdminSection() {
+/** 관리자 페이지 '초대 코드' (앱 주인만): 만들기(2단계 코드)·목록·취소 */
+export function InvitePanel() {
   const qc = useQueryClient();
   const inv = useQuery({ queryKey: ["admin-invites"], queryFn: () => adminApi.invites().then((r) => r.data), staleTime: 0 });
-  const users = useQuery({ queryKey: ["admin-users"], queryFn: () => adminApi.users().then((r) => r.data), staleTime: 0 });
   const [memo, setMemo] = useState("");
   const [days, setDays] = useState(3);
   const [code, setCode] = useState("");
   const [made, setMade] = useState<{ code: string; memo?: string; expires_at: number } | null>(null);
-  const [blockCode, setBlockCode] = useState("");
 
   const create = useMutation({ mutationFn: () => adminApi.createInvite(memo.trim(), days, code).then((r) => r.data), meta: { inlineError: true },
-    onSuccess: (d) => { setMade(d); setMemo(""); setCode(""); qc.invalidateQueries({ queryKey: ["admin-invites"] }); } });
+    onSuccess: (d) => { setMade(d); setMemo(""); setCode(""); qc.invalidateQueries({ queryKey: ["admin-invites"] }); qc.invalidateQueries({ queryKey: ["admin-summary"] }); } });
   const revoke = useMutation({ mutationFn: (id: number) => adminApi.revokeInvite(id).then((r) => r.data),
     onSuccess: (d) => { toast(d.message, "info"); qc.invalidateQueries({ queryKey: ["admin-invites"] }); } });
-  const setActive = useMutation({ mutationFn: (v: { id: number; active: boolean }) => adminApi.setActive(v.id, v.active, blockCode).then((r) => r.data),
-    meta: { inlineError: true },
-    onSuccess: (d) => { toast(d.message, "info"); setBlockCode(""); qc.invalidateQueries({ queryKey: ["admin-users"] }); } });
   const copy = async (t: string) => {
     try { await navigator.clipboard.writeText(t); toast("복사했습니다", "info"); } catch { toast("복사하지 못했습니다 — 직접 선택해 복사하세요"); }
   };
   const items: any[] = inv.data?.items || [];
-  const members: any[] = users.data?.items || [];
-  const th = { padding: "6px 8px", fontWeight: 500 } as const;
-  const td = { padding: "6px 8px", whiteSpace: "nowrap" } as const;
 
   return (
-    <div data-testid="admin-section" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div data-testid="invite-panel" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <strong style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><Ticket size={14} /> 초대 코드 만들기</strong>
         <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
@@ -100,9 +95,25 @@ export default function AdminSection() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
 
+/** 관리자 페이지 '회원 목록': 2단계 등록·초대한 사람·최근 로그인 · 상세 보기 · 차단(2단계 코드) */
+export function MemberPanel({ selected, onSelect }: { selected?: number | null; onSelect?: (id: number) => void }) {
+  const qc = useQueryClient();
+  const users = useQuery({ queryKey: ["admin-users"], queryFn: () => adminApi.users().then((r) => r.data), staleTime: 0 });
+  const [blockCode, setBlockCode] = useState("");
+  const setActive = useMutation({ mutationFn: (v: { id: number; active: boolean }) => adminApi.setActive(v.id, v.active, blockCode).then((r) => r.data),
+    meta: { inlineError: true },
+    onSuccess: (d) => {
+      toast(d.message, "info"); setBlockCode("");
+      for (const k of ["admin-users", "admin-summary", "admin-user", "admin-events"]) qc.invalidateQueries({ queryKey: [k] });
+    } });
+  const members: any[] = users.data?.items || [];
+  return (
+    <div data-testid="member-panel" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <strong style={{ fontSize: 13 }}>회원 목록</strong>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>차단·해제할 때 2단계 코드:</span>
           {codeInput(blockCode, setBlockCode, "차단 2단계 코드")}
@@ -113,7 +124,7 @@ export default function AdminSection() {
         <div style={{ overflowX: "auto" }}>
           <table data-testid="member-table" style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
             <thead><tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
-              <th style={th}>아이디</th><th style={th}>2단계</th><th style={th}>초대한 사람</th><th style={th}>최근 로그인</th><th style={th}></th>
+              <th style={th}>아이디</th><th style={th}>2단계</th><th style={th}>초대한 사람</th><th style={th}>최근 로그인</th><th style={th}></th><th style={th}></th>
             </tr></thead>
             <tbody>
               {members.map((u) => (
@@ -124,6 +135,10 @@ export default function AdminSection() {
                   <td style={td}>{u.totp_enabled ? <CheckCircle2 size={13} style={{ color: "var(--green)" }} aria-label="등록" /> : <span style={{ color: "var(--yellow)" }}>미등록</span>}</td>
                   <td style={td}>{u.invited_by || "-"}</td>
                   <td style={td}>{when(u.last_login)}</td>
+                  <td style={td}>{onSelect && (
+                    <button className="btn btn-ghost" style={{ fontSize: 11.5, padding: "2px 8px", fontWeight: selected === u.id ? 700 : undefined }}
+                      aria-pressed={selected === u.id} onClick={() => onSelect(u.id)}>상세</button>
+                  )}</td>
                   <td style={td}>{!u.me && !u.is_admin && (
                     <button className="btn btn-ghost" style={{ fontSize: 11.5, padding: "2px 8px", color: u.is_active ? "var(--red)" : undefined }}
                       disabled={!/^\d{6}$/.test(blockCode) || setActive.isPending}

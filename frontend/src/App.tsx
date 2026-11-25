@@ -21,6 +21,8 @@ import Accumulation from "./pages/Accumulation";
 import Quant from "./pages/Quant";
 import PaperTrading from "./pages/PaperTrading";
 import Setup2FA from "./pages/Setup2FA";
+import Admin from "./pages/Admin";
+import KisTrade from "./pages/KisTrade";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
@@ -29,6 +31,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!token) return <Navigate to="/login" replace />;
   if (me.data?.totp_required && !me.data?.totp_enabled) return <Navigate to="/setup-2fa" replace />;
   return <Layout>{children}</Layout>;
+}
+
+/** 관리자만 (관리자 페이지 · KIS 모의투자 주문) — 서버도 get_admin 으로 막음. 이건 화면을 먼저 옮기는 것 */
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { token } = useAuthStore();
+  const me = useQuery({ queryKey: ["me"], queryFn: () => authApi.me().then((r) => r.data), staleTime: 5 * 60 * 1000, enabled: !!token });
+  if (token && me.data && !me.data.is_admin) return <Navigate to="/" replace />;
+  return <ProtectedRoute>{me.data?.is_admin ? children : <p style={{ color: "var(--text-muted)" }}>확인 중...</p>}</ProtectedRoute>;
 }
 
 export default function App() {
@@ -54,6 +64,8 @@ export default function App() {
           <Route path="/quant" element={<ProtectedRoute><Quant /></ProtectedRoute>} />
           <Route path="/accumulation" element={<ProtectedRoute><Accumulation /></ProtectedRoute>} />
           <Route path="/paper" element={<ProtectedRoute><PaperTrading /></ProtectedRoute>} />
+          <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />
+          <Route path="/kis" element={<AdminRoute><KisTrade /></AdminRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

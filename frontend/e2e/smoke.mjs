@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import * as F from "./fixtures.mjs";
 import * as PF from "./paper_fixtures.mjs";
+import * as KF from "./kis_fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -450,8 +451,11 @@ async function run() {
     expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/register").body).invite_code === "K7QM-2XRA-9PWD", "가입 요청에 초대 코드 없음");
   });
 
-  await test("마이페이지 관리자: 초대 코드 만들기(2단계 코드) · 목록 · 회원 차단", { api: makeApi({
-    "GET /api/auth/me": { id: 1, username: "boss", display_name: "boss", totp_enabled: true, totp_required: true, is_admin: true, email: "b@naver.com", created_at: "2026-11-01T00:00:00" },
+  const adminApi = (extra = {}) => makeApi({
+    "GET /api/auth/me": KF.ADMIN_ME,
+    "GET /api/admin/summary": KF.ADMIN_SUMMARY,
+    "GET /api/admin/users/2": KF.ADMIN_USER_2,
+    "GET /api/admin/events": KF.ADMIN_EVENTS,
     "GET /api/admin/invites": { items: [
       { id: 2, hint: "9PWD", memo: "동생", created_at: 1795000000, expires_at: 1795259200, used_at: null, used_by: null, status: "active" },
       { id: 1, hint: "AB12", memo: null, created_at: 1794000000, expires_at: 1794259200, used_at: 1794100000, used_by: "friend", status: "used" }], days_default: 3, days_max: 14 },
@@ -459,38 +463,158 @@ async function run() {
     "GET /api/admin/users": { items: [
       { id: 1, username: "boss", display_name: "boss", is_admin: true, is_active: true, totp_enabled: true, verified: true, invited_by: null, created_at: "2026-11-01T00:00:00", last_login: 1795000000, me: true },
       { id: 2, username: "friend", display_name: "친구", is_admin: false, is_active: true, totp_enabled: false, verified: true, invited_by: "boss", created_at: "2026-11-20T00:00:00", last_login: null, me: false }] },
-    "PUT /api/admin/users/2/active": { message: "friend 을(를) 차단했습니다 (모든 기기 로그아웃)" } }) }, async (page, api) => {
+    "PUT /api/admin/users/2/active": { message: "friend 을(를) 차단했습니다 (모든 기기 로그아웃)" },
+    "GET /api/kis/status": KF.KIS_STATUS,
+    "GET /api/kis/orders": (req) => (new URL(req.url()).searchParams.get("kind") === "all" ? KF.KIS_ALL : KF.KIS_OPEN),
+    "GET /api/kis/log": KF.KIS_LOG,
+    ...extra,
+  });
+
+  await test("관리자 페이지: 사이드바 관리자 메뉴 · 요약 · 초대 코드(2단계) · 회원 상세 · 차단 · 보안 기록", { api: adminApi() }, async (page, api) => {
     page.on("dialog", (d) => d.accept());
     await page.goto(`${BASE}/mypage`);
-    const sec = page.getByTestId("admin-section");
-    await sec.waitFor();
-    const inv = await sec.getByTestId("invite-table").innerText();
-    expect(inv.includes("…9PWD") && inv.includes("동생") && inv.includes("사용됨") && inv.includes("friend"), `초대 목록: ${inv}`);
-    const make = sec.getByRole("button", { name: "만들기" });
-    await sec.getByLabel("초대 메모").fill("친구");
+    await page.getByTestId("admin-link").click();                 // 마이페이지엔 관리 기능 대신 링크만
+    await page.waitForURL(/\/admin$/);
+    const nav = await page.getByTestId("admin-nav").innerText();
+    expect(nav.includes("관리자") && nav.includes("KIS 모의투자 주문"), `관리자 메뉴: ${nav}`);
+    const sum = await page.getByTestId("admin-summary").innerText();
+    expect(sum.includes("2명") && sum.includes("2단계 미등록") && sum.includes("3번"), `요약: ${sum}`);
+    const inv = page.getByTestId("admin-invites");
+    const t = await inv.getByTestId("invite-table").innerText();
+    expect(t.includes("…9PWD") && t.includes("동생") && t.includes("사용됨") && t.includes("friend"), `초대 목록: ${t}`);
+    const make = inv.getByRole("button", { name: "만들기" });
+    await inv.getByLabel("초대 메모").fill("친구");
     expect(await make.isDisabled(), "2단계 코드 없이 만들기가 눌림");
-    await sec.getByLabel("초대 2단계 코드").fill("246810");
+    await inv.getByLabel("초대 2단계 코드").fill("246810");
     await make.click();
-    await sec.getByTestId("invite-code").waitFor();
-    expect((await sec.getByTestId("invite-code").innerText()) === "K7QM-2XRA-9PWD", "새 코드가 안 보임");
+    await inv.getByTestId("invite-code").waitFor();
+    expect((await inv.getByTestId("invite-code").innerText()) === "K7QM-2XRA-9PWD", "새 코드가 안 보임");
     const body = JSON.parse(api.calls.find((c) => c.key === "POST /api/admin/invites").body);
     expect(body.totp_code === "246810" && body.memo === "친구" && body.days === 3, `만들기 요청: ${JSON.stringify(body)}`);
-    const members = sec.getByTestId("member-table");
+    // 회원 상세
+    const members = page.getByTestId("member-table");
     expect((await members.innerText()).includes("미등록"), "2단계 미등록 표시 없음");
+    await members.getByRole("button", { name: "상세" }).nth(1).click();
+    const det = await page.getByTestId("user-detail").innerText();
+    expect(det.includes("fr***@naver.com") && det.includes("10.7.7.7") && det.includes("관심 3") && det.includes("로그인 실패") && det.includes("2단계 인증을 아직 등록하지"), `회원 상세: ${det}`);
+    // 차단
     const block = members.getByRole("button", { name: /차단/ });
     expect(await block.count() === 1, "관리자 본인에게도 차단 버튼이 보임");
     expect(await block.isDisabled(), "2단계 코드 없이 차단이 눌림");
-    await sec.getByLabel("차단 2단계 코드").fill("135790");
+    await page.getByLabel("차단 2단계 코드").fill("135790");
     await block.click();
     await page.getByText(/차단했습니다/).waitFor();
     expect(JSON.parse(api.calls.find((c) => c.key === "PUT /api/admin/users/2/active").body).active === false, "차단 요청 이상");
-    await shot(page, "mypage-admin");
+    const ev = await page.getByTestId("admin-events").innerText();
+    expect(ev.includes("friend") && ev.includes("로그인 실패") && ev.includes("초대 코드 만듦"), `보안 기록: ${ev}`);
+    await shot(page, "admin-page");
   });
 
-  await test("마이페이지: 관리자가 아니면 관리자 구역 없음", {}, async (page) => {
+  await test("관리자 아님: 관리자 메뉴 없음 · /admin · /kis 는 첫 화면으로 · 마이페이지 링크 없음", {}, async (page, api) => {
     await page.goto(`${BASE}/mypage`);
     await page.getByTestId("totp-section").waitFor();
-    expect(await page.getByTestId("admin-section").count() === 0, "일반 회원에게 관리자 구역이 보임");
+    expect(await page.getByTestId("admin-link").count() === 0, "일반 회원에게 관리자 링크가 보임");
+    expect(await page.getByTestId("admin-nav").count() === 0, "일반 회원에게 관리자 메뉴가 보임");
+    for (const path of ["/admin", "/kis"]) {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForURL((u) => u.pathname === "/");
+    }
+    expect(!api.calls.some((c) => c.key.startsWith("GET /api/admin") || c.key.startsWith("GET /api/kis")), "일반 회원 화면이 관리자 API 를 부름");
+  });
+
+  await test("KIS 모의투자: 잔고 · 제안 선택 → 2단계 코드로 승인 · 거절 · 주문 취소 · 기록 · 감사 로그", { api: adminApi({
+    "POST /api/kis/orders/approve": { results: [{ id: 11, status: "submitted", message: "주문번호 0000000008" }, { id: 12, status: "submitted", message: "주문번호 0000000009" }] },
+    "POST /api/kis/orders/reject": { message: "1건 거절했습니다" },
+    "POST /api/kis/orders/9/cancel": { message: "취소 요청 — 모의투자 취소주문이 완료되었습니다" } }) }, async (page, api) => {
+    page.on("dialog", (d) => d.accept());
+    await page.goto(`${BASE}/kis`);
+    const st = await page.getByTestId("kis-status").innerText();
+    expect(st.includes("운영 중") && st.includes("****3456-01") && st.includes("1 / 10건") && st.includes("+120,000원"), `상태: ${st}`);
+    const bal = await page.getByTestId("kis-balance").innerText();
+    expect(bal.includes("SK하이닉스") && bal.includes("8,150,000원") && bal.includes("176,700원"), `잔고: ${bal}`);
+    const pr = page.getByTestId("kis-proposals");
+    const approve = pr.getByTestId("kis-approve");
+    expect(await approve.isDisabled(), "아무것도 안 골랐는데 승인이 눌림");
+    await pr.getByRole("button", { name: "모두 선택" }).click();
+    expect(await approve.isDisabled(), "2단계 코드 없이 승인이 눌림");
+    await pr.getByLabel("승인 2단계 코드").fill("112233");
+    await approve.click();
+    await page.getByText(/주문 접수 2/).waitFor();
+    const ab = JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/orders/approve").body);
+    expect(JSON.stringify(ab.ids.sort()) === "[11,12]" && ab.totp_code === "112233", `승인 요청: ${JSON.stringify(ab)}`);
+    await pr.getByLabel("삼성전자 선택").check();
+    await pr.getByRole("button", { name: "거절" }).click();
+    await page.getByText("1건 거절했습니다").waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/orders/reject").body).ids[0] === 11, "거절 요청 이상");
+    await pr.getByRole("button", { name: "주문 취소" }).click();
+    await page.getByText(/취소 요청/).waitFor();
+    const h = await page.getByTestId("kis-history").innerText();
+    expect(h.includes("LG화학") && h.includes("안전장치로 안 보냄") && h.includes("비싸져서"), `주문 기록: ${h}`);
+    const au = await page.getByTestId("kis-audit").innerText();
+    expect(au.includes("승인") && au.includes("boss") && au.includes("안전장치로 막음"), `감사 로그: ${au}`);
+    await shot(page, "kis-trade");
+  });
+
+  await test("KIS 모의투자: 긴급 정지(코드 없이) · 정지 중 승인 불가 · 다시 시작은 2단계 코드 · 잔고 대조 경고", { api: adminApi({
+    "GET /api/kis/status": (req) => ({ ...KF.KIS_STATUS, halted: true, halted_reason: "긴급 정지 버튼", halted_at: 1795000000,
+      mismatches: [{ symbol: "000660", name: "SK하이닉스", app: 0, kis: 3 }] }),
+    "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
+    "POST /api/kis/resume": { message: "다시 시작했습니다" },
+    "POST /api/kis/baseline": { message: "KIS 잔고를 앱 기록 기준으로 맞췄습니다" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/kis`);
+    const st = await page.getByTestId("kis-status").innerText();
+    expect(st.includes("정지됨") && st.includes("긴급 정지 버튼"), `정지 상태: ${st}`);
+    expect(await page.getByTestId("kis-halt").count() === 0, "정지 중인데 긴급 정지 버튼이 보임");
+    await page.getByTestId("kis-proposals").getByRole("button", { name: "모두 선택" }).click();
+    await page.getByLabel("승인 2단계 코드").fill("112233");
+    expect(await page.getByTestId("kis-approve").isDisabled(), "정지 중인데 승인이 눌림");
+    const resume = page.getByRole("button", { name: "다시 시작" });
+    expect(await resume.isDisabled(), "2단계 코드 없이 다시 시작이 눌림");
+    await page.getByLabel("다시 시작 2단계 코드").fill("445566");
+    await resume.click();
+    await page.getByText("다시 시작했습니다").waitFor();
+    const mm = await page.getByTestId("kis-mismatch").innerText();
+    expect(mm.includes("SK하이닉스: 앱 0주 / KIS 3주"), `대조 경고: ${mm}`);
+    await page.getByLabel("기준 맞추기 2단계 코드").fill("778899");
+    await page.getByRole("button", { name: "기준 다시 맞추기" }).click();
+    await page.getByText(/기준으로 맞췄습니다/).waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/baseline").body).totp_code === "778899", "기준 맞추기 요청 이상");
+  });
+
+  await test("KIS 모의투자: 운영 중 긴급 정지 버튼 → 확인 후 바로 정지 요청 · 설정 저장(2단계)", { api: adminApi({
+    "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
+    "PUT /api/kis/config": { limits: KF.KIS_STATUS.limits, params: KF.KIS_STATUS.params, message: "설정을 저장했습니다" } }) }, async (page, api) => {
+    page.on("dialog", (d) => d.accept());
+    await page.goto(`${BASE}/kis`);
+    await page.getByTestId("kis-halt").click();
+    await page.getByText("주문을 멈췄습니다").waitFor();
+    expect(api.calls.some((c) => c.key === "POST /api/kis/halt"), "정지 요청 없음");
+    const cfg = page.getByTestId("kis-config");
+    await cfg.getByLabel("하루 주문 횟수").fill("5");
+    await cfg.getByLabel("설정 2단계 코드").fill("998877");
+    await cfg.getByRole("button", { name: "저장" }).click();
+    await page.getByText("설정을 저장했습니다").waitFor();
+    const b = JSON.parse(api.calls.find((c) => c.key === "PUT /api/kis/config").body);
+    expect(b.limits.max_orders_day === 5 && b.params.stop_pct === 7 && b.totp_code === "998877", `설정 요청: ${JSON.stringify(b)}`);
+  });
+
+  await test("KIS 모의투자: 키가 없으면 연결 안내만 (390px 가로 스크롤 없음)", { width: 390, height: 844, theme: "dark", api: adminApi({
+    "GET /api/kis/status": { ...KF.KIS_STATUS, configured: false, account: null, balance: null, log: [] },
+    "GET /api/kis/log": { items: [] } }) }, async (page, api) => {
+    await page.goto(`${BASE}/kis`);
+    const t = await page.getByTestId("kis-setup").innerText();
+    expect(t.includes("KIS_MOCK_APP_KEY") && t.includes("모의투자 신청"), `연결 안내: ${t}`);
+    expect(await page.getByTestId("kis-proposals").count() === 0, "키가 없는데 제안 구역이 보임");
+    expect(!api.calls.some((c) => c.key === "GET /api/kis/orders"), "키가 없는데 주문 목록을 부름");
+    await noHScroll(page);
+  });
+
+  await test("관리자·KIS 화면 폭 390px: 가로 스크롤 없음", { width: 390, height: 844, api: adminApi() }, async (page) => {
+    for (const path of ["/admin", "/kis"]) {
+      await page.goto(`${BASE}${path}`);
+      await page.getByTestId(path === "/admin" ? "admin-summary" : "kis-balance").waitFor();
+      await noHScroll(page);
+    }
   });
 
   await test("로그인 화면: 회원가입·비밀번호 찾기 링크 + 안내 문구", { token: false }, async (page) => {

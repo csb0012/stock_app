@@ -6,7 +6,7 @@ import { marketApi, authApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge, Bot,
+  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge, Bot, Crown, Landmark,
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
 import Toaster from "./Toast";
@@ -24,6 +24,31 @@ const navItems = [
   { to: "/predictions", icon: ClipboardCheck, label: "예측 검증" },
   { to: "/calendar", icon: Calendar, label: "경제캘린더" },
 ];
+// 관리자만 보이는 메뉴 (일반 사용자 메뉴와 따로)
+const adminItems = [
+  { to: "/admin", icon: Crown, label: "관리자" },
+  { to: "/kis", icon: Landmark, label: "KIS 모의투자 주문" },
+];
+
+function NavItem({ to, icon: Icon, label }: { to: string; icon: any; label: string }) {
+  return (
+    <NavLink
+      to={to}
+      end={to === "/"}
+      style={({ isActive }) => ({
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "9px 12px", borderRadius: 7, textDecoration: "none",
+        fontSize: 13, fontWeight: 500, transition: "all 0.15s",
+        background: isActive ? "var(--bg-hover)" : "transparent",
+        color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+        borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+      })}
+    >
+      <Icon size={16} />
+      {label}
+    </NavLink>
+  );
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { username, logout } = useAuthStore();
@@ -54,24 +79,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Nav */}
         <nav style={{ flex: 1, padding: "16px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
-          {navItems.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === "/"}
-              style={({ isActive }) => ({
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "9px 12px", borderRadius: 7, textDecoration: "none",
-                fontSize: 13, fontWeight: 500, transition: "all 0.15s",
-                background: isActive ? "var(--bg-hover)" : "transparent",
-                color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
-                borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
-              })}
-            >
-              <Icon size={16} />
-              {label}
-            </NavLink>
-          ))}
+          {navItems.map((item) => <NavItem key={item.to} {...item} />)}
+          {me?.is_admin && (
+            <div data-testid="admin-nav" style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 11, color: "var(--text-muted)", padding: "0 12px 4px", fontWeight: 600 }}>관리자 전용</span>
+              {adminItems.map((item) => <NavItem key={item.to} {...item} />)}
+            </div>
+          )}
         </nav>
 
         {/* 장 운영 상태 */}

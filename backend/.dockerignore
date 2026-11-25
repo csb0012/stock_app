@@ -2,6 +2,7 @@
 .env
 .secret_key
 .kis_token.json
+.kis_mock_token.json
 stock_app.db
 app/data/master_cache.json
 .venv

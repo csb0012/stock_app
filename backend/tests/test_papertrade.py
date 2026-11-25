@@ -331,7 +331,8 @@ def test_api_live_account_flow(api_client, monkeypatch):
                                                   "params": {"max_positions": 2, "buy_score": 55, "sell_score": 40}})
     assert r.status_code == 200
     aid = r.json()["id"]
-    d = _wait(client, f"/api/paper/accounts/{aid}", lambda x: x["log"] and x["trades"])
+    # 계좌 상태와 체결 목록은 따로 읽어서, 체결 저장 직전에 상태를 읽으면 체결만 보일 수 있음 → 보유 종목까지 보일 때까지 기다림
+    d = _wait(client, f"/api/paper/accounts/{aid}", lambda x: x["log"] and x["trades"] and x["positions"])
     assert d["name"] == "테스트" and d["market"] == "US" and d["last_error"] is None
     assert len(d["positions"]) <= 2 and d["positions"] and d["pending"] == []
     buy = d["trades"][-1]

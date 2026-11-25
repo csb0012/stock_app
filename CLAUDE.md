@@ -52,6 +52,7 @@ npm run dev
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 — 없거나 예시값이면 서버가 시작되지 않음 |
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
+| `KIS_MOCK_APP_KEY`·`KIS_MOCK_APP_SECRET`·`KIS_MOCK_ACCOUNT_NO` | 선택 | KIS 모의투자 주문(AI 제안 → 관리자 승인) 전용 키·계좌 — 비우면 주문 기능 꺼짐. `KIS_IS_REAL=false` 면 비워 둬도 시세용 키·계좌를 씀. 실거래 서버로는 주문 안 함 (`docs/kis-mock-trading.md`) |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
 | `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
@@ -88,12 +89,23 @@ models/
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
   flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
+  kis.py         — KIS 모의투자 주문: KisTrade (kis_trade 1행: 정지 여부·한도·매매 규칙·state JSON(expected 앱 기록 보유 수량·meta 손절/목표/보유일·log·day_start)) /
+                   KisOrder (kis_orders: 제안 1건 → 승인 → 주문 → 체결, 상태 proposed/approved/submitting/submitted/filled/partial/unfilled/unknown/rejected/expired/cancelled/blocked/failed) /
+                   KisLog (kis_log: 감사 로그 — 지우지 않음)
   paper.py       — AI 모의투자: PaperSim (paper_sim: 과거 시뮬레이션 결과 JSON) / PaperAccount (paper_account: 실시간 계좌, 보유·대기 주문·판단 기록은 state JSON) /
                    PaperTrade (체결) / PaperEquity (거래일 종가 기준 자산 + 지수 종가)
 services/
   kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
                    국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
                    미국 주간거래 현재가 get_us_daytime_price (해외 현재가 HHDFS00000300, EXCD 를 NAS/NYS/AMS → BAQ/BAY/BAA 로)
+  kis_order.py   — KIS 모의투자 서버 주문 API (국내): order(시장가)·cancel·balance(잔고·D+2 예수금·전날 총자산)·executions(일별 체결).
+                   **모의투자 서버 주소가 아니면 거부**(_guard). 키 = KIS_MOCK_*(없고 KIS_IS_REAL=false 면 시세용 키), 토큰 backend/.kis_mock_token.json.
+                   TR 은 새 번호 → '없는 TR' 응답일 때만 예전 번호 (주문은 그 외 오류면 다시 안 보냄). KISClient 를 키·주소를 받아 따로 만듦
+  kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 주문): propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단,
+                   이전 제안 만료, 다음 거래일 15:30 까지 유효) · check_exits(장중 5분, 손절/목표 → 매도 제안) · approve(조건부 UPDATE 로 한 번만, 장중이면 바로 submit) ·
+                   submit(직전 확인: 정지·기한·장 시간(09:01~15:20)·하루 횟수·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·가격(+3%/−6%)·1회 한도 →
+                   'submitting' 먼저 저장 후 KIS 주문) · refresh_fills(체결 내역 → expected/meta) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
+                   loop(1분, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
   us_daytime.py  — 미국 주간거래 가격 (한국 10:00~18:00, 서머타임 ~17:00 · 블루오션): 주간거래 시간에만 KIS 조회, 종목별 30초 캐시,
                    attach(rows) 가 미국 행에 daytime{price,base,change_rate,time} 을 붙인 **새 목록** 반환 (캐시된 원본 안 바꿈).
                    표시 전용 — 예측 확률·매입가 계산엔 안 씀. 관심종목·투자종목·AI 추천·종목 조회·대시보드 빅테크/ETF 응답에 붙음
@@ -162,7 +174,7 @@ services/
                    trend_filter = 50일선 아래는 안 삼. prepare() = 시작 180일 전부터 점수(학습형용, 비교 실행이 재사용). 시장 상태(market_regime)로 주식 비중 상한 100/60/30%,
                    다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
                    intraday_exit(손절 먼저), after_close(보유일·추격 손절), simulate() = 하루씩 그날 종가까지로 판단 → 다음 날 시가 체결 → 장중 손절/목표 → 종가 평가
-  papertrade.py  — AI 모의투자 실행: 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim,
+  papertrade.py  — AI 모의투자 실행 (analyze_live = 실시간 판단 점수 — 실시간 계좌와 KIS 모의투자 제안이 같이 씀): 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim,
                    개선 옵션이 켜져 있으면 같은 점수로 옵션 끈 '기본 방식'도 계산해 result.compare, 중단 = cancel_sim → 진행 표시 때 SimCancelled,
                    결과 저장은 DB 잠금이면 재시도, 서버 시작 때 '계산 중'으로 남은 기록은 실패로 정리) /
                    실시간 계좌(사용자당 5개): 만들면 바로 판단(장중이면 바로 현재가 체결), loop() 1분마다 — 개장 1분 뒤 대기 주문 체결, 장중 5분마다 손절·목표,
@@ -182,9 +194,13 @@ api/routes/
                    /delete-account (비밀번호 + 2단계 코드, 관심·투자종목·활동 기록 같이 삭제),
                    /setup-totp (이미 켜져 있으면 거부), /enable-totp, /disable-totp (현재 코드 필요), /me (nickname·display_name·email·phone·verified·created_at).
                    토큰의 pwv(비밀번호 버전) ≠ password_changed_at 이거나 sev ≠ session_epoch 이면 401 → 비밀번호 변경·모든 기기 로그아웃 시 다른 기기 끊김
-  admin.py       — 관리자 전용 (get_admin): /admin/invites (GET 목록 · POST 만들기 {memo, days, totp_code} — 코드 원문은 이 응답에만 · DELETE /{id} 취소),
+  admin.py       — 관리자 전용 (get_admin): /admin/summary (회원·2단계 미등록·차단·24시간 로그인·7일 실패·사용 가능한 초대),
+                   /admin/users/{id} (회원 상세: 연락처 가림·로그인 IP·실패·쓰는 기능 수·최근 활동 50 — 비밀번호·2단계 비밀값 없음), /admin/events (전체 회원 보안 기록), /admin/invites (GET 목록 · POST 만들기 {memo, days, totp_code} — 코드 원문은 이 응답에만 · DELETE /{id} 취소),
                    /admin/users (GET 회원 목록: 2단계 등록·초대한 사람·최근 로그인), PUT /admin/users/{id}/active {active, totp_code} (차단 = 모든 기기 끊김, 나·관리자는 불가).
                    만들기·차단은 2단계 코드를 다시 받음(_step_up)
+  kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
+                   POST /kis/propose · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
+                   POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params}. 승인·다시 시작·기준·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403)
   stocks.py      — /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
@@ -229,18 +245,21 @@ api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
                      Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio,
+                     Admin(/admin, 관리자만 — AdminRoute: 요약·회원 목록·회원 상세(활동 기록)·초대 코드·전체 보안 기록),
+                     KisTrade(/kis, 관리자만 — KIS 모의투자: 상태·긴급 정지/다시 시작·잔고·대조 경고·기준 맞추기·제안 선택 → 2단계 코드로 승인·거절·취소·설정·주문 기록·감사 로그),
                      Setup2FA(/setup-2fa: 2단계 필수인데 안 켰을 때 — 등록하면 첫 화면, ProtectedRoute 와 403 X-Totp-Required 가 여기로 보냄),
                      PaperTrading(/paper, AI 모의투자: 실시간 계좌 / 과거 시뮬레이션 탭(localStorage paper-tab) · 자산 곡선 SVG(AI vs 지수) · 거래 이유 · 판단 기록),
                      Predictions(예측 검증), Calendar,
                      Login(회원가입·비밀번호 찾기 링크, 아이디·이메일·휴대폰 번호), Signup·ForgotPassword(이메일/휴대폰 탭 → 코드),
-                     MyPage(프로필 카드·닉네임·본인인증(이메일/휴대폰)·비밀번호·2단계 인증·로그인 기기/최근 활동·모든 기기 로그아웃·CSV 내려받기·탈퇴)
+                     MyPage(관리자면 관리자 페이지 링크·프로필 카드·닉네임·본인인증(이메일/휴대폰)·비밀번호·2단계 인증·로그인 기기/최근 활동·모든 기기 로그아웃·CSV 내려받기·탈퇴)
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
-components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(닉네임(없으면 아이디) = 마이페이지 링크, 이메일·휴대폰 둘 다 미인증이면 노란 점·화이트/다크 모드·로그아웃) + ChatWidget.
+components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관리자 전용': 관리자 · KIS 모의투자 주문)·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(닉네임(없으면 아이디) = 마이페이지 링크, 이메일·휴대폰 둘 다 미인증이면 노란 점·화이트/다크 모드·로그아웃) + ChatWidget.
                      폭 860px 이하(휴대폰)는 사이드바가 ☰ 버튼으로 여닫는 메뉴 — index.css .app-shell/.sidebar/.page-body),
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
                      Toast (버튼 요청 실패 알림), TotpSection (마이페이지 2단계 인증 켜기/끄기), AuthForm (로그인류 화면 틀·비밀번호 규칙 안내·
                      이메일/휴대폰 탭 MethodTabs·자동 하이픈 formatPhone·재발송 대기 useCooldown),
-                     AdminSection (마이페이지 관리자 구역: 초대 코드 만들기(코드는 한 번만 보임)·목록·취소, 회원 목록·차단 — 2단계 코드 입력),
+                     AdminPanels (관리자 페이지: InvitePanel 초대 코드 만들기(코드는 한 번만 보임)·목록·취소 / MemberPanel 회원 목록·상세·차단 — 2단계 코드 입력),
+                     accountEvents.ts (활동 기록 종류 이름·기기 이름 — 마이페이지·관리자 공통),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
@@ -277,6 +296,8 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
   처음 보는 IP 로그인·잠금 알림 메일, 2단계 코드 재사용 불가(`totp_last_step`). IP 는 X-Forwarded-For **맨 뒤** 값 (맨 앞은 위조 가능).
 - Caddy 응답 헤더: CSP(`script-src 'self'` — 페이지 안 스크립트 금지라 테마 초기화는 `frontend/public/theme-init.js`), Permissions-Policy, COOP, HSTS, X-Frame-Options.
   CSP 를 바꾸면 화면 테스트(`smoke.mjs` 가 Caddyfile 의 CSP 를 그대로 걸고 화면을 엶)로 확인.
+- **관리자 페이지와 일반 화면 분리** (사용자 결정 2026-11-25): 관리 기능은 /admin · /kis (사이드바 '관리자 전용', AdminRoute + 서버 get_admin). 마이페이지엔 링크만.
+- **KIS 모의투자 주문은 'AI 제안 → 내가 승인할 때만 주문'** (사용자 결정 2026-11-25, 자동 주문 아님). 모의투자 서버 전용, 승인마다 2단계 코드 — `docs/kis-mock-trading.md`
 - 회원가입은 **관리자가 준 초대 코드 + 이메일 또는 휴대폰 6자리 인증** (사용자 결정, 2026-11-25 — 믿는 사람만. 예전 '누구나'는 `INVITE_ONLY=false`).
   초대 코드가 틀리면 메일·문자를 안 보내고 IP 실패 횟수에 넣음(5번 → 15분 차단). 관리자 = 처음 만든 계정. `SIGNUP_OPEN=false` 로 초대 가입까지 막을 수 있음.
 - **2단계 인증 필수** (`REQUIRE_TOTP`, 사용자 결정 2026-11-25): `get_current_user` = `get_user_before_totp` + 2단계 확인. 등록 전 토큰으로는 /me·setup/enable-totp·비밀번호 변경·logout-all 만.

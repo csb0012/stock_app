@@ -50,7 +50,7 @@ if [ ! -f backend/.env ]; then
 fi
 # KIS 키·로그인 서명 키·DB 는 이 계정만 읽게 (같은 서버의 다른 계정·프로그램이 못 읽음)
 chmod 600 backend/.env
-for f in backend/.secret_key backend/stock_app.db backend/.kis_token.json; do [ -f "$f" ] && chmod 600 "$f"; done
+for f in backend/.secret_key backend/stock_app.db backend/.kis_token.json backend/.kis_mock_token.json; do [ -f "$f" ] && chmod 600 "$f"; done
 if grep -qiE '^(INVITE_ONLY|REQUIRE_TOTP) *= *false' backend/.env; then
   echo "경고: backend/.env 에 INVITE_ONLY=false 또는 REQUIRE_TOTP=false 가 있습니다 — 인터넷에 여는 서버에서는 지우세요"
   echo "      (기본값 = 초대 코드로만 가입 + 2단계 인증 필수)"

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, admin as admin_route, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route
+from app.api.routes import auth, admin as admin_route, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route, kis as kis_route
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -39,9 +39,13 @@ async def lifespan(app: FastAPI):
     # AI 모의투자 자동 운영 (개장 직후 대기 주문 체결 · 장중 손절/목표 · 장 마감 후 판단) — papertrade.py
     from app.services import papertrade
     paper_task = asyncio.create_task(papertrade.loop())
+    # KIS 모의투자 주문 (AI 제안 → 관리자 승인 → 모의투자 서버) — 키가 없으면 아무것도 안 함. kis_trade.py
+    from app.services import kis_trade
+    kis_task = asyncio.create_task(kis_trade.loop())
     # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
     asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
+    kis_task.cancel()
     paper_task.cancel()
     ctx_task.cancel()
     preopen_task.cancel()
@@ -107,6 +111,7 @@ app.include_router(themes_route.router, prefix="/api")
 app.include_router(accumulation_route.router, prefix="/api")
 app.include_router(accumulation_route.quant_router, prefix="/api")
 app.include_router(papertrade_route.router, prefix="/api")
+app.include_router(kis_route.router, prefix="/api")
 
 
 @app.get("/api/health")

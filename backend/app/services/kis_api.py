@@ -67,19 +67,31 @@ def _tv_display(tv: int) -> str:
 
 
 class KISClient:
-    def __init__(self):
-        self.base_url = KIS_REAL_BASE if settings.kis_is_real else KIS_MOCK_BASE
+    def __init__(self, app_key: str | None = None, app_secret: str | None = None, base_url: str | None = None,
+                 token_file: Path | None = None, interval: float | None = None):
+        """기본값 = .env 의 시세용 키. 모의투자 주문(kis_order.py)은 모의서버 전용 키로 따로 만든다"""
+        self._app_key, self._app_secret = app_key, app_secret
+        self.base_url = base_url or (KIS_REAL_BASE if settings.kis_is_real else KIS_MOCK_BASE)
+        self._token_file = token_file or _TOKEN_FILE
         self._access_token: Optional[str] = None
         self._token_expires: Optional[datetime] = None
         self._token_lock = asyncio.Lock()
         # 실서버 초당 20건, 모의서버 초당 2건 제한 → 여유 두고 간격 유지
-        self._base_interval = 0.07 if settings.kis_is_real else 0.55
+        self._base_interval = interval or (0.07 if self.base_url == KIS_REAL_BASE else 0.55)
         self._min_interval = self._base_interval
         self._slow_until = 0.0
         self._rate_lock = asyncio.Lock()
         self._last_call = 0.0
         self._fg_waiting = 0   # 차례를 기다리는 화면 요청 수
         self._http: Optional[httpx.AsyncClient] = None
+
+    @property
+    def app_key(self) -> str:
+        return self._app_key or settings.kis_app_key
+
+    @property
+    def app_secret(self) -> str:
+        return self._app_secret or settings.kis_app_secret
 
     def _client(self) -> httpx.AsyncClient:
         # 연결 재사용(keep-alive) — 요청마다 새로 TLS 연결을 맺으면 호출당 0.1~0.3초씩 더 걸림
@@ -93,7 +105,7 @@ class KISClient:
     def _load_saved_token(self):
         """재시작해도 토큰 재사용 (KIS는 토큰 발급이 1분에 1회로 제한되고, 발급에 시간이 걸림)"""
         try:
-            saved = json.loads(_TOKEN_FILE.read_text(encoding="utf-8"))
+            saved = json.loads(self._token_file.read_text(encoding="utf-8"))
             if saved.get("key") != self._token_key():
                 return
             expires = datetime.fromisoformat(saved["expires"])
@@ -103,7 +115,7 @@ class KISClient:
             pass
 
     def _token_key(self) -> str:
-        return hashlib.sha256(f"{self.base_url}|{settings.kis_app_key}".encode()).hexdigest()[:16]
+        return hashlib.sha256(f"{self.base_url}|{self.app_key}".encode()).hexdigest()[:16]
 
     async def _get_token(self) -> str:
         async with self._token_lock:
@@ -115,8 +127,8 @@ class KISClient:
                 f"{self.base_url}/oauth2/tokenP",
                 json={
                     "grant_type": "client_credentials",
-                    "appkey": settings.kis_app_key,
-                    "appsecret": settings.kis_app_secret,
+                    "appkey": self.app_key,
+                    "appsecret": self.app_secret,
                 },
             )
             try:
@@ -130,10 +142,14 @@ class KISClient:
                 )
             self._access_token = data["access_token"]
             self._token_expires = datetime.now() + timedelta(hours=23)
-            _TOKEN_FILE.write_text(json.dumps({
+            self._token_file.write_text(json.dumps({
                 "key": self._token_key(), "token": self._access_token,
                 "expires": self._token_expires.isoformat(),
             }), encoding="utf-8")
+            try:
+                self._token_file.chmod(0o600)   # 토큰 = 키와 같은 힘 → 이 계정만 읽기 (Windows 는 무시됨)
+            except OSError:
+                pass
             return self._access_token
 
     async def _throttle(self):
@@ -167,18 +183,29 @@ class KISClient:
         print(f"[KIS] 초당 호출 제한 — {wait:.0f}초 후 재시도 ({attempt + 1}/{_RATE_RETRIES - 1})")
 
     async def _get(self, path: str, tr_id: str, params: dict) -> dict:
+        return await self._request("GET", path, tr_id, params=params)
+
+    async def _post(self, path: str, tr_id: str, body: dict) -> dict:
+        """주문류 (모의투자 주문 kis_order.py 만 씀). 재시도는 KIS 가 받기 전에 거절한 경우
+        (초당 제한 EGW00201·토큰 만료)만이라 주문이 두 번 들어가지 않음"""
+        return await self._request("POST", path, tr_id, body=body)
+
+    async def _request(self, method: str, path: str, tr_id: str, params: dict | None = None, body: dict | None = None) -> dict:
         token = await self._get_token()
         headers = {
             "content-type": "application/json",
             "authorization": f"Bearer {token}",
-            "appkey": settings.kis_app_key,
-            "appsecret": settings.kis_app_secret,
+            "appkey": self.app_key,
+            "appsecret": self.app_secret,
             "tr_id": tr_id,
             "custtype": "P",
         }
         for attempt in range(_RATE_RETRIES):
             await self._throttle()
-            resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
+            if method == "GET":
+                resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
+            else:
+                resp = await self._client().post(f"{self.base_url}{path}", headers=headers, json=body)
             try:
                 data = resp.json() if resp.content else {}
             except ValueError:  # 점검 시간 등 HTML 오류 페이지
@@ -196,7 +223,7 @@ class KISClient:
             if data.get("msg_cd") in ("EGW00123", "EGW00121") and attempt < _RATE_RETRIES - 1:
                 self._access_token = None
                 self._token_expires = None
-                _TOKEN_FILE.unlink(missing_ok=True)
+                self._token_file.unlink(missing_ok=True)
                 headers["authorization"] = f"Bearer {await self._get_token()}"
                 continue
             if resp.status_code != 200 or data.get("rt_cd") != "0":

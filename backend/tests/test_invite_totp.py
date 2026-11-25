@@ -237,6 +237,35 @@ def test_admin_block_user(env):
     assert login(c, user="friend", pw="Pal-pw-8812").status_code == 200
 
 
+def test_admin_summary_detail_and_security_log(env):
+    """관리자 페이지: 요약 숫자 · 회원 상세(연락처는 가림, 비밀값 없음) · 전체 보안 기록. 일반 회원은 못 봄"""
+    c, sent, Session, clock = env
+    tok, T = admin_session(c, clock)
+    inv = c.post("/api/admin/invites", json={"memo": "친구", "totp_code": next_code(T, clock)}, headers=H(tok)).json()["code"]
+    signup_send(c, invite=inv)
+    ftok = register(c, sent, inv).json()["access_token"]
+    login(c, user="friend", pw="wrong-pass-1", ip="10.7.7.7")
+    s = c.get("/api/admin/summary", headers=H(tok)).json()
+    assert s["users"] == 2 and s["admins"] == 1 and s["blocked"] == 0 and s["totp_missing"] == 1
+    assert s["login_fail_7d"] == 1 and s["invites_active"] == 0
+    fid = next(u["id"] for u in c.get("/api/admin/users", headers=H(tok)).json()["items"] if u["username"] == "friend")
+    d = c.get(f"/api/admin/users/{fid}", headers=H(tok)).json()
+    assert d["username"] == "friend" and d["invited_by"] == "boss" and d["email"] == "fr***@naver.com"
+    assert d["login_fail_7d"] == 1 and d["usage"] == {"watchlist": 0, "portfolio": 0, "paper_accounts": 0, "paper_sims": 0}
+    assert [e["kind"] for e in d["events"]][:2] == ["login_fail", "signup"]
+    assert not any(k in d for k in ("hashed_password", "totp_secret", "phone_full"))
+    assert c.get("/api/admin/users/999", headers=H(tok)).status_code == 404
+    ev = c.get("/api/admin/events", headers=H(tok)).json()["items"]
+    kinds = [(e["user"], e["kind"]) for e in ev]
+    assert ("friend", "login_fail") in kinds and ("boss", "invite_create") in kinds and ("boss", "totp_on") in kinds
+    assert all(e["kind"] != "login" for e in ev)        # 보통 로그인은 회원 상세에서만
+    # 일반 회원(2단계 등록 후에도)은 관리자 API 403
+    FT = turn_on_totp(c, ftok, clock)
+    for path in ("/api/admin/summary", f"/api/admin/users/{fid}", "/api/admin/events"):
+        assert c.get(path, headers=H(ftok)).status_code == 403
+    assert FT
+
+
 def test_first_user_becomes_admin_on_upgrade():
     """업데이트 전 DB(관리자 없음) → 처음 만든 계정이 관리자. 이미 관리자가 있으면 그대로"""
     from sqlalchemy import create_engine, text
