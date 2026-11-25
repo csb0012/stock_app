@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Mail, KeyRound, ShieldCheck, UserX, UserCircle, Smartphone, BadgeCheck, MonitorSmartphone, Download, AlertTriangle, Pencil,
+  Mail, KeyRound, ShieldCheck, UserX, UserCircle, Smartphone, BadgeCheck, MonitorSmartphone, Download, AlertTriangle, Pencil, Crown,
 } from "lucide-react";
 import { authApi, errMsg, portfolioApi, watchlistApi } from "../api/client";
 import { useAuthStore } from "../store/auth";
@@ -10,6 +10,7 @@ import {
   Field, PasswordHint, passwordProblem, inputStyle, EMAIL_RE, PHONE_RE, formatPhone, useCooldown, NICK_RE,
 } from "../components/common/AuthForm";
 import TotpSection from "../components/common/TotpSection";
+import AdminSection from "../components/common/AdminSection";
 import { toast } from "../components/common/Toast";
 
 const SECTIONS = [
@@ -52,10 +53,13 @@ export default function MyPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <ProfileCard me={me} />
           <nav aria-label="마이페이지 메뉴" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {SECTIONS.map(([id, label]) => (
+            {[...(me.is_admin ? [["admin", "관리자"] as const] : []), ...SECTIONS].map(([id, label]) => (
               <button key={id} className="btn btn-ghost" style={{ fontSize: 12, padding: "4px 11px", borderRadius: 999 }} onClick={() => go(id)}>{label}</button>
             ))}
           </nav>
+          {me.is_admin && (
+            <Section id="admin" icon={Crown} title="관리자 — 초대 · 회원" desc="이 앱은 내가 초대한 사람만 가입할 수 있습니다 (초대 코드 1회용)"><AdminSection /></Section>
+          )}
           <NicknameSection me={me} />
           <VerifySection me={me} />
           <PasswordSection username={me.username} />
@@ -246,7 +250,8 @@ function PasswordSection({ username }: { username: string }) {
 const KIND_LABEL: Record<string, string> = {
   login: "로그인", login_fail: "로그인 실패", account_locked: "계정 잠금 (로그인 실패 많음)", signup: "가입", password_change: "비밀번호 변경", password_reset: "비밀번호 찾기로 재설정",
   email_change: "이메일 인증", phone_change: "휴대폰 인증", contact_remove: "본인인증 수단 삭제", logout_all: "모든 기기 로그아웃",
-  totp_on: "2단계 인증 켬", totp_off: "2단계 인증 끔",
+  totp_on: "2단계 인증 켬", totp_off: "2단계 인증 끔", invite_create: "초대 코드 만듦", invite_revoke: "초대 코드 취소",
+  user_block: "회원 차단", user_unblock: "회원 차단 해제",
 };
 
 /** User-Agent → "Chrome · Windows" 처럼 짧게 */

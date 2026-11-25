@@ -169,8 +169,17 @@ def test_account_lock_across_ips(client, monkeypatch):
     assert any("잠갔습니다" in s for _, s, _ in sent) and sent[0][0] == "me@example.com"
     assert login(c, user="other", pw="Other-pass-77", ip="10.2.0.1").status_code == 200   # 다른 계정은 영향 없음
     from app.api.routes import auth
-    auth._acct_locked.clear()
-    assert login(c, ip="10.2.0.1").status_code == 200                 # 잠금이 풀리면 로그인
+    from app.models.user import User
+    from sqlalchemy import update
+    auth._acct_locked.clear()                                         # 서버를 다시 켠 것처럼 메모리 기록을 지워도
+    assert login(c, ip="10.2.0.1").status_code == 429                 # DB(locked_until)에 남아 계속 잠김
+
+    async def unlock():
+        async with Session() as s:
+            await s.execute(update(User).where(User.username == "me").values(locked_until=time.time() - 1))
+            await s.commit()
+    run(unlock())
+    assert login(c, ip="10.2.0.1").status_code == 200                 # 잠금 시간이 지나면 로그인
 
 
 def test_spoofed_forwarded_for_cannot_dodge_ip_block(client):

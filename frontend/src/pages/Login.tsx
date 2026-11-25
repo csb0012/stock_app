@@ -28,7 +28,8 @@ export default function Login() {
         setNeedsTotp(true);
       } else {
         setToken(res.data.access_token);
-        navigate("/");
+        // 2단계 인증 필수인데 아직 등록 안 함 → QR 등록 화면부터
+        navigate(res.data.totp_setup_required ? "/setup-2fa" : "/");
       }
     } catch (err: any) {
       setError(errMsg(err) || "로그인 실패");
@@ -142,7 +143,7 @@ export default function Login() {
           </form>
           {!needsTotp && (
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, fontSize: 12.5 }}>
-              <Link to="/signup" style={{ color: "var(--accent)" }}>회원가입</Link>
+              <Link to="/signup" style={{ color: "var(--accent)" }}>초대받았으면 회원가입</Link>
               <Link to="/forgot" style={{ color: "var(--text-secondary)" }}>비밀번호 찾기</Link>
             </div>
           )}

@@ -56,9 +56,9 @@ function makeApi(overrides = {}) {
     calls.push({ key, body: req.postData(), token: hd["x-access-token"], authorization: hd["authorization"] });
     let body = table[key];
     if (typeof body === "function") body = body(req);
-    if (body && body.__status) {   // 오류 응답 흉내: { __status: 401, detail: "..." }
-      const { __status, ...rest } = body;
-      return route.fulfill({ status: __status, contentType: "application/json", body: JSON.stringify(rest) });
+    if (body && body.__status) {   // 오류 응답 흉내: { __status: 401, detail: "...", __headers: {...} }
+      const { __status, __headers, ...rest } = body;
+      return route.fulfill({ status: __status, contentType: "application/json", headers: __headers, body: JSON.stringify(rest) });
     }
     if (body === undefined && req.method() !== "GET") body = { ok: true };
     if (body === undefined) {
@@ -364,7 +364,7 @@ async function run() {
     "GET /api/auth/me": () => ({ id: 1, username: "tester", display_name: "tester", totp_enabled: totpOn, email: null }),
     "POST /api/auth/setup-totp": { qr_code: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", secret: "ABCDEF234567", uri: "otpauth://x" },
     "POST /api/auth/enable-totp": () => { totpOn = true; return { message: "ok" }; },
-    "POST /api/auth/disable-totp": () => { totpOn = false; return { message: "ok" }; } }) }, async (page, api) => {
+    "POST /api/auth/disable-totp": () => { totpOn = false; return { message: "2단계 인증을 껐습니다" }; } }) }, async (page, api) => {
     await page.goto(`${BASE}/`);
     await page.getByTestId("mypage-link").click();
     await page.waitForURL(/\/mypage$/);
@@ -383,6 +383,114 @@ async function run() {
     await dlg.getByLabel("인증 코드").fill("654321");
     await dlg.getByRole("button", { name: "끄기" }).click();
     await page.getByText("2단계 인증을 껐습니다").waitFor();
+  });
+
+  {
+    let on = false;
+    const QR = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    await test("2단계 필수: 비밀번호만 로그인 → QR 등록 화면 → 켜면 대시보드", { token: false, api: makeApi({
+      "POST /api/auth/login": { access_token: "half", token_type: "bearer", totp_enabled: false, totp_setup_required: true },
+      "GET /api/auth/me": () => ({ id: 1, username: "tester", display_name: "tester", totp_enabled: on, totp_required: true, email: null }),
+      "POST /api/auth/setup-totp": { qr_code: QR, secret: "ABCDEF234567", uri: "otpauth://x" },
+      "POST /api/auth/enable-totp": () => { on = true; return { message: "ok" }; } }) }, async (page, api) => {
+      await page.goto(`${BASE}/login`);
+      await page.locator("input").nth(0).fill("tester"); await page.locator("input").nth(1).fill("pw");
+      await page.keyboard.press("Enter");
+      await page.waitForURL(/\/setup-2fa$/);
+      const box = page.getByTestId("setup-2fa");
+      expect((await box.innerText()).includes("Google Authenticator"), "설명 없음");
+      await page.goto(`${BASE}/watchlist`);                                // 다른 화면으로 가도 다시 등록 화면
+      await page.waitForURL(/\/setup-2fa$/);
+      await box.getByRole("button", { name: /켜기/ }).click();
+      await box.getByAltText("2단계 인증 QR 코드").waitFor();
+      await box.getByLabel("인증 코드").fill("123456");
+      await box.getByRole("button", { name: "확인" }).click();
+      await page.waitForURL(`${BASE}/`);
+      await page.getByTestId("mypage-link").waitFor();
+      await shot(page, "after-2fa");
+    });
+  }
+
+  {
+    let n = 0;
+    await test("2단계 필수: 서버가 403(X-Totp-Required)이면 등록 화면으로 (저장된 내 정보가 오래돼도)", { api: makeApi({
+      "GET /api/auth/me": () => ({ id: 1, username: "tester", display_name: "tester", totp_enabled: ++n === 1, totp_required: true, email: null }),
+      "GET /api/watchlist/": { __status: 403, __headers: { "X-Totp-Required": "1" }, detail: "2단계 인증을 먼저 켜야 합니다" },
+      "GET /api/watchlist/analysis": { __status: 403, __headers: { "X-Totp-Required": "1" }, detail: "2단계 인증을 먼저 켜야 합니다" } }) }, async (page) => {
+      await page.goto(`${BASE}/watchlist`);
+      await page.waitForURL(/\/setup-2fa$/);
+      await page.getByTestId("setup-2fa").getByRole("button", { name: /켜기/ }).waitFor();
+      await page.waitForTimeout(500);
+      expect(page.url().endsWith("/setup-2fa"), `등록 화면에 머물러야 함: ${page.url()}`);
+    });
+  }
+
+  await test("회원가입: 초대 코드가 있어야 인증 코드를 받고, 가입하면 2단계 등록부터", { token: false, api: makeApi({
+    "GET /api/auth/options": { signup_open: true, invite_required: true, totp_required: true, mail_configured: true, sms_configured: true },
+    "POST /api/auth/signup/send-code": { message: "me@naver.com 로 인증 코드를 보냈습니다 (10분 유효)" },
+    "POST /api/auth/register": { message: "가입 완료", username: "newbie", access_token: "new-token", token_type: "bearer", totp_setup_required: true },
+    "GET /api/auth/me": { id: 2, username: "newbie", display_name: "newbie", totp_enabled: false, totp_required: true, email: "me@naver.com" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/signup`);
+    const send = page.getByRole("button", { name: "인증 코드 받기" });
+    await page.getByPlaceholder("you@naver.com").fill("me@naver.com");
+    expect(await send.isDisabled(), "초대 코드 없이 인증 코드 받기가 눌림");
+    await page.getByLabel("초대 코드").fill("k7qm-2xra-9pw");
+    expect(await send.isDisabled(), "11글자인데 눌림");
+    await page.getByLabel("초대 코드").fill("k7qm-2xra-9pwd");
+    expect((await page.getByLabel("초대 코드").inputValue()) === "K7QM-2XRA-9PWD", "대문자로 안 바뀜");
+    await send.click();
+    await page.getByText(/인증 코드를 보냈습니다/).waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/signup/send-code").body).invite_code === "K7QM-2XRA-9PWD", "초대 코드가 안 감");
+    await page.getByPlaceholder("000000").fill("123456");
+    await page.locator("input[autocomplete=username]").fill("newbie");
+    await page.locator("input[autocomplete=new-password]").first().fill("zxcv5678");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("zxcv5678");
+    await page.getByRole("button", { name: "가입하기" }).click();
+    await page.waitForURL(/\/setup-2fa$/);
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/register").body).invite_code === "K7QM-2XRA-9PWD", "가입 요청에 초대 코드 없음");
+  });
+
+  await test("마이페이지 관리자: 초대 코드 만들기(2단계 코드) · 목록 · 회원 차단", { api: makeApi({
+    "GET /api/auth/me": { id: 1, username: "boss", display_name: "boss", totp_enabled: true, totp_required: true, is_admin: true, email: "b@naver.com", created_at: "2026-11-01T00:00:00" },
+    "GET /api/admin/invites": { items: [
+      { id: 2, hint: "9PWD", memo: "동생", created_at: 1795000000, expires_at: 1795259200, used_at: null, used_by: null, status: "active" },
+      { id: 1, hint: "AB12", memo: null, created_at: 1794000000, expires_at: 1794259200, used_at: 1794100000, used_by: "friend", status: "used" }], days_default: 3, days_max: 14 },
+    "POST /api/admin/invites": { id: 3, code: "K7QM-2XRA-9PWD", expires_at: 1795259200, memo: "친구", message: "ok" },
+    "GET /api/admin/users": { items: [
+      { id: 1, username: "boss", display_name: "boss", is_admin: true, is_active: true, totp_enabled: true, verified: true, invited_by: null, created_at: "2026-11-01T00:00:00", last_login: 1795000000, me: true },
+      { id: 2, username: "friend", display_name: "친구", is_admin: false, is_active: true, totp_enabled: false, verified: true, invited_by: "boss", created_at: "2026-11-20T00:00:00", last_login: null, me: false }] },
+    "PUT /api/admin/users/2/active": { message: "friend 을(를) 차단했습니다 (모든 기기 로그아웃)" } }) }, async (page, api) => {
+    page.on("dialog", (d) => d.accept());
+    await page.goto(`${BASE}/mypage`);
+    const sec = page.getByTestId("admin-section");
+    await sec.waitFor();
+    const inv = await sec.getByTestId("invite-table").innerText();
+    expect(inv.includes("…9PWD") && inv.includes("동생") && inv.includes("사용됨") && inv.includes("friend"), `초대 목록: ${inv}`);
+    const make = sec.getByRole("button", { name: "만들기" });
+    await sec.getByLabel("초대 메모").fill("친구");
+    expect(await make.isDisabled(), "2단계 코드 없이 만들기가 눌림");
+    await sec.getByLabel("초대 2단계 코드").fill("246810");
+    await make.click();
+    await sec.getByTestId("invite-code").waitFor();
+    expect((await sec.getByTestId("invite-code").innerText()) === "K7QM-2XRA-9PWD", "새 코드가 안 보임");
+    const body = JSON.parse(api.calls.find((c) => c.key === "POST /api/admin/invites").body);
+    expect(body.totp_code === "246810" && body.memo === "친구" && body.days === 3, `만들기 요청: ${JSON.stringify(body)}`);
+    const members = sec.getByTestId("member-table");
+    expect((await members.innerText()).includes("미등록"), "2단계 미등록 표시 없음");
+    const block = members.getByRole("button", { name: /차단/ });
+    expect(await block.count() === 1, "관리자 본인에게도 차단 버튼이 보임");
+    expect(await block.isDisabled(), "2단계 코드 없이 차단이 눌림");
+    await sec.getByLabel("차단 2단계 코드").fill("135790");
+    await block.click();
+    await page.getByText(/차단했습니다/).waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "PUT /api/admin/users/2/active").body).active === false, "차단 요청 이상");
+    await shot(page, "mypage-admin");
+  });
+
+  await test("마이페이지: 관리자가 아니면 관리자 구역 없음", {}, async (page) => {
+    await page.goto(`${BASE}/mypage`);
+    await page.getByTestId("totp-section").waitFor();
+    expect(await page.getByTestId("admin-section").count() === 0, "일반 회원에게 관리자 구역이 보임");
   });
 
   await test("로그인 화면: 회원가입·비밀번호 찾기 링크 + 안내 문구", { token: false }, async (page) => {

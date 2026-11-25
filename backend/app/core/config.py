@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Auth
     secret_key: str = "change-this-secret-key-in-production"
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 1440  # 24시간
+    access_token_expire_minutes: int = 720   # 12시간 (예전 24시간 — 브라우저를 뺏겼을 때 쓸 수 있는 시간을 줄임)
     totp_issuer: str = "StockApp"
 
     # External APIs
@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     smtp_password: str = ""          # 네이버 2단계 인증을 쓰면 '애플리케이션 비밀번호'
     smtp_from: str = ""              # 비우면 smtp_user
     signup_open: bool = True         # false 면 회원가입 막음 (기존 계정의 비밀번호 찾기·마이페이지는 그대로)
+    invite_only: bool = True         # 관리자가 만든 초대 코드가 있어야 가입 (내가 믿는 사람만). false 면 인증만 하면 누구나
+    require_totp: bool = True        # 2단계 인증(Google Authenticator) 필수 — 켜기 전에는 2단계 설정 화면만 쓸 수 있음
     pwned_check: bool = True         # 가입·비밀번호 변경 때 유출 비밀번호 목록(HIBP, 앞 5글자만 전송) 확인. false 면 끔
     login_alert: bool = True         # 처음 보는 IP 로 로그인하면 인증된 이메일로 알림 (메일 설정이 있을 때)
 

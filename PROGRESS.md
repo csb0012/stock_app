@@ -42,6 +42,8 @@ pull 후 패키지 목록이 바뀌었을 때:
 | 계정 추가 | 가상환경 켜고 `backend` 에서 `python create_admin.py <아이디> <비밀번호>` | `docker compose exec backend python create_admin.py <아이디> <비밀번호>` |
 | 비밀번호 초기화 (메일 못 쓸 때) | `backend` 에서 `python create_admin.py --reset-password <아이디> <새 비밀번호>` | `docker compose exec backend python create_admin.py --reset-password <아이디> <새 비밀번호>` |
 | 2단계 인증 해제 (휴대폰 분실) | `backend` 에서 `python create_admin.py --reset-totp <아이디>` | `docker compose exec backend python create_admin.py --reset-totp <아이디>` |
+| 초대 코드 (화면에 못 들어갈 때) | `backend` 에서 `python create_admin.py --invite 메모` | `docker compose exec backend python create_admin.py --invite 메모` |
+| 관리자 바꾸기 | `backend` 에서 `python create_admin.py --admin <아이디>` | `docker compose exec backend python create_admin.py --admin <아이디>` |
 
 수동 실행·처음 설치·문제 해결(winget 없음, WSL, 실행 정책 등)은 각 `docs/setup-*.md` 참고.
 
@@ -61,7 +63,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 백엔드 시작 로그 `[repair] 종목코드 복구 ...` = 잘못 저장된 종목코드를 자동으로 고친 것
 - 장 운영 상태: `http://localhost:8000/api/market/status` (사이드바 하단에도 표시)
 - 로그인 토큰 서명 키: `backend\.secret_key` (`.env` 의 SECRET_KEY 가 예시값이면 자동 생성. 다른 PC로 옮길 때 같이 복사하면 재로그인 불필요)
-- 계정 추가: 회원가입 API는 계정이 하나라도 있으면 막힘 → 위 "켜기 / 끄기" 표의 계정 추가 명령 사용
+- 계정 추가: 다른 사람은 마이페이지 → 관리자 → 초대 코드로 가입. 내 계정은 위 "켜기 / 끄기" 표의 계정 추가 명령 (관리자가 없으면 관리자)
 - FRED·Finnhub·DART 수집 현황: 로그인 후 `http://localhost:5173/api/market/extras-status` (키 설정 여부, 수집 성공/실패 수, 거시환경 점수) — 백엔드 로그 `[extras] ... 수집 실패` 도 확인
 - DART 고유번호 캐시: `backend\app\data\dart_corp.json` (7일마다 자동 갱신)
 - 장기 보유 분석 원본: 로그인 후 `http://localhost:5173/api/stocks/recommendations/longterm/horizon` (종목별 `horizons`·`advice`·`errors`, 비교 지수 `benchmarks`)
@@ -752,6 +754,30 @@ pull 후 패키지 목록이 바뀌었을 때:
   실시간 계좌 생성 → 학습형 비중으로 판단·주문. **실서버 미검증**: 실제 HIBP(이 환경에서 api.pwnedpasswords.com 차단)·실제 도메인 HTTPS 인증서·알림 메일 실제 발송·
   우분투 VM 에서 setup-server.sh 보안 단계(문법·비밀번호 입력 부분·set -e 동작만 확인)
 
+### 2026-11-25 — 2단계 인증 필수 · 초대 코드로만 가입 · 관리자(초대·회원 차단) · 한 일/할 일 정리 (commit `TBD`)
+- **정리 문서**: [docs/status.md](docs/status.md) — 지금까지 한 일 / 앞으로 할 일(사용자 할 일 · 2단계 KIS 모의투자 · 3단계 전 보안 · 실서버 확인 목록)
+- **2단계 인증(Google Authenticator) 필수** (`REQUIRE_TOTP`, 기본 켬): `get_current_user` = 로그인 확인(`get_user_before_totp`) + 2단계 확인.
+  안 켠 계정은 /me·setup/enable-totp·비밀번호 변경·모든 기기 로그아웃만 되고 나머지 API 는 403 + `X-Totp-Required: 1`.
+  화면: 로그인·가입 응답의 `totp_setup_required` → `/setup-2fa`(등록 화면), ProtectedRoute·axios 403 처리도 같은 곳으로. 등록하면 첫 화면.
+  필수일 땐 마이페이지 '끄기' 대신 '휴대폰 바꾸기'(지우면 바로 재등록 화면). 2단계 등록 시 인증된 이메일로 알림
+- **초대받은 사람만 가입** (`INVITE_ONLY`, 기본 켬): `services/invites.py` — 12글자 1회용 코드(헷갈리는 글자 제외, 약 60비트), DB 엔 HMAC 해시·끝 4글자만, 기본 3일(1~14),
+  관리자당 사용 가능 10개. 인증 코드 받기·가입 둘 다 초대 코드 확인 (틀린 초대면 메일·문자 안 보냄 + IP 실패 횟수 → 5번이면 15분 차단). 같은 코드 동시 가입은 조건부 UPDATE 로 한 명만
+- **관리자** (`users.is_admin`, 관리자가 없으면 init_db 가 가장 먼저 만든 계정을 관리자로): `api/routes/admin.py` — 초대 코드 만들기(코드는 응답에 한 번만)·목록·취소,
+  회원 목록(2단계 등록·초대한 사람·최근 로그인), 회원 차단/해제(차단 = session_epoch 갱신으로 모든 기기 즉시 끊김, 나·관리자는 불가). 만들기·차단은 2단계 코드 다시 확인(재사용 불가).
+  화면: 마이페이지 맨 위 '관리자 — 초대 · 회원'(`AdminSection`). 서버 명령 `create_admin.py --invite [메모]`, `--admin <아이디>`, 새 계정은 관리자가 없으면 관리자
+- 계정 잠금을 DB(`users.locked_until`)에도 저장 → 서버를 다시 켜도 잠금 유지. 로그인 유지 24시간 → 12시간. `--reset-totp` 가 쓴 코드 기록도 지움
+- 문서: setup-cloud(7. 접속·7-0 체크리스트·7-1), setup-local·setup-docker(첫 로그인 = 2단계 등록), `.env.example`(INVITE_ONLY·REQUIRE_TOTP), setup-server.sh(두 값을 false 로 두면 경고), CLAUDE.md
+- 검증: pytest 175개 (+9 `tests/test_invite_totp.py`: 2단계 등록 전 403+헤더·/me 허용·켜면 같은 토큰으로 통과·휴대폰 바꾸기 후 다시 403·설정 끄면 선택,
+  초대 없이/틀린 초대 → 메일 안 감·2단계 재확인·원문 미저장·소문자/하이픈 없이 입력·1회용·만료·취소·register 직접 호출 거부·틀린 초대 5번 IP 차단·10개 한도·INVITE_ONLY=false,
+  차단 → 토큰 401·로그인 401·해제, 업그레이드 시 첫 계정 관리자 / `test_security` 계정 잠금이 메모리를 지워도 DB 로 유지),
+  화면 테스트 58개 (+5: 비밀번호만 로그인 → 등록 화면 강제 → 켜면 대시보드, 403 X-Totp-Required → 등록 화면(저장된 내 정보가 오래돼도 머묾),
+  초대 코드 가입(코드 없으면 버튼 막힘·대문자 변환·요청에 포함·가입 후 등록 화면), 관리자 구역(초대 만들기 2단계 코드·새 코드 표시·목록·차단 버튼), 일반 회원은 관리자 구역 없음),
+  `bash scripts/check.sh` 통과. **실서버 확인**: 실제 `app.main`(KIS·Yahoo·메일만 가짜) + 실제 Caddy(접속 비밀번호·CSP) + 빌드된 화면, Playwright 로
+  `create_admin.py` 새 계정(관리자) → 비밀번호 로그인 → 등록 화면 강제(관심종목 API 403·`X-Totp-Required: 1`, /paper 로 가도 등록 화면) → QR 비밀값으로 만든 코드로 등록 → 대시보드 →
+  마이페이지 관리자 구역에서 새 30초 코드로 초대 코드 만들기 → 다른 브라우저에서 틀린 초대 거부·소문자 초대 + 가짜 메일 코드로 가입 → 등록 화면 →
+  관리자가 회원 차단 → 가입자 바로 로그인 화면 → 관리자 코드로 재로그인. DB 기록(is_admin·invited_by·초대 used_by·해시 64자·활동 기록) 확인, API 401 0건·콘솔 오류 0.
+  실서버 미검증: 실제 메일 발송(2단계 등록 알림·초대 가입 인증 코드), 실제 Google Authenticator 앱 스캔(같은 RFC 6238 계산으로만 확인)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
@@ -794,7 +820,9 @@ pull 후 패키지 목록이 바뀌었을 때:
 - [ ] 시장 상태: Yahoo 지수 일봉(5년) 실서버 미검증 — 코스피·코스닥 Yahoo 거래량이 0 이면 분산일 표시 안 됨. Yahoo 가 하루 늦으면 '최신 아님' 표시
 - [ ] 메일 발송(네이버 SMTP) 실서버 미검증 — `.env` 에 SMTP_* 를 넣고 회원가입 '인증 코드 받기'로 확인. "메일 계정 로그인 실패"면 네이버 'SMTP 사용' 설정·애플리케이션 비밀번호 확인,
   Oracle 에서 465 가 막히면 `SMTP_PORT=587`. 메일이 스팸함으로 갈 수 있음
-- [ ] 회원가입이 열려 있음(이메일 인증만): 가입한 사람도 내 KIS 키·호출 한도를 같이 씀. 클라우드는 Caddy 접속 비밀번호가 앞에 있어 그걸 아는 사람만 가입 화면에 옴. 막으려면 `SIGNUP_OPEN=false`
+- [x] ~~회원가입이 열려 있음(이메일 인증만)~~ → 관리자가 만든 초대 코드가 있어야 가입 (2026-11-25). 초대한 사람도 내 KIS 키·호출 한도를 같이 씀
+- [ ] 2단계 인증 필수로 바뀌기 전 만든 계정은 첫 로그인 때 등록 — **업데이트 직후 바로 등록**할 것 (등록 전에는 비밀번호를 아는 사람이 먼저 등록해 버릴 수 있는 틈).
+  예전 '누구나 가입' 때 만든 모르는 계정이 있으면 마이페이지 → 관리자 → 회원 목록에서 차단. 관리자가 없던 DB 는 가장 먼저 만든 계정이 관리자가 됨 — 다르면 `create_admin.py --admin <아이디>`
 - [ ] 기존 계정은 이메일·휴대폰이 없음 → 마이페이지에서 둘 중 하나를 인증해 둬야 '비밀번호 찾기'를 쓸 수 있음 (상단 바 이름 옆 노란 점)
 - [ ] 휴대폰 문자(솔라피) 실서버 미검증 — 솔라피 가입·충전·**발신번호 등록** 후 `.env` 에 SMS_* 를 넣고 회원가입 '휴대폰으로 인증'으로 확인.
   "문자 접수 실패"면 SMS_FROM 이 솔라피에 등록한 번호인지·잔액, "계정 인증 실패"면 키 확인. 휴대폰 가입은 '문자 받을 수 있는 번호'만 확인하며 실명 본인확인(PASS·NICE)은 아님
@@ -824,7 +852,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - [x] ~~국내 PER/PBR 0 고정~~ → KIS 값 사용
 - [x] ~~AI 모의투자 과거 시뮬레이션 "database is locked" (첫 1년 백테스트 저장과 겹칠 때)~~ → 나눠 저장 + 대기 30초 + 재시도 (2026-11-25)
 - [ ] 보안 기능 실서버 미검증: 유출 비밀번호 확인(api.pwnedpasswords.com — 서버에서 막히면 로그 `[pwned] ... 확인 실패 (건너뜀)` 이고 기능만 꺼진 채 동작),
-  새 IP·계정 잠금 알림 메일(SMTP 설정·이메일 인증 필요), 우분투 VM 의 unattended-upgrades·SSH 점검 단계. 계정 잠금·IP 차단 기록은 메모리라 서버를 다시 켜면 풀림
+  새 IP·계정 잠금 알림 메일(SMTP 설정·이메일 인증 필요), 우분투 VM 의 unattended-upgrades·SSH 점검 단계. IP 차단 기록은 메모리라 서버를 다시 켜면 풀림 (계정 잠금은 2026-11-25 부터 DB 에 남음)
 - [ ] AI 모의투자 개선 옵션(학습형 가중치·추세 필터)은 무작위 가짜 데이터로만 돌려 봄 — 실제 데이터에서 나은지는 과거 시뮬레이션의 '개선 옵션 효과' 표로
   국내·미국, 3개월·1년·2년을 몇 번 비교해 확인. 기본 방식이 계속 낫다면 설정에서 끄기. 추세 필터는 하락장에서 거래가 크게 줄어듦
 - [ ] AI 모의투자 실서버 미검증 — pull 후 'AI 모의투자 > 과거 시뮬레이션'에서 국내·미국 1년을 돌려 보고 "일봉 못 받은 종목" 경고·지수 비교가 정상인지,

@@ -29,6 +29,12 @@ class User(Base):
     totp_last_step = Column(Integer, nullable=True)
     # 로그인 때 확인한 비밀번호가 유출 목록(HIBP)에 있으면 True → 화면 위에 바꾸라는 경고. 비밀번호를 바꾸면 False
     password_leaked = Column(Boolean, default=False)
+    # 관리자(앱 주인) — 초대 코드 만들기·회원 차단. 처음 만든 계정(가장 작은 id)이 자동으로 관리자 (database.init_db)
+    is_admin = Column(Boolean, default=False)
+    # 누가 초대했는지 (초대 코드를 만든 관리자 id)
+    invited_by = Column(Integer, nullable=True)
+    # 로그인 실패가 많아 잠긴 시각까지(유닉스 초) — DB 에 남겨서 서버를 다시 켜도 잠금 유지
+    locked_until = Column(Float, nullable=True)
 
 
 class AccountEvent(Base):
@@ -57,3 +63,19 @@ class EmailCode(Base):
     attempts = Column(Integer, default=0)
     created_at = Column(Float, nullable=False)
     ip = Column(String, nullable=True)
+
+
+class Invite(Base):
+    """회원가입 초대 코드 — 관리자가 만든 1회용 코드가 있어야 가입 가능. 코드는 해시로만 저장 (만들 때 한 번만 보여줌)"""
+    __tablename__ = "invites"
+
+    id = Column(Integer, primary_key=True)
+    code_hash = Column(String, unique=True, index=True, nullable=False)
+    hint = Column(String, nullable=True)              # 코드 끝 4글자 (목록에서 구분용)
+    memo = Column(String, nullable=True)              # 누구에게 줬는지 (관리자 메모)
+    created_by = Column(Integer, nullable=False)
+    created_at = Column(Float, nullable=False)
+    expires_at = Column(Float, nullable=False)
+    used_by = Column(Integer, nullable=True)          # 가입한 사용자 id
+    used_at = Column(Float, nullable=True)
+    revoked = Column(Boolean, default=False)

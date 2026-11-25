@@ -23,6 +23,10 @@ api.interceptors.response.use(
       clearPersisted();
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
+    // 2단계 인증 필수인데 아직 안 켬 → 2단계 설정 화면으로 (서버가 X-Totp-Required 헤더를 붙여 403)
+    if (err.response?.status === 403 && err.response?.headers?.["x-totp-required"] && window.location.pathname !== "/setup-2fa") {
+      window.location.href = "/setup-2fa";
+    }
     return Promise.reject(err);
   }
 );
@@ -49,9 +53,10 @@ export const authApi = {
   disableTotp: (totp_code: string) => api.post("/auth/disable-totp", { totp_code }),
   options: () => api.get("/auth/options"),
   // contact = { email } 또는 { phone } — 본인인증 수단 하나
-  signupSendCode: (contact: Contact) => api.post("/auth/signup/send-code", contact),
-  register: (username: string, password: string, contact: Contact, code: string, nickname?: string) =>
-    api.post("/auth/register", { username, password, ...contact, code, nickname: nickname || undefined }),
+  // invite_code = 관리자가 만든 초대 코드 (초대 전용 가입일 때)
+  signupSendCode: (contact: Contact, invite_code?: string) => api.post("/auth/signup/send-code", { ...contact, invite_code: invite_code || undefined }),
+  register: (username: string, password: string, contact: Contact, code: string, nickname?: string, invite_code?: string) =>
+    api.post("/auth/register", { username, password, ...contact, code, nickname: nickname || undefined, invite_code: invite_code || undefined }),
   forgot: (contact: Contact) => api.post("/auth/password/forgot", contact),
   reset: (contact: Contact, code: string, new_password: string) => api.post("/auth/password/reset", { ...contact, code, new_password }),
   changePassword: (current_password: string, new_password: string) =>
@@ -65,6 +70,15 @@ export const authApi = {
   logoutAll: () => api.post("/auth/logout-all"),
   activity: (limit = 30) => api.get("/auth/activity", { params: { limit } }),
   deleteAccount: (password: string, totp_code?: string) => api.post("/auth/delete-account", { password, totp_code }),
+};
+
+// 관리자(앱 주인) — 초대 코드 · 회원 관리. 만들기·차단은 2단계 코드를 다시 받음
+export const adminApi = {
+  invites: () => api.get("/admin/invites"),
+  createInvite: (memo: string, days: number, totp_code: string) => api.post("/admin/invites", { memo, days, totp_code }),
+  revokeInvite: (id: number) => api.delete(`/admin/invites/${id}`),
+  users: () => api.get("/admin/users"),
+  setActive: (id: number, active: boolean, totp_code: string) => api.put(`/admin/users/${id}/active`, { active, totp_code }),
 };
 
 // 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)

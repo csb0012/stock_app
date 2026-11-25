@@ -51,9 +51,9 @@ fi
 # KIS 키·로그인 서명 키·DB 는 이 계정만 읽게 (같은 서버의 다른 계정·프로그램이 못 읽음)
 chmod 600 backend/.env
 for f in backend/.secret_key backend/stock_app.db backend/.kis_token.json; do [ -f "$f" ] && chmod 600 "$f"; done
-if grep -qi '^SIGNUP_OPEN *= *false' backend/.env; then :; else
-  echo "참고: 회원가입이 열려 있습니다 (접속 비밀번호를 아는 사람은 가입 가능). 혼자 쓰면 내 계정을 만든 뒤"
-  echo "      backend/.env 에 SIGNUP_OPEN=false 를 넣고 'sudo docker compose -f docker-compose.cloud.yml restart backend'"
+if grep -qiE '^(INVITE_ONLY|REQUIRE_TOTP) *= *false' backend/.env; then
+  echo "경고: backend/.env 에 INVITE_ONLY=false 또는 REQUIRE_TOTP=false 가 있습니다 — 인터넷에 여는 서버에서는 지우세요"
+  echo "      (기본값 = 초대 코드로만 가입 + 2단계 인증 필수)"
 fi
 mkdir -p backend/app/data
 

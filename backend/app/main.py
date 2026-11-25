@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route
+from app.api.routes import auth, admin as admin_route, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -96,6 +96,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(admin_route.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")

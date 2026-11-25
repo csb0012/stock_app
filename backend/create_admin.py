@@ -1,6 +1,8 @@
-"""계정 만들기 · 2단계 인증 해제 (서버/PC 에서 직접 실행 — 서버에 접속할 수 있는 사람만 가능)
+"""계정 만들기 · 2단계 인증 해제 · 초대 코드 (서버/PC 에서 직접 실행 — 서버에 접속할 수 있는 사람만 가능)
 
-  python create_admin.py <아이디> <비밀번호>          계정 만들기
+  python create_admin.py <아이디> <비밀번호>          계정 만들기 (관리자가 아직 없으면 이 계정이 관리자)
+  python create_admin.py --invite [메모]              초대 코드 만들기 (3일 유효, 1회용) — 화면에 들어갈 수 없을 때
+  python create_admin.py --admin <아이디>             관리자를 이 계정으로 바꾸기 (다른 관리자는 해제)
   python create_admin.py --reset-totp <아이디>        2단계 인증 끄기 (휴대폰 분실 등 — 관심종목·투자종목은 그대로)
   python create_admin.py --reset-password <아이디> <새 비밀번호>
                                                     비밀번호 바꾸기 (이메일 인증을 안 해서 '비밀번호 찾기'를 못 쓸 때)
@@ -22,10 +24,44 @@ async def create_admin(username: str, password: str):
         if (await db.execute(select(User).where(User.username == username))).scalar_one_or_none():
             print(f"이미 있는 아이디입니다: {username}")
             return 1
-        db.add(User(username=username, hashed_password=get_password_hash(password)))
+        has_admin = (await db.execute(select(User.id).where(User.is_admin.is_(True)).limit(1))).first()
+        db.add(User(username=username, hashed_password=get_password_hash(password), is_admin=not has_admin))
         await db.commit()
-        print(f"계정 생성 완료: {username}")
-        print("로그인 후 오른쪽 위 내 아이디(마이페이지) → 이메일 인증 · 2단계 인증 켜기 (인터넷에 열린 서버면 강력 권장)")
+        print(f"계정 생성 완료: {username}" + ("" if has_admin else " (관리자)"))
+        print("로그인하면 먼저 2단계 인증(Google Authenticator) QR 등록 화면이 나옵니다 — 등록해야 다른 화면을 쓸 수 있음")
+        return 0
+
+
+async def make_invite(memo: str | None):
+    from app.services import invites
+    await init_db()
+    async with AsyncSessionLocal() as db:
+        admin = (await db.execute(select(User).where(User.is_admin.is_(True)).limit(1))).scalar_one_or_none()
+        if not admin:
+            print("관리자 계정이 없습니다 — 먼저 python create_admin.py <아이디> <비밀번호>")
+            return 1
+        try:
+            inv, code = await invites.create(db, admin.id, memo)
+        except invites.InviteError as e:
+            print(e)
+            return 1
+        await db.commit()
+        print(f"초대 코드: {code}   (1회용, {invites.DAYS_DEFAULT}일 유효 — 믿는 사람에게 직접 전달)")
+        return 0
+
+
+async def set_admin(username: str):
+    await init_db()
+    async with AsyncSessionLocal() as db:
+        user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
+        if not user:
+            print(f"없는 아이디입니다: {username}")
+            return 1
+        for u in (await db.execute(select(User).where(User.is_admin.is_(True)))).scalars().all():
+            u.is_admin = False
+        user.is_admin = True
+        await db.commit()
+        print(f"{username} 을(를) 관리자로 정했습니다 (다른 계정의 관리자 권한은 해제)")
         return 0
 
 
@@ -36,9 +72,9 @@ async def reset_totp(username: str):
         if not user:
             print(f"없는 아이디입니다: {username}")
             return 1
-        user.totp_enabled, user.totp_secret = False, None
+        user.totp_enabled, user.totp_secret, user.totp_last_step = False, None, None
         await db.commit()
-        print(f"{username} 의 2단계 인증을 껐습니다 — 비밀번호만으로 로그인한 뒤 마이페이지에서 다시 켜세요")
+        print(f"{username} 의 2단계 인증을 지웠습니다 — 로그인하면 새 휴대폰으로 QR 등록 화면이 나옵니다")
         return 0
 
 
@@ -66,6 +102,10 @@ async def reset_password(username: str, password: str):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--reset-password":
         sys.exit(asyncio.run(reset_password(sys.argv[2], sys.argv[3])))
+    if len(sys.argv) in (2, 3) and sys.argv[1] == "--invite":
+        sys.exit(asyncio.run(make_invite(sys.argv[2] if len(sys.argv) == 3 else None)))
+    if len(sys.argv) == 3 and sys.argv[1] == "--admin":
+        sys.exit(asyncio.run(set_admin(sys.argv[2])))
     if len(sys.argv) == 3 and sys.argv[1] == "--reset-totp":
         sys.exit(asyncio.run(reset_totp(sys.argv[2])))
     if len(sys.argv) != 3 or sys.argv[1].startswith("--"):

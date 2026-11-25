@@ -1,7 +1,9 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient as qc } from "./api/queryClient";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "./store/auth";
+import { authApi } from "./api/client";
 import Layout from "./components/common/Layout";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
@@ -18,10 +20,15 @@ import Themes from "./pages/Themes";
 import Accumulation from "./pages/Accumulation";
 import Quant from "./pages/Quant";
 import PaperTrading from "./pages/PaperTrading";
+import Setup2FA from "./pages/Setup2FA";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
-  return token ? <Layout>{children}</Layout> : <Navigate to="/login" replace />;
+  // 2단계 인증 필수인데 아직 안 켰으면 설정 화면으로 (서버도 403 으로 막음 — 이건 화면을 먼저 옮기는 것)
+  const me = useQuery({ queryKey: ["me"], queryFn: () => authApi.me().then((r) => r.data), staleTime: 5 * 60 * 1000, enabled: !!token });
+  if (!token) return <Navigate to="/login" replace />;
+  if (me.data?.totp_required && !me.data?.totp_enabled) return <Navigate to="/setup-2fa" replace />;
+  return <Layout>{children}</Layout>;
 }
 
 export default function App() {
@@ -32,6 +39,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/forgot" element={<ForgotPassword />} />
+          <Route path="/setup-2fa" element={<Setup2FA />} />
           <Route path="/mypage" element={<ProtectedRoute><MyPage /></ProtectedRoute>} />
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/recommendations" element={<ProtectedRoute><Recommendations /></ProtectedRoute>} />

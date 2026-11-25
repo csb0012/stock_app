@@ -19,10 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 @pytest.fixture(autouse=True)
 def _no_external_security_calls(monkeypatch):
-    """유출 비밀번호 확인(HIBP)·새 IP 로그인 알림 메일은 테스트에서 끔 — 그 기능 테스트는 직접 켜고 가짜로 바꿈"""
+    """유출 비밀번호 확인(HIBP)·새 IP 로그인 알림 메일은 테스트에서 끔 — 그 기능 테스트는 직접 켜고 가짜로 바꿈.
+    초대 코드 가입(INVITE_ONLY)·2단계 필수(REQUIRE_TOTP)도 기존 가입·계정 테스트를 위해 끄고, test_invite_totp.py 가 켜서 검사"""
     from app.core.config import settings
     monkeypatch.setattr(settings, "pwned_check", False)
     monkeypatch.setattr(settings, "login_alert", False)
+    monkeypatch.setattr(settings, "invite_only", False)
+    monkeypatch.setattr(settings, "require_totp", False)
     from app.api.routes import auth   # 로그인 실패·잠금 기록은 모듈에 남으므로 테스트마다 비움
     for d in (auth._fails, auth._locked, auth._acct_fails, auth._acct_locked):
         d.clear()

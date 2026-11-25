@@ -12,11 +12,11 @@ from app.core.security import (
     decode_token, generate_totp_secret, get_totp_uri,
     verify_totp, generate_qr_code_base64, totp_step,
 )
-from app.models.user import User, AccountEvent
+from app.models.user import User, AccountEvent, Invite
 from app.models.watchlist import WatchlistItem
 from app.models.portfolio import PortfolioItem
 from app.models import paper as _paper  # noqa: F401 — 탈퇴 시 모의투자 기록 삭제 (테이블 등록)
-from app.services import mailer, email_codes, sms, pwned
+from app.services import mailer, email_codes, sms, pwned, invites
 import asyncio
 from app.services.email_codes import CodeError, normalize_email, normalize_phone, format_phone
 from app.core.config import settings
@@ -60,8 +60,9 @@ _acct_fails: dict = {}   # user id -> [실패 시각...]
 _acct_locked: dict = {}  # user id -> 잠금 해제 시각
 
 
-def _check_acct_lock(user_id: int):
-    until = _acct_locked.get(user_id, 0)
+def _check_acct_lock(user: User):
+    """계정 잠금 확인 — 메모리 + DB(locked_until, 서버를 다시 켜도 유지)"""
+    until = max(_acct_locked.get(user.id, 0), user.locked_until or 0)
     if until > time.time():
         raise HTTPException(status_code=429, detail=f"이 계정에 로그인 실패가 많아 {int((until - time.time()) // 60) + 1}분 동안 잠겼습니다 "
                                                     "(본인이 아니면 잠금이 풀린 뒤 비밀번호를 바꾸세요)")
@@ -143,8 +144,12 @@ class RegisterRequest(BaseModel):
     password: str
 
 
-async def get_current_user(request: Request, bearer: Optional[str] = Depends(oauth2_scheme),
-                           db: AsyncSession = Depends(get_db)):
+TOTP_REQUIRED_MSG = "2단계 인증(Google Authenticator)을 먼저 켜야 합니다 — 마이페이지 대신 2단계 설정 화면에서 QR 코드를 등록하세요"
+
+
+async def get_user_before_totp(request: Request, bearer: Optional[str] = Depends(oauth2_scheme),
+                               db: AsyncSession = Depends(get_db)):
+    """로그인 확인만 (2단계 인증을 아직 안 켰어도 통과) — 2단계 설정·내 정보·비밀번호 변경·탈퇴에만 씀"""
     token = request.headers.get("x-access-token") or bearer
     if not token:
         raise HTTPException(status_code=401, detail="로그인이 필요합니다")
@@ -161,6 +166,24 @@ async def get_current_user(request: Request, bearer: Optional[str] = Depends(oau
     # '모든 기기에서 로그아웃' 이전에 발급된 토큰도 무효
     if user.session_epoch and payload.get("sev") != user.session_epoch:
         raise HTTPException(status_code=401, detail="모든 기기에서 로그아웃했습니다 — 다시 로그인하세요")
+    return user
+
+
+def totp_missing(user: User) -> bool:
+    return bool(settings.require_totp and not user.totp_enabled)
+
+
+async def get_current_user(user: User = Depends(get_user_before_totp)):
+    """모든 기능의 로그인 확인 — 2단계 인증 필수(REQUIRE_TOTP)인데 아직 안 켰으면 403 + X-Totp-Required 헤더
+    (화면은 이 헤더를 보고 2단계 설정 화면으로 보냄). 비밀번호만 훔친 사람은 아무 데이터도 못 봄"""
+    if totp_missing(user):
+        raise HTTPException(status_code=403, detail=TOTP_REQUIRED_MSG, headers={"X-Totp-Required": "1"})
+    return user
+
+
+async def get_admin(user: User = Depends(get_current_user)):
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="관리자만 할 수 있습니다")
     return user
 
 
@@ -311,10 +334,15 @@ class ContactRequest(BaseModel):
     phone: Optional[str] = None
 
 
+class SignupCodeRequest(ContactRequest):
+    invite_code: Optional[str] = None
+
+
 class SignupRequest(BaseModel):
     username: str
     password: str
     code: str
+    invite_code: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     nickname: Optional[str] = None
@@ -359,15 +387,31 @@ class DeleteAccountRequest(BaseModel):
 @router.get("/options")
 async def auth_options():
     """로그인 화면용: 회원가입 가능 여부 + 본인인증 수단(메일·문자) 설정 여부"""
-    return {"signup_open": settings.signup_open, "mail_configured": mailer.configured(),
+    return {"signup_open": settings.signup_open, "invite_required": settings.invite_only,
+            "totp_required": settings.require_totp, "mail_configured": mailer.configured(),
             "sms_configured": sms.configured()}
 
 
+async def _invite_for_signup(db, code: Optional[str], ip: str):
+    """초대 코드 확인 (INVITE_ONLY). 틀리면 로그인 실패처럼 IP 실패 횟수에 넣음 → 5번이면 그 IP 15분 차단 (코드 대입 방지)"""
+    if not settings.invite_only:
+        return None
+    _check_lock(ip)
+    if not (code or "").strip():
+        raise HTTPException(status_code=400, detail="초대 코드가 필요합니다 — 이 앱은 관리자가 초대한 사람만 가입할 수 있습니다")
+    try:
+        return await invites.find_active(db, code)
+    except invites.InviteError as e:
+        _record_fail(ip)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/signup/send-code")
-async def signup_send_code(req: ContactRequest, request: Request, db: AsyncSession = Depends(get_db)):
+async def signup_send_code(req: SignupCodeRequest, request: Request, db: AsyncSession = Depends(get_db)):
     if not settings.signup_open:
         raise HTTPException(status_code=403, detail="회원가입이 닫혀 있습니다")
     kind, target = _contact(req.email, req.phone)
+    await _invite_for_signup(db, req.invite_code, _client_ip(request))   # 초대 없는 사람에게 메일·문자를 보내지 않음 (요금·스팸)
     if await _owner(db, kind, target):
         what = "이메일" if kind == "email" else "휴대폰 번호"
         raise HTTPException(status_code=400, detail=f"이미 가입된 {what}입니다 — 로그인하거나 비밀번호 찾기를 쓰세요")
@@ -379,9 +423,11 @@ async def signup_send_code(req: ContactRequest, request: Request, db: AsyncSessi
 
 @router.post("/register")
 async def register(req: SignupRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    """회원가입: 아이디·비밀번호 + 이메일 또는 휴대폰 인증 코드. 가입하면 바로 로그인 토큰을 줌"""
+    """회원가입: 초대 코드 + 아이디·비밀번호 + 이메일 또는 휴대폰 인증 코드. 가입하면 바로 로그인 토큰을 줌
+    (2단계 인증 필수면 그 토큰으로는 2단계 설정만 가능)"""
     if not settings.signup_open:
         raise HTTPException(status_code=403, detail="회원가입이 닫혀 있습니다")
+    invite = await _invite_for_signup(db, req.invite_code, _client_ip(request))
     username = (req.username or "").strip()
     if not USERNAME_RE.match(username):
         raise HTTPException(status_code=400, detail="아이디는 영문·숫자·밑줄 3~20자로 만드세요")
@@ -402,11 +448,21 @@ async def register(req: SignupRequest, request: Request, db: AsyncSession = Depe
         user.email, user.email_verified = target, True
     else:
         user.phone, user.phone_verified = target, True
+    if invite:
+        user.invited_by = invite.created_by
     db.add(user)
+    await db.flush()
+    if invite:
+        try:
+            await invites.consume(db, invite, user.id)
+        except invites.InviteError as e:
+            await db.rollback()
+            raise HTTPException(status_code=400, detail=str(e))
     await db.commit()
-    await _event(db, user.id, "signup", request, detail="이메일 인증" if kind == "email" else "휴대폰 인증")
+    how = "이메일 인증" if kind == "email" else "휴대폰 인증"
+    await _event(db, user.id, "signup", request, detail=how + (f" · 초대 코드 …{invite.hint}" if invite else ""))
     return {"message": "가입 완료", "username": username, "access_token": token_for(user),
-            "token_type": "bearer"}
+            "token_type": "bearer", "totp_setup_required": totp_missing(user)}
 
 
 @router.post("/password/forgot")
@@ -458,13 +514,14 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
                 user = None
 
     if user:
-        _check_acct_lock(user.id)
+        _check_acct_lock(user)
 
     async def fail(detail: str, msg: str):
         _record_fail(ip)
         if user:
             await _event(db, user.id, "login_fail", request, ok=False, detail=detail)
             if _record_acct_fail(user.id):
+                user.locked_until = time.time() + _ACCT_LOCK   # (아래 _event 의 commit 으로 저장)
                 await _event(db, user.id, "account_locked", request, ok=False, detail="로그인 실패가 많아 15분 잠금")
                 _alert(user, "[StockApp] 로그인 실패가 많아 계정을 15분 잠갔습니다",
                        _alert_body("누군가 계정에 비밀번호를 여러 번 틀리게 입력해 15분 동안 로그인을 잠갔습니다.", request))
@@ -495,11 +552,11 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
     await _event(db, user.id, "login", request)   # (commit 포함 — 2단계 코드 사용 기록·유출 표시도 같이 저장)
     token = token_for(user)
     return {"access_token": token, "token_type": "bearer", "totp_enabled": user.totp_enabled, "username": user.username,
-            "password_leaked": bool(user.password_leaked)}
+            "password_leaked": bool(user.password_leaked), "totp_setup_required": totp_missing(user)}
 
 
 @router.post("/setup-totp")
-async def setup_totp(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def setup_totp(current_user: User = Depends(get_user_before_totp), db: AsyncSession = Depends(get_db)):
     # 이미 켜져 있는데 새 비밀값으로 덮으면 휴대폰 앱의 코드와 안 맞아 로그인을 못 하게 됨 → 먼저 끄게 함
     if current_user.totp_enabled:
         raise HTTPException(status_code=400, detail="2단계 인증이 이미 켜져 있습니다 — 다시 등록하려면 먼저 끄세요")
@@ -518,7 +575,7 @@ async def setup_totp(current_user: User = Depends(get_current_user), db: AsyncSe
 async def enable_totp(
     req: TOTPVerifyRequest,
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_user_before_totp),
     db: AsyncSession = Depends(get_db),
 ):
     if not current_user.totp_secret:
@@ -529,6 +586,8 @@ async def enable_totp(
     current_user.totp_enabled = True
     await db.commit()
     await _event(db, current_user.id, "totp_on", request)
+    _alert(current_user, "[StockApp] 2단계 인증이 등록됐습니다",
+           _alert_body("계정에 Google Authenticator 2단계 인증이 새로 등록됐습니다.", request))
     return {"message": "2단계 인증을 켰습니다"}
 
 
@@ -549,16 +608,21 @@ async def disable_totp(
     current_user.totp_last_step = None
     await db.commit()
     await _event(db, current_user.id, "totp_off", request)
+    if settings.require_totp:
+        return {"message": "기존 등록을 지웠습니다 — 새 휴대폰으로 QR 코드를 다시 등록해야 다른 화면을 쓸 수 있습니다",
+                "totp_setup_required": True}
     return {"message": "2단계 인증을 껐습니다"}
 
 
 @router.get("/me")
-async def get_me(current_user: User = Depends(get_current_user)):
+async def get_me(current_user: User = Depends(get_user_before_totp)):
     return {
         "id": current_user.id,
         "username": current_user.username,
         "password_leaked": bool(current_user.password_leaked),
         "totp_enabled": bool(current_user.totp_enabled),
+        "totp_required": bool(settings.require_totp),
+        "is_admin": bool(current_user.is_admin),
         "nickname": current_user.nickname,
         "display_name": current_user.nickname or current_user.username,
         "email": current_user.email if current_user.email_verified else None,
@@ -572,7 +636,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 @router.post("/password/change")
-async def password_change(req: ChangePasswordRequest, request: Request, current_user: User = Depends(get_current_user),
+async def password_change(req: ChangePasswordRequest, request: Request, current_user: User = Depends(get_user_before_totp),
                           db: AsyncSession = Depends(get_db)):
     """비밀번호 변경 — 다른 기기의 로그인은 끊기고, 지금 화면은 새 토큰으로 계속"""
     if not verify_password(req.current_password, current_user.hashed_password):
@@ -632,6 +696,7 @@ async def delete_account(req: DeleteAccountRequest, current_user: User = Depends
     await db.execute(delete(AccountEvent).where(AccountEvent.user_id == uid))
     from app.services.papertrade import delete_user_data
     await delete_user_data(db, uid)   # AI 모의투자 계좌·시뮬레이션
+    await db.execute(delete(Invite).where(Invite.created_by == uid, Invite.used_by.is_(None)))   # 안 쓴 초대 코드
     await db.execute(delete(User).where(User.id == uid))
     await db.commit()
     return {"message": "탈퇴했습니다 — 관심종목·투자종목·모의투자 기록도 지웠습니다"}
@@ -702,7 +767,7 @@ async def remove_contact(req: RemoveContactRequest, request: Request, current_us
 
 
 @router.post("/logout-all")
-async def logout_all(request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def logout_all(request: Request, current_user: User = Depends(get_user_before_totp), db: AsyncSession = Depends(get_db)):
     """모든 기기에서 로그아웃 — 지금까지 발급된 토큰을 모두 무효로 하고, 지금 화면은 새 토큰으로 계속"""
     current_user.session_epoch = time.time()
     await db.commit()

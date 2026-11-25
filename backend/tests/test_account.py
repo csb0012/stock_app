@@ -137,7 +137,9 @@ def test_signup_closed_and_no_mail(env, monkeypatch):
     monkeypatch.setattr(mailer, "configured", lambda: False)
     r = c.post("/api/auth/signup/send-code", json={"email": "a@naver.com"})
     assert r.status_code == 503 and "SMTP" in r.json()["detail"]
-    assert c.get("/api/auth/options").json() == {"signup_open": True, "mail_configured": False, "sms_configured": True}
+    o = c.get("/api/auth/options").json()
+    assert {k: o[k] for k in ("signup_open", "mail_configured", "sms_configured")} == {"signup_open": True, "mail_configured": False, "sms_configured": True}
+    assert "invite_required" in o and "totp_required" in o
     monkeypatch.setattr(settings, "signup_open", False)
     assert c.post("/api/auth/signup/send-code", json={"email": "a@naver.com"}).status_code == 403
     assert c.post("/api/auth/register", json={"username": "kimtest", "password": "zxcv5678", "email": "a@naver.com", "code": "123456"}).status_code == 403
