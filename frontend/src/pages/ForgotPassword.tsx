@@ -1,33 +1,37 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Mail } from "lucide-react";
-import { authApi, errMsg } from "../api/client";
-import { AuthShell, Field, PasswordHint, passwordProblem, inputStyle, EMAIL_RE } from "../components/common/AuthForm";
+import { useQuery } from "@tanstack/react-query";
+import { Mail, Smartphone } from "lucide-react";
+import { authApi, errMsg, type Contact } from "../api/client";
+import {
+  AuthShell, Field, PasswordHint, passwordProblem, inputStyle, MethodTabs, ContactInput, contactOf, contactValid, useCooldown, type Method,
+} from "../components/common/AuthForm";
 
-/** 비밀번호 찾기: 가입(인증)한 이메일로 6자리 코드 → 새 비밀번호 */
+/** 비밀번호 찾기: 인증해 둔 이메일 또는 휴대폰으로 6자리 코드 → 새 비밀번호 */
 export default function ForgotPassword() {
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
-  const [sentTo, setSentTo] = useState<string | null>(null);
+  const opts = useQuery({ queryKey: ["auth-options"], queryFn: () => authApi.options().then((r) => r.data), staleTime: 60_000 });
+  const mail = !!opts.data?.mail_configured, sms = !!opts.data?.sms_configured;
+  const [picked, setPicked] = useState<Method | null>(null);
+  const method: Method = picked ?? (mail || !sms ? "email" : "phone");
+  const [contact, setContact] = useState("");
+  const [sentTo, setSentTo] = useState<Contact | null>(null);
   const [code, setCode] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
-  const [cool, setCool] = useState(0);
+  const [cool, startCool] = useCooldown();
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    if (cool <= 0) return;
-    const t = setTimeout(() => setCool(cool - 1), 1000);
-    return () => clearTimeout(t);
-  }, [cool]);
+  const switchMethod = (m: Method) => { setPicked(m); setContact(""); setSentTo(null); setCode(""); setMsg(""); setError(""); };
 
   const send = async () => {
     setError(""); setBusy(true);
     try {
-      const r = await authApi.forgot(email.trim());
-      setSentTo(email.trim().toLowerCase()); setMsg(r.data.message); setCool(60);
+      const c = contactOf(method, contact);
+      const r = await authApi.forgot(c);
+      setSentTo(c); setMsg(r.data.message); startCool();
     } catch (e) { setError(errMsg(e)); } finally { setBusy(false); }
   };
 
@@ -43,14 +47,15 @@ export default function ForgotPassword() {
   };
 
   return (
-    <AuthShell title="비밀번호 찾기" subtitle="가입할 때(또는 마이페이지에서) 인증한 이메일로 코드를 보냅니다">
+    <AuthShell title="비밀번호 찾기" subtitle="가입할 때(또는 마이페이지에서) 인증한 이메일·휴대폰으로 코드를 보냅니다">
       <form onSubmit={reset} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <Field label="이메일" hint={sentTo ? <span>📧 {msg}</span> : undefined}>
+        <MethodTabs value={method} onChange={switchMethod} mail={mail} sms={sms} />
+        <Field label={method === "email" ? "이메일" : "휴대폰 번호"} hint={sentTo ? <span>{method === "email" ? "📧" : "📱"} {msg}</span> : undefined}>
           <div style={{ display: "flex", gap: 6 }}>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@naver.com" style={inputStyle} autoComplete="email" />
+            <ContactInput method={method} value={contact} onChange={setContact} />
             <button type="button" className="btn btn-ghost" style={{ flexShrink: 0, fontSize: 12 }}
-              disabled={!EMAIL_RE.test(email.trim()) || busy || cool > 0} onClick={send}>
-              <Mail size={13} />{cool > 0 ? `${cool}초` : sentTo ? "다시 받기" : "코드 받기"}
+              disabled={!contactValid(method, contact) || busy || cool > 0} onClick={send}>
+              {method === "email" ? <Mail size={13} /> : <Smartphone size={13} />}{cool > 0 ? `${cool}초` : sentTo ? "다시 받기" : "코드 받기"}
             </button>
           </div>
         </Field>
@@ -76,8 +81,8 @@ export default function ForgotPassword() {
         )}
       </form>
       <p style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 12, lineHeight: 1.6 }}>
-        이메일을 인증한 적이 없는 예전 계정은 메일이 가지 않습니다 — 서버(PC)에서
-        <code> python create_admin.py --reset-password 아이디 새비밀번호</code> 로 바꾼 뒤, 마이페이지에서 이메일을 인증해 두세요.
+        이메일·휴대폰을 인증한 적이 없는 예전 계정은 코드가 가지 않습니다 — 서버(PC)에서
+        <code> python create_admin.py --reset-password 아이디 새비밀번호</code> 로 바꾼 뒤, 마이페이지에서 본인인증을 해 두세요.
       </p>
       <p style={{ fontSize: 12.5, color: "var(--text-secondary)", textAlign: "center", marginTop: 12 }}>
         <Link to="/login" style={{ color: "var(--accent)" }}>로그인으로 돌아가기</Link>

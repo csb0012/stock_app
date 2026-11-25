@@ -37,6 +37,7 @@ export function errMsg(e: any): string {
 }
 
 // Auth
+export type Contact = { email: string } | { phone: string };
 export const authApi = {
   login: (username: string, password: string, totp_code?: string) =>
     api.post("/auth/login", { username, password, totp_code }),
@@ -45,15 +46,22 @@ export const authApi = {
   enableTotp: (totp_code: string) => api.post("/auth/enable-totp", { totp_code }),
   disableTotp: (totp_code: string) => api.post("/auth/disable-totp", { totp_code }),
   options: () => api.get("/auth/options"),
-  signupSendCode: (email: string) => api.post("/auth/signup/send-code", { email }),
-  register: (username: string, password: string, email: string, code: string) =>
-    api.post("/auth/register", { username, password, email, code }),
-  forgot: (email: string) => api.post("/auth/password/forgot", { email }),
-  reset: (email: string, code: string, new_password: string) => api.post("/auth/password/reset", { email, code, new_password }),
+  // contact = { email } 또는 { phone } — 본인인증 수단 하나
+  signupSendCode: (contact: Contact) => api.post("/auth/signup/send-code", contact),
+  register: (username: string, password: string, contact: Contact, code: string, nickname?: string) =>
+    api.post("/auth/register", { username, password, ...contact, code, nickname: nickname || undefined }),
+  forgot: (contact: Contact) => api.post("/auth/password/forgot", contact),
+  reset: (contact: Contact, code: string, new_password: string) => api.post("/auth/password/reset", { ...contact, code, new_password }),
   changePassword: (current_password: string, new_password: string) =>
     api.post("/auth/password/change", { current_password, new_password }),
   emailSendCode: (email: string) => api.post("/auth/email/send-code", { email }),
   emailVerify: (email: string, code: string) => api.post("/auth/email/verify", { email, code }),
+  phoneSendCode: (phone: string) => api.post("/auth/phone/send-code", { phone }),
+  phoneVerify: (phone: string, code: string) => api.post("/auth/phone/verify", { phone, code }),
+  removeContact: (kind: "email" | "phone", password: string) => api.post("/auth/contact/remove", { kind, password }),
+  updateProfile: (nickname: string) => api.put("/auth/profile", { nickname }),
+  logoutAll: () => api.post("/auth/logout-all"),
+  activity: (limit = 30) => api.get("/auth/activity", { params: { limit } }),
   deleteAccount: (password: string, totp_code?: string) => api.post("/auth/delete-account", { password, totp_code }),
 };
 

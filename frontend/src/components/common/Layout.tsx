@@ -86,11 +86,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             style={{ padding: "5px 10px", marginRight: "auto" }}>
             {navOpen ? <X size={16} /> : <Menu size={16} />}
           </button>
-          {/* 사용자 이름 = 마이페이지 (비밀번호 변경·이메일 인증·2단계 인증·탈퇴) */}
+          {/* 닉네임(없으면 아이디) = 마이페이지 (닉네임·본인인증·비밀번호·2단계 인증·기기 관리·탈퇴) */}
           <NavLink to="/mypage" className="btn btn-ghost" data-testid="mypage-link" title="마이페이지"
             style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999, textDecoration: "none" }}>
-            <UserCircle size={14} /> <span className="top-user">{me?.username || username || "내 계정"}</span>
-            {me && !me.email && <span title="이메일 미인증 — 비밀번호 찾기를 쓰려면 인증하세요" style={{ width: 7, height: 7, borderRadius: 4, background: "var(--yellow)" }} />}
+            <UserCircle size={14} /> <span className="top-user">{me?.display_name || me?.username || username || "내 계정"}</span>
+            {me && !(me.email || me.phone) && <span data-testid="unverified-dot" title="본인인증(이메일 또는 휴대폰) 안 함 — 비밀번호 찾기를 쓰려면 인증하세요" style={{ width: 7, height: 7, borderRadius: 4, background: "var(--yellow)" }} />}
           </NavLink>
           <ThemeToggle pill />
           <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}>

@@ -55,7 +55,7 @@ export default function Login() {
               <>
                 <div>
                   <label style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 6, display: "block" }}>
-                    아이디 또는 이메일
+                    아이디 · 이메일 · 휴대폰 번호
                   </label>
                   <div style={{ position: "relative" }}>
                     <User size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
@@ -63,7 +63,8 @@ export default function Login() {
                       type="text"
                       value={form.username}
                       onChange={(e) => setForm({ ...form, username: e.target.value })}
-                      placeholder="아이디 또는 인증한 이메일"
+                      placeholder="아이디 또는 인증한 이메일·휴대폰 번호"
+                      autoComplete="username"
                       required
                       style={{
                         width: "100%", padding: "9px 10px 9px 32px",

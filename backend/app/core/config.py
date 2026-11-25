@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     smtp_from: str = ""              # 비우면 smtp_user
     signup_open: bool = True         # false 면 회원가입 막음 (기존 계정의 비밀번호 찾기·마이페이지는 그대로)
 
+    # 휴대폰 문자 발송 (이메일 대신 휴대폰으로 본인인증) — 솔라피(solapi.com) API 키
+    sms_api_key: str = ""
+    sms_api_secret: str = ""
+    sms_from: str = ""               # 솔라피에 등록한 발신번호 (예: 01012345678)
+    sms_daily_limit: int = 50        # 하루 최대 발송 건수 (요금 폭탄 방지, 0 = 제한 없음)
+
     # App
     app_env: str = "development"
     frontend_url: str = "http://localhost:5173"

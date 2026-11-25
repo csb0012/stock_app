@@ -130,7 +130,7 @@ bash deploy/setup-server.sh
   QR 을 휴대폰 앱으로 스캔 → 6자리 입력 → 확인. 끌 때도 같은 곳에서 지금 코드를 입력한다. 휴대폰을 잃어버렸으면 서버에서
   `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-totp <아이디>` 로 끈다 (관심종목·투자종목은 그대로).
 - 앱 로그인을 5번 틀리면 그 IP 는 15분 동안 차단된다.
-- **마이페이지에서 이메일을 인증해 둔다** — 비밀번호를 잊었을 때 로그인 화면 '비밀번호 찾기'로 메일 코드를 받아 바꿀 수 있다 (아래 7-1 메일 설정 필요).
+- **마이페이지에서 이메일 또는 휴대폰을 인증해 둔다** — 비밀번호를 잊었을 때 로그인 화면 '비밀번호 찾기'로 코드를 받아 바꿀 수 있다 (아래 7-1 메일 · 7-2 문자 설정 필요).
   메일을 못 쓰면 서버에서 `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-password <아이디> <새 비밀번호>`.
 
 ## 7-1. 메일 설정 (회원가입·비밀번호 찾기 인증 코드) — 네이버 메일
@@ -149,6 +149,22 @@ bash deploy/setup-server.sh
 - 확인: 로그인 화면 → 회원가입 → 내 다른 메일로 '인증 코드 받기'. 오류 문구가 뜨면 그대로 확인 (예: "메일 계정 로그인 실패" = SMTP 사용 설정·비밀번호 문제).
   Oracle Cloud 는 25번 포트를 막지만 465/587 은 쓸 수 있다. 465 가 안 되면 `SMTP_PORT=587`.
 - Gmail 을 쓰려면 `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, 구글 계정 **앱 비밀번호**.
+
+## 7-2. 휴대폰 문자 인증 (선택) — 솔라피
+이메일 대신 휴대폰 번호로 가입·비밀번호 찾기·로그인을 하려면 문자 발송 업체 계정이 필요하다 (안 하면 화면의 '휴대폰으로 인증' 탭만 '준비 안 됨').
+- [solapi.com](https://solapi.com) 가입 → 잔액 충전 (단문 1건 약 20원)
+- 콘솔 → **발신번호 관리**에서 문자를 보낼 번호를 등록·인증 (내 휴대폰 번호 가능 — 등록 안 된 번호로는 통신사가 막음)
+- 콘솔 → **API Key 관리**에서 API Key·API Secret 발급
+- 서버 `backend/.env` 에 추가:
+  ```
+  SMS_API_KEY=발급받은 API Key
+  SMS_API_SECRET=발급받은 API Secret
+  SMS_FROM=01012345678
+  SMS_DAILY_LIMIT=50
+  ```
+  → `sudo docker compose -f docker-compose.cloud.yml restart backend`
+- 확인: 회원가입 → '휴대폰으로 인증' → 내 번호로 '인증 코드 받기'. "문자 접수 실패"면 발신번호 등록·잔액, "계정 인증 실패"면 키를 확인.
+- `SMS_DAILY_LIMIT` = 하루 최대 발송 건수 (누가 계속 눌러 요금이 나가는 것 방지, 0 = 제한 없음). 키는 채팅·git 에 올리지 말 것 (`.env` 는 git 제외).
 - **회사 PC·집 PC 에서는 이제 `start.bat` / `start-docker.bat` 를 켜지 않는다.** 이유는 두 가지다.
   - 같은 KIS 키로 두 곳이 동시에 호출하면 초당 호출 제한(EGW00201)에 더 자주 걸린다.
   - 데이터(관심종목·예측 기록)가 두 곳으로 갈라진다.

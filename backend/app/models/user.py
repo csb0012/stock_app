@@ -18,10 +18,31 @@ class User(Base):
     email_verified = Column(Boolean, default=False)
     # 비밀번호를 바꾼 시각(유닉스 초) — 이 전에 발급된 로그인 토큰은 무효 (다른 기기 로그아웃)
     password_changed_at = Column(Float, nullable=True)
+    # 닉네임 (화면에 보이는 이름, 비우면 아이디). 대소문자 무시 중복 금지는 코드에서 검사
+    nickname = Column(String, nullable=True, index=True)
+    # 휴대폰 번호 (숫자만, 예: 01012345678) — 문자 인증을 마쳐야 phone_verified
+    phone = Column(String, nullable=True, index=True)
+    phone_verified = Column(Boolean, default=False)
+    # '모든 기기에서 로그아웃' 한 시각 — 토큰의 sev 가 이 값과 다르면 무효
+    session_epoch = Column(Float, nullable=True)
+
+
+class AccountEvent(Base):
+    """계정 활동 기록 (로그인 성공·실패, 비밀번호 변경, 연락처 변경, 모든 기기 로그아웃 …) — 사용자당 최근 100개"""
+    __tablename__ = "account_events"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    at = Column(Float, nullable=False)                # 유닉스 초
+    kind = Column(String, nullable=False)             # login / login_fail / password_change / ...
+    ok = Column(Boolean, default=True)
+    ip = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    detail = Column(String, nullable=True)
 
 
 class EmailCode(Base):
-    """이메일 6자리 인증 코드 (가입·비밀번호 찾기·이메일 변경). 코드는 해시로만 저장"""
+    """6자리 인증 코드 (가입·비밀번호 찾기·연락처 변경). email 칸 = 받는 곳 (이메일 주소 또는 휴대폰 번호). 코드는 해시로만 저장"""
     __tablename__ = "email_codes"
 
     id = Column(Integer, primary_key=True)

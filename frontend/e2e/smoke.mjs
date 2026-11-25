@@ -20,8 +20,10 @@ if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 function makeApi(overrides = {}) {
   const calls = [];
   const table = {
-    "GET /api/auth/me": { id: 1, username: "tester", totp_enabled: false, email: null, email_verified: false, created_at: "2026-11-01T00:00:00", password_changed_at: null },
-    "GET /api/auth/options": { signup_open: true, mail_configured: true },
+    "GET /api/auth/me": { id: 1, username: "tester", nickname: null, display_name: "tester", totp_enabled: false, email: null, email_verified: false,
+                          phone: null, phone_verified: false, verified: false, created_at: "2026-11-01T00:00:00", password_changed_at: null },
+    "GET /api/auth/options": { signup_open: true, mail_configured: true, sms_configured: true },
+    "GET /api/auth/activity": { items: [], recent_failures: 0 },
     "GET /api/market/status": F.MARKET_STATUS,
     "GET /api/market/overview/bigtech": F.BIGTECH,
     "GET /api/market/overview/etfs": { items: [], updated_at: F.BIGTECH.updated_at },
@@ -352,7 +354,7 @@ async function run() {
 
   let totpOn = false;
   await test("마이페이지: 2단계 인증 켜기(QR → 코드 확인) · 끄기", { api: makeApi({
-    "GET /api/auth/me": () => ({ id: 1, username: "tester", totp_enabled: totpOn, email: null }),
+    "GET /api/auth/me": () => ({ id: 1, username: "tester", display_name: "tester", totp_enabled: totpOn, email: null }),
     "POST /api/auth/setup-totp": { qr_code: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", secret: "ABCDEF234567", uri: "otpauth://x" },
     "POST /api/auth/enable-totp": () => { totpOn = true; return { message: "ok" }; },
     "POST /api/auth/disable-totp": () => { totpOn = false; return { message: "ok" }; } }) }, async (page, api) => {
@@ -422,6 +424,56 @@ async function run() {
     expect((await page.getByTestId("signup-closed").innerText()).includes("SMTP"), "안내 문구 이상");
   });
 
+  await test("회원가입: 휴대폰으로 인증 (탭 전환 · 하이픈 · 닉네임)", { token: false, api: makeApi({
+    "POST /api/auth/signup/send-code": { message: "010-1234-5678 로 인증번호 문자를 보냈습니다 (10분 유효)" },
+    "POST /api/auth/register": { message: "가입 완료", username: "phoneman", access_token: "phone-token", token_type: "bearer" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/signup`);
+    await page.getByRole("tab", { name: "휴대폰으로 인증" }).click();
+    const send = page.getByRole("button", { name: "인증 코드 받기" });
+    await page.getByLabel("휴대폰 번호").fill("0212345678");
+    expect(await send.isDisabled(), "휴대폰 번호가 아닌데 코드 받기가 눌림");
+    await page.getByLabel("휴대폰 번호").fill("01012345678");
+    expect((await page.getByLabel("휴대폰 번호").inputValue()) === "010-1234-5678", "하이픈 자동 입력 안 됨");
+    await send.click();
+    await page.getByText(/인증번호 문자를 보냈습니다/).waitFor();
+    await page.getByPlaceholder("000000").fill("123456");
+    await page.locator("input[autocomplete=username]").fill("phoneman");
+    await page.getByLabel("닉네임").fill("폰맨");
+    await page.locator("input[autocomplete=new-password]").first().fill("zxcv5678");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("zxcv5678");
+    await page.getByRole("button", { name: "가입하기" }).click();
+    await page.waitForURL(`${BASE}/`);
+    const sc = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/signup/send-code").body);
+    const body = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/register").body);
+    expect(sc.phone === "01012345678" && !sc.email, `코드 요청 이상: ${JSON.stringify(sc)}`);
+    expect(body.phone === "01012345678" && !body.email && body.nickname === "폰맨" && body.code === "123456", `가입 요청 이상: ${JSON.stringify(body)}`);
+  });
+
+  await test("회원가입: 문자 설정이 없으면 휴대폰 탭은 못 누름", { token: false, api: makeApi({ "GET /api/auth/options": { signup_open: true, mail_configured: true, sms_configured: false } }) }, async (page) => {
+    await page.goto(`${BASE}/signup`);
+    const tab = page.getByRole("tab", { name: /휴대폰으로 인증/ });
+    await tab.waitFor();
+    expect(await tab.isDisabled(), "문자 설정이 없는데 휴대폰 탭이 눌림");
+    expect((await tab.innerText()).includes("준비 안 됨"), "준비 안 됨 표시 없음");
+  });
+
+  await test("비밀번호 찾기: 휴대폰 번호로", { token: false, api: makeApi({
+    "POST /api/auth/password/forgot": { message: "010-1234-5678 가 가입된 휴대폰 번호면 인증번호 문자를 보냈습니다 (10분 유효)" },
+    "POST /api/auth/password/reset": { message: "비밀번호를 바꿨습니다 — 새 비밀번호로 로그인하세요", username: "phoneman" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/forgot`);
+    await page.getByRole("tab", { name: "휴대폰으로 인증" }).click();
+    await page.getByLabel("휴대폰 번호").fill("010-1234-5678");
+    await page.getByRole("button", { name: "코드 받기" }).click();
+    await page.getByText(/가입된 휴대폰 번호면/).waitFor();
+    await page.getByPlaceholder("000000").fill("654321");
+    await page.locator("input[autocomplete=new-password]").first().fill("newpass123");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("newpass123");
+    await page.getByRole("button", { name: "비밀번호 바꾸기" }).click();
+    await page.waitForURL(/\/login$/);
+    const b = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/password/reset").body);
+    expect(b.phone === "01012345678" && !b.email && b.code === "654321", `초기화 요청 이상: ${JSON.stringify(b)}`);
+  });
+
   await test("회원가입: 서버 오류 문구 그대로 (이미 가입된 이메일)", { token: false, api: makeApi({
     "POST /api/auth/signup/send-code": { __status: 400, detail: "이미 가입된 이메일입니다 — 로그인하거나 비밀번호 찾기를 쓰세요" } }) }, async (page) => {
     await page.goto(`${BASE}/signup`);
@@ -454,15 +506,20 @@ async function run() {
     await page.goto(`${BASE}/`);
     const link = page.getByTestId("mypage-link");
     await link.getByText("tester").waitFor();
+    await link.getByTestId("unverified-dot").waitFor();
     await link.click();
-    await page.getByTestId("my-info").getByText("tester").waitFor();
-    expect((await page.getByTestId("my-info").innerText()).includes("없음"), "이메일 없음 안내가 없음");
-    const em = page.getByTestId("email-section");
-    await em.getByLabel("이메일").fill("me@naver.com");
+    await page.getByTestId("my-info").getByText("tester").first().waitFor();
+    const info = await page.getByTestId("my-info").innerText();
+    expect(info.includes("본인인증") && !info.includes("바꾼 적 없음"), `내 정보 칸 이상: ${info}`);
+    expect(!(await page.locator("body").innerText()).includes("바꾼 적 없음"), "필요 없는 '비밀번호 변경: 바꾼 적 없음' 이 남아 있음");
+    const em = page.getByTestId("email-row");
+    await em.getByRole("button", { name: "등록" }).click();
+    await em.getByLabel("새 이메일").fill("me@naver.com");
     await em.getByRole("button", { name: "인증 코드 받기" }).click();
     await em.getByLabel("이메일 인증 코드").fill("111222");
     await em.getByRole("button", { name: "확인" }).click();
     await page.getByText("이메일을 인증했습니다").first().waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/email/verify").body).code === "111222", "인증 코드가 안 감");
     const pw = page.getByTestId("password-section");
     const btn = pw.getByRole("button", { name: "비밀번호 바꾸기" });
     await pw.locator("input[autocomplete=current-password]").fill("oldpass123");
@@ -474,7 +531,90 @@ async function run() {
     await btn.click();
     await page.getByText(/비밀번호를 바꿨습니다/).first().waitFor();
     expect((await page.evaluate(() => localStorage.getItem("token"))) === "rotated", "새 토큰으로 안 바뀜 (다음 요청부터 401 로 로그아웃됨)");
+  });
+
+  let nick = null;
+  await test("마이페이지: 닉네임 바꾸면 상단 이름도 바뀜 · 규칙 안내 · 서버 오류 문구", { api: makeApi({
+    "GET /api/auth/me": () => ({ id: 1, username: "tester", nickname: nick, display_name: nick || "tester", totp_enabled: false, email: "me@naver.com", phone: null, created_at: "2026-11-01T00:00:00" }),
+    "PUT /api/auth/profile": (req) => {
+      const n = JSON.parse(req.postData()).nickname;
+      if (n === "taken") return { __status: 400, detail: "이미 쓰고 있는 닉네임입니다" };
+      nick = n || null; return { message: "닉네임을 바꿨습니다", nickname: nick, display_name: nick || "tester" };
+    } }) }, async (page) => {
+    await page.goto(`${BASE}/mypage`);
+    const sec = page.getByTestId("nickname-section");
+    const save = sec.getByRole("button", { name: "저장" });
+    expect(await page.getByTestId("mypage-link").getByTestId("unverified-dot").count() === 0, "이메일 인증했는데 노란 점이 보임");
+    await sec.getByLabel("닉네임").fill("띄어 쓰기");
+    await sec.getByText(/✗ 한글·영문·숫자/).waitFor();
+    expect(await save.isDisabled(), "규칙에 안 맞는데 저장이 눌림");
+    await sec.getByLabel("닉네임").fill("taken");
+    await save.click();
+    await sec.getByText("이미 쓰고 있는 닉네임입니다").waitFor();
+    await sec.getByLabel("닉네임").fill("주식왕");
+    await save.click();
+    await page.getByTestId("mypage-link").getByText("주식왕").waitFor();
+    await page.getByTestId("my-info").getByText("아이디 tester").waitFor();
     await shot(page, "mypage");
+  });
+
+  let phone = null;
+  await test("마이페이지: 휴대폰 등록(자동 하이픈·문자 코드) → 이메일 삭제(비밀번호) 가능해짐", { api: makeApi({
+    "GET /api/auth/me": () => ({ id: 1, username: "tester", display_name: "tester", totp_enabled: false, email: "me@naver.com", phone, created_at: "2026-11-01T00:00:00" }),
+    "POST /api/auth/phone/send-code": { message: "010-1234-5678 로 인증번호 문자를 보냈습니다 (10분 유효)" },
+    "POST /api/auth/phone/verify": () => { phone = "010-1234-5678"; return { message: "휴대폰 번호를 인증했습니다", phone }; },
+    "POST /api/auth/contact/remove": { message: "이메일을 지웠습니다" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/mypage`);
+    const em = page.getByTestId("email-row"), ph = page.getByTestId("phone-row");
+    expect(await em.getByRole("button", { name: "삭제" }).isDisabled(), "본인인증 수단이 하나뿐인데 삭제가 눌림");
+    await ph.getByRole("button", { name: "등록" }).click();
+    await ph.getByLabel("새 휴대폰 번호").fill("01012345678");
+    expect((await ph.getByLabel("새 휴대폰 번호").inputValue()) === "010-1234-5678", "하이픈이 자동으로 안 들어감");
+    await ph.getByRole("button", { name: "인증 코드 받기" }).click();
+    await ph.getByLabel("휴대폰 인증 코드").fill("654321");
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/phone/send-code").body).phone === "01012345678", "번호가 숫자만으로 안 감");
+    await ph.getByRole("button", { name: "확인" }).click();
+    await ph.getByText("010-1234-5678").waitFor();
+    await em.getByRole("button", { name: "삭제" }).click();
+    await em.getByLabel("이메일 삭제 비밀번호").fill("pw12345678");
+    await em.getByRole("button", { name: "이메일 삭제" }).click();
+    await page.getByText("이메일을 지웠습니다").first().waitFor();
+    const b = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/contact/remove").body);
+    expect(b.kind === "email" && b.password === "pw12345678", `삭제 요청 이상: ${JSON.stringify(b)}`);
+  });
+
+  await test("마이페이지: 최근 활동 표 · 로그인 실패 경고 · 모든 기기 로그아웃(새 토큰)", { api: makeApi({
+    "GET /api/auth/activity": { recent_failures: 2, items: [
+      { at: 1764000000, kind: "login", ok: true, ip: "1.2.3.4", user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", detail: null },
+      { at: 1763990000, kind: "login_fail", ok: false, ip: "5.6.7.8", user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1", detail: "비밀번호 틀림" }] },
+    "POST /api/auth/logout-all": { message: "다른 모든 기기·브라우저에서 로그아웃했습니다", access_token: "fresh", token_type: "bearer" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/mypage`);
+    const sec = page.getByTestId("devices-section");
+    await sec.getByTestId("fail-warning").getByText(/로그인 실패 2번/).waitFor();
+    const t = await sec.getByTestId("activity-table").innerText();
+    expect(t.includes("Chrome · Windows") && t.includes("Safari · iPhone/iPad") && t.includes("로그인 실패") && t.includes("비밀번호 틀림") && t.includes("5.6.7.8"), `활동 표 이상: ${t}`);
+    page.once("dialog", (d) => d.dismiss());
+    await sec.getByRole("button", { name: "모든 기기에서 로그아웃" }).click();
+    await page.waitForTimeout(200);
+    expect(!api.calls.some((c) => c.key === "POST /api/auth/logout-all"), "취소했는데 요청이 감");
+    page.once("dialog", (d) => d.accept());
+    await sec.getByRole("button", { name: "모든 기기에서 로그아웃" }).click();
+    await page.getByText(/다른 모든 기기/).first().waitFor();
+    expect((await page.evaluate(() => localStorage.getItem("token"))) === "fresh", "지금 화면이 새 토큰으로 안 바뀜");
+    expect(page.url().endsWith("/mypage"), "지금 화면까지 로그아웃됨");
+  });
+
+  await test("마이페이지: 관심종목·투자종목 CSV 내려받기 (엑셀 한글용 BOM)", {}, async (page) => {
+    await page.goto(`${BASE}/mypage`);
+    const sec = page.getByTestId("data-section");
+    const [dl] = await Promise.all([page.waitForEvent("download"), sec.getByRole("button", { name: /관심종목 CSV/ }).click()]);
+    expect(/^watchlist-\d{4}-\d{2}-\d{2}\.csv$/.test(dl.suggestedFilename()), `파일 이름 이상: ${dl.suggestedFilename()}`);
+    const { readFileSync } = await import("node:fs");
+    const txt = readFileSync(await dl.path(), "utf8");
+    expect(txt.startsWith("\uFEFF시장,종목코드,종목명") && txt.includes(F.WATCH_LIST_BASIC[0].symbol), `CSV 내용 이상: ${txt.slice(0, 120)}`);
+    const [dl2] = await Promise.all([page.waitForEvent("download"), sec.getByRole("button", { name: /투자종목 CSV/ }).click()]);
+    const txt2 = readFileSync(await dl2.path(), "utf8");
+    expect(txt2.includes("AVGO") && txt2.includes("수량,평단가"), `투자종목 CSV 이상: ${txt2.slice(0, 120)}`);
   });
 
   await test("마이페이지: 탈퇴는 아이디 입력 + 비밀번호 + 확인 후 → 로그인 화면", { api: makeApi({

@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from tests.conftest import run
 from app.core.config import settings
-from app.services import mailer, email_codes
+from app.services import mailer, email_codes, sms
 
 
 @pytest.fixture
@@ -50,6 +50,11 @@ def env(monkeypatch):
         sent.append({"to": to, "subject": subject, "body": body})
     monkeypatch.setattr(mailer, "send", fake_send)
     monkeypatch.setattr(mailer, "configured", lambda: True)
+
+    async def fake_sms(to, text):   # 문자도 같은 목록에 (body 에 코드)
+        sent.append({"to": to, "subject": "SMS", "body": text.replace("인증번호", "인증 코드:")})
+    monkeypatch.setattr(sms, "send", fake_sms)
+    monkeypatch.setattr(sms, "configured", lambda: True)
     monkeypatch.setattr(settings, "signup_open", True)
     monkeypatch.setattr(email_codes, "COOLDOWN", 0)
     with TestClient(app) as c:
@@ -132,7 +137,7 @@ def test_signup_closed_and_no_mail(env, monkeypatch):
     monkeypatch.setattr(mailer, "configured", lambda: False)
     r = c.post("/api/auth/signup/send-code", json={"email": "a@naver.com"})
     assert r.status_code == 503 and "SMTP" in r.json()["detail"]
-    assert c.get("/api/auth/options").json() == {"signup_open": True, "mail_configured": False}
+    assert c.get("/api/auth/options").json() == {"signup_open": True, "mail_configured": False, "sms_configured": True}
     monkeypatch.setattr(settings, "signup_open", False)
     assert c.post("/api/auth/signup/send-code", json={"email": "a@naver.com"}).status_code == 403
     assert c.post("/api/auth/register", json={"username": "kimtest", "password": "zxcv5678", "email": "a@naver.com", "code": "123456"}).status_code == 403
@@ -348,3 +353,285 @@ def test_mailer_not_configured(monkeypatch):
     monkeypatch.setattr(settings, "smtp_password", "y"); monkeypatch.setattr(settings, "smtp_port", 1)   # 닫힌 포트
     with pytest.raises(mailer.MailError, match="메일 발송 실패"):
         run(mailer.send("a@b.co", "s", "b"))
+
+
+# ---------------- 휴대폰(문자) 본인인증 ----------------
+
+def phone_signup(c, sent, username="phoneman", phone="010-1234-5678", pw="abcd1234", nickname=None):
+    r = c.post("/api/auth/signup/send-code", json={"phone": phone})
+    assert r.status_code == 200, r.text
+    body = {"username": username, "password": pw, "phone": phone, "code": code_of(sent)}
+    if nickname is not None:
+        body["nickname"] = nickname
+    return c.post("/api/auth/register", json=body)
+
+
+@pytest.mark.parametrize("raw, norm", [
+    ("010-1234-5678", "01012345678"), ("01012345678", "01012345678"), ("+82 10-1234-5678", "01012345678"),
+    ("821012345678", "01012345678"), ("011-123-4567", "0111234567"), (" 010 9999 0000 ", "01099990000"),
+])
+def test_normalize_phone(raw, norm):
+    assert email_codes.normalize_phone(raw) == norm
+
+
+@pytest.mark.parametrize("bad", ["", "02-123-4567", "010-123", "1234567890", "010-1234-56789", "abc"])
+def test_normalize_phone_bad(bad):
+    with pytest.raises(email_codes.CodeError):
+        email_codes.normalize_phone(bad)
+
+
+def test_phone_signup_login_and_forgot(env):
+    c, sent, _ = env
+    r = phone_signup(c, sent)
+    assert r.status_code == 200, r.text
+    assert sent[0]["to"] == "01012345678" and sent[0]["subject"] == "SMS"
+    me = c.get("/api/auth/me", headers=h(r.json()["access_token"])).json()
+    assert me["phone"] == "010-1234-5678" and me["phone_verified"] and me["email"] is None and me["verified"]
+    # 휴대폰 번호로 로그인 (하이픈 있든 없든)
+    assert c.post("/api/auth/login", json={"username": "01012345678", "password": "abcd1234"}).json()["username"] == "phoneman"
+    assert c.post("/api/auth/login", json={"username": "010-1234-5678", "password": "abcd1234"}).status_code == 200
+    # 같은 번호로 다시 가입 불가
+    r = c.post("/api/auth/signup/send-code", json={"phone": "01012345678"})
+    assert r.status_code == 400 and "휴대폰" in r.json()["detail"]
+    # 비밀번호 찾기 — 없는 번호도 같은 답, 문자는 안 감
+    n = len(sent)
+    r1 = c.post("/api/auth/password/forgot", json={"phone": "010-0000-0000"})
+    assert r1.status_code == 200 and len(sent) == n
+    r2 = c.post("/api/auth/password/forgot", json={"phone": "010-1234-5678"})
+    assert len(sent) == n + 1 and r1.json()["message"].split(" 가 ")[1] == r2.json()["message"].split(" 가 ")[1]
+    r = c.post("/api/auth/password/reset", json={"phone": "01012345678", "code": code_of(sent), "new_password": "newone123"})
+    assert r.status_code == 200 and r.json()["username"] == "phoneman"
+    assert c.post("/api/auth/login", json={"username": "phoneman", "password": "newone123"}).status_code == 200
+
+
+def test_contact_must_be_exactly_one(env):
+    c, sent, _ = env
+    for body in ({}, {"email": "a@naver.com", "phone": "01012345678"}, {"email": "", "phone": ""}):
+        r = c.post("/api/auth/signup/send-code", json=body)
+        assert r.status_code == 400 and "하나" in r.json()["detail"]
+    assert c.post("/api/auth/signup/send-code", json={"phone": "02-123-4567"}).status_code == 400
+
+
+def test_sms_not_configured(env, monkeypatch):
+    c, _, _ = env
+    monkeypatch.setattr(sms, "configured", lambda: False)
+    r = c.post("/api/auth/signup/send-code", json={"phone": "01012345678"})
+    assert r.status_code == 503 and "SMS" in r.json()["detail"]
+    r = c.post("/api/auth/password/forgot", json={"phone": "01012345678"})
+    assert r.status_code == 503
+    assert c.post("/api/auth/signup/send-code", json={"email": "a@naver.com"}).status_code == 200   # 메일은 그대로
+
+
+def test_sms_failure_allows_retry(env, monkeypatch):
+    c, sent, _ = env
+    monkeypatch.setattr(email_codes, "COOLDOWN", 60)
+
+    async def boom(to, text):
+        raise sms.SmsError("문자 접수 실패 — 발신번호 미등록")
+    monkeypatch.setattr(sms, "send", boom)
+    r = c.post("/api/auth/signup/send-code", json={"phone": "01012345678"})
+    assert r.status_code == 502 and "발신번호" in r.json()["detail"]
+
+    async def ok(to, text):
+        sent.append({"to": to, "subject": "SMS", "body": text.replace("인증번호", "인증 코드:")})
+    monkeypatch.setattr(sms, "send", ok)
+    assert c.post("/api/auth/signup/send-code", json={"phone": "01012345678"}).status_code == 200
+
+
+def test_phone_register_on_mypage_and_remove_contact(env):
+    c, sent, _ = env
+    tok = signup(c, sent, "both", "both@naver.com", "zz9876qq").json()["access_token"]
+    # 이메일만 있으면 이메일은 못 지움 (본인인증 수단이 하나는 남아야)
+    r = c.post("/api/auth/contact/remove", json={"kind": "email", "password": "zz9876qq"}, headers=h(tok))
+    assert r.status_code == 400 and "하나는 남아야" in r.json()["detail"]
+    assert c.post("/api/auth/phone/send-code", json={"phone": "010-5555-6666"}, headers=h(tok)).status_code == 200
+    assert "휴대폰 인증" in sent[-1]["body"]
+    bad = c.post("/api/auth/phone/verify", json={"phone": "01055556666", "code": "000000" if code_of(sent) != "000000" else "111111"}, headers=h(tok))
+    assert bad.status_code == 400
+    r = c.post("/api/auth/phone/verify", json={"phone": "01055556666", "code": code_of(sent)}, headers=h(tok))
+    assert r.status_code == 200 and r.json()["phone"] == "010-5555-6666"
+    me = c.get("/api/auth/me", headers=h(tok)).json()
+    assert me["phone"] == "010-5555-6666" and me["email"] == "both@naver.com"
+    # 이미 인증된 같은 번호 다시 / 다른 계정이 가져가기 불가
+    assert c.post("/api/auth/phone/send-code", json={"phone": "01055556666"}, headers=h(tok)).status_code == 400
+    other = phone_signup(c, sent, "other1", "010-7777-8888").json()["access_token"]
+    r = c.post("/api/auth/phone/send-code", json={"phone": "01055556666"}, headers=h(other))
+    assert r.status_code == 400 and "다른 계정" in r.json()["detail"]
+    # 이제 이메일 삭제 가능 (비밀번호 필요)
+    assert c.post("/api/auth/contact/remove", json={"kind": "email", "password": "wrong"}, headers=h(tok)).status_code == 400
+    assert c.post("/api/auth/contact/remove", json={"kind": "email", "password": "zz9876qq"}, headers=h(tok)).status_code == 200
+    me = c.get("/api/auth/me", headers=h(tok)).json()
+    assert me["email"] is None and me["phone"] and me["verified"]
+    assert c.post("/api/auth/login", json={"username": "both@naver.com", "password": "zz9876qq"}).status_code == 401
+    assert c.post("/api/auth/contact/remove", json={"kind": "email", "password": "zz9876qq"}, headers=h(tok)).status_code == 400
+    assert c.post("/api/auth/contact/remove", json={"kind": "fax", "password": "zz9876qq"}, headers=h(tok)).status_code == 400
+
+
+# ---------------- 닉네임 ----------------
+
+def test_nickname(env):
+    c, sent, _ = env
+    tok = signup(c, sent, "nick1", "n1@naver.com", "pass9876", ).json()["access_token"]
+    me = c.get("/api/auth/me", headers=h(tok)).json()
+    assert me["nickname"] is None and me["display_name"] == "nick1"
+    r = c.put("/api/auth/profile", json={"nickname": "주식왕_1"}, headers=h(tok))
+    assert r.status_code == 200 and r.json()["display_name"] == "주식왕_1"
+    assert c.get("/api/auth/me", headers=h(tok)).json()["display_name"] == "주식왕_1"
+    for bad, msg in [("a", "2~12자"), ("띄어 쓰기", "2~12자"), ("열세글자가넘는닉네임입니다", "2~12자"), ("관리자", "쓸 수 없는"),
+                     ("old", "이미"), ("OLD", "이미")]:   # old = 다른 사람의 아이디
+        r = c.put("/api/auth/profile", json={"nickname": bad}, headers=h(tok))
+        assert r.status_code == 400 and msg in r.json()["detail"], (bad, r.json())
+    # 다른 사람이 같은 닉네임(대소문자 무시) 불가, 가입할 때 아이디로도 불가
+    r = phone_signup(c, sent, "nick2", "010-2222-3333", nickname="주식왕_1")
+    assert r.status_code == 400 and "닉네임" in r.json()["detail"]
+    tok2 = phone_signup(c, sent, "nick2", "010-2222-3333", nickname="Trader").json()["access_token"]
+    assert c.get("/api/auth/me", headers=h(tok2)).json()["display_name"] == "Trader"
+    r = c.put("/api/auth/profile", json={"nickname": "trader"}, headers=h(tok))
+    assert r.status_code == 400
+    c.post("/api/auth/signup/send-code", json={"email": "t@naver.com"})
+    r = c.post("/api/auth/register", json={"username": "TRADER", "password": "abcd1234", "email": "t@naver.com", "code": code_of(sent)})
+    assert r.status_code == 400 and "아이디" in r.json()["detail"]
+    # 내 닉네임 그대로 저장은 됨, 비우면 아이디
+    assert c.put("/api/auth/profile", json={"nickname": "주식왕_1"}, headers=h(tok)).status_code == 200
+    r = c.put("/api/auth/profile", json={"nickname": "  "}, headers=h(tok))
+    assert r.status_code == 200 and r.json()["display_name"] == "nick1"
+
+
+# ---------------- 모든 기기 로그아웃 · 활동 기록 ----------------
+
+def test_logout_all(env):
+    c, sent, _ = env
+    a = c.post("/api/auth/login", json={"username": "old", "password": "oldpass123"}).json()["access_token"]
+    b = c.post("/api/auth/login", json={"username": "old", "password": "oldpass123"}).json()["access_token"]
+    r = c.post("/api/auth/logout-all", headers=h(a))
+    assert r.status_code == 200
+    new = r.json()["access_token"]
+    assert c.get("/api/auth/me", headers=h(new)).status_code == 200
+    for t in (a, b):
+        r = c.get("/api/auth/me", headers=h(t))
+        assert r.status_code == 401 and "모든 기기" in r.json()["detail"]
+    # 그 뒤 새로 로그인한 토큰은 정상
+    t2 = c.post("/api/auth/login", json={"username": "old", "password": "oldpass123"}).json()["access_token"]
+    assert c.get("/api/auth/me", headers=h(t2)).status_code == 200
+
+
+def test_activity_log(env):
+    c, sent, _ = env
+    c.post("/api/auth/login", json={"username": "old", "password": "wrongpw1"}, headers={"User-Agent": "Mozilla/5.0 (iPhone)"})
+    c.post("/api/auth/login", json={"username": "nobody", "password": "x"})          # 없는 아이디는 기록 없음
+    tok = c.post("/api/auth/login", json={"username": "old", "password": "oldpass123"},
+                 headers={"X-Forwarded-For": "1.2.3.4", "User-Agent": "Mozilla/5.0 (Windows NT 10.0) Chrome/130"}).json()["access_token"]
+    tok = c.post("/api/auth/password/change", json={"current_password": "oldpass123", "new_password": "newpass123"}, headers=h(tok)).json()["access_token"]
+    r = c.get("/api/auth/activity", headers=h(tok)).json()
+    kinds = [i["kind"] for i in r["items"]]
+    assert kinds == ["password_change", "login", "login_fail"], kinds          # 최신순
+    assert r["recent_failures"] == 1
+    login = r["items"][1]
+    assert login["ip"] == "1.2.3.4" and "Windows" in login["user_agent"] and login["ok"]
+    assert r["items"][2]["ok"] is False and r["items"][2]["detail"] == "비밀번호 틀림"
+
+
+def test_activity_keeps_recent_only(env, monkeypatch):
+    c, sent, Session = env
+    from app.api.routes import auth
+    monkeypatch.setattr(auth, "EVENT_KEEP", 5)
+    for _ in range(8):
+        tok = c.post("/api/auth/login", json={"username": "old", "password": "oldpass123"}).json()["access_token"]
+
+    async def count():
+        from sqlalchemy import select, func
+        from app.models.user import AccountEvent
+        async with Session() as s:
+            return (await s.execute(select(func.count()).select_from(AccountEvent))).scalar()
+    assert run(count()) == 5
+    assert len(c.get("/api/auth/activity?limit=100", headers=h(tok)).json()["items"]) == 5
+
+
+def test_delete_account_removes_activity(env):
+    c, sent, Session = env
+    tok = phone_signup(c, sent, "gone1", "010-3333-4444").json()["access_token"]
+    c.post("/api/auth/login", json={"username": "gone1", "password": "abcd1234"})
+    assert c.post("/api/auth/delete-account", json={"password": "abcd1234"}, headers=h(tok)).status_code == 200
+
+    async def count():
+        from sqlalchemy import select, func
+        from app.models.user import AccountEvent
+        async with Session() as s:
+            return (await s.execute(select(func.count()).select_from(AccountEvent))).scalar()
+    assert run(count()) == 0
+    assert phone_signup(c, sent, "gone2", "010-3333-4444").status_code == 200    # 같은 번호로 다시 가입 가능
+
+
+# ---------------- 문자 발송 (가짜 솔라피 서버) ----------------
+
+@pytest.fixture
+def solapi(monkeypatch):
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    state = {"reqs": [], "reply": None}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            state["reqs"].append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+            status, data = state["reply"] or (200, {"groupInfo": {"count": {"total": 1, "registeredFailed": 0, "registeredSuccess": 1}},
+                                                    "failedMessageList": []})
+            raw = json.dumps(data).encode()
+            self.send_response(status); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    monkeypatch.setattr(sms, "API_BASE", f"http://127.0.0.1:{srv.server_address[1]}")
+    monkeypatch.setattr(settings, "sms_api_key", "KEY123")
+    monkeypatch.setattr(settings, "sms_api_secret", "SECRET456")
+    monkeypatch.setattr(settings, "sms_from", "010-9876-5432")
+    monkeypatch.setattr(settings, "sms_daily_limit", 50)
+    sms._sent_day.clear()
+    yield state
+    srv.shutdown()
+
+
+def test_sms_send_request_format(solapi):
+    import hashlib, hmac as _hmac
+    assert sms.configured()
+    run(sms.send("01012345678", email_codes.sms_text("signup", "123456")))
+    req = solapi["reqs"][0]
+    assert req["path"] == "/messages/v4/send-many/detail"
+    assert req["body"]["messages"] == [{"to": "01012345678", "from": "01098765432", "text": "[StockApp] 회원가입 인증번호 123456 (10분 유효)"}]
+    m = re.fullmatch(r"HMAC-SHA256 ApiKey=KEY123, Date=(\S+), salt=(\w+), signature=([0-9a-f]{64})", req["auth"])
+    assert m, req["auth"]
+    date, salt, sig = m.groups()
+    assert sig == _hmac.new(b"SECRET456", (date + salt).encode(), hashlib.sha256).hexdigest()
+    assert len(email_codes.sms_text("reset", "123456").encode("euc-kr")) <= 90    # 단문 요금
+
+
+def test_sms_errors(solapi, monkeypatch):
+    solapi["reply"] = (401, {"errorCode": "InvalidApiKey", "errorMessage": "Invalid API Key"})
+    with pytest.raises(sms.SmsError) as e:
+        run(sms.send("01012345678", "t"))
+    assert "계정 인증 실패" in str(e.value) and "SECRET456" not in str(e.value) and "KEY123" not in str(e.value)
+    solapi["reply"] = (200, {"groupInfo": {"count": {"total": 1, "registeredFailed": 1}},
+                             "failedMessageList": [{"statusCode": "1062", "statusMessage": "발신번호 미등록"}]})
+    with pytest.raises(sms.SmsError, match="발신번호 미등록"):
+        run(sms.send("01012345678", "t"))
+    solapi["reply"] = (400, {"errorCode": "ValidationError", "errorMessage": "to 형식 오류"})
+    with pytest.raises(sms.SmsError, match="ValidationError"):
+        run(sms.send("01012345678", "t"))
+    # 하루 한도
+    solapi["reply"] = None
+    monkeypatch.setattr(settings, "sms_daily_limit", 2)
+    run(sms.send("01012345678", "t")); run(sms.send("01012345678", "t"))
+    with pytest.raises(sms.SmsError, match="오늘 보낼 수 있는"):
+        run(sms.send("01012345678", "t"))
+    monkeypatch.setattr(settings, "sms_api_key", "")
+    with pytest.raises(sms.SmsError, match="설정이 없습니다"):
+        run(sms.send("01012345678", "t"))
+    monkeypatch.setattr(settings, "sms_api_key", "KEY123")
+    monkeypatch.setattr(sms, "API_BASE", "http://127.0.0.1:1")
+    monkeypatch.setattr(settings, "sms_daily_limit", 0)
+    with pytest.raises(sms.SmsError, match="연결하지 못했습니다"):
+        run(sms.send("01012345678", "t"))
