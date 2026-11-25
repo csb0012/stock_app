@@ -410,3 +410,60 @@ def test_auto_decision_skips_if_already_done_today(api_client, monkeypatch):
     assert run(papertrade.decide_account(aid))["skipped"]
     with pytest.raises(AssertionError):
         run(papertrade.decide_account(aid, manual=True))      # 수동 실행은 그래도 함
+
+
+def test_sim_save_retries_when_db_locked(api_client, monkeypatch):
+    """백테스트가 큰 저장을 하는 동안 DB 가 잠겨 몇 분 계산한 시뮬레이션 결과가 'database is locked' 로 버려졌음
+    (2026-11-25 사용자 PC) → 잠금이면 기다렸다가 다시 저장"""
+    import sqlite3
+    import threading
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.services import papertrade
+    from app.models.paper import PaperSim
+    client, Session, user = api_client
+    path = Session.kw["bind"].url.database
+    # 잠금을 빨리 포기하는 연결 (실제 PC 의 느린 디스크에서 5초 한도를 넘긴 상황 흉내)
+    eng = create_async_engine(f"sqlite+aiosqlite:///{path}", connect_args={"timeout": 0.5})
+    Fast = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(papertrade, "AsyncSessionLocal", Fast)
+    monkeypatch.setattr(papertrade, "SAVE_RETRY_WAITS", (1, 1, 2))
+
+    async def mk():
+        async with Fast() as s:
+            sim = PaperSim(user_id=user.id, market="KR", capital=1e7, months=1, params="{}")
+            s.add(sim)
+            await s.commit()
+            return sim.id
+    sid = run(mk())
+    locked = threading.Event()
+
+    def hold():
+        c = sqlite3.connect(path)
+        c.execute("BEGIN EXCLUSIVE")
+        locked.set()
+        time.sleep(2.5)            # 첫 저장·첫 재시도는 실패, 그 뒤엔 성공해야 함
+        c.rollback()
+        c.close()
+    th = threading.Thread(target=hold)
+    th.start()
+    locked.wait()
+    run(papertrade._save_sim(sid, status="done", summary='{"return_pct": 1}'))
+    th.join()
+
+    async def get():
+        async with Fast() as s:
+            return await s.get(PaperSim, sid)
+    sim = run(get())
+    run(eng.dispose())
+    assert sim.status == "done" and sim.summary and sim.finished_at is not None
+
+    # 잠금이 아닌 오류는 바로 올림 (다시 시도 안 함)
+    monkeypatch.setattr(papertrade, "AsyncSessionLocal", lambda: (_ for _ in ()).throw(RuntimeError("다른 오류")))
+    with pytest.raises(RuntimeError, match="다른 오류"):
+        run(papertrade._save_sim(sid, status="done"))
+
+
+def test_db_wait_limit_is_long():
+    """다른 연결이 쓰는 동안 기다리는 한도 (기본 5초면 느린 디스크에서 큰 저장 중 'database is locked')"""
+    from app.core import database
+    assert database.DB_TIMEOUT >= 30

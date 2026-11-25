@@ -6,7 +6,10 @@ from app.core.config import BACKEND_DIR
 # backend/stock_app.db 로 고정 (실행 위치가 달라도 같은 DB 사용)
 SQLALCHEMY_DATABASE_URL = f"sqlite+aiosqlite:///{(BACKEND_DIR / 'stock_app.db').as_posix()}"
 
-engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False)
+# timeout: 다른 연결이 쓰는 중이면 이만큼(초)까지 기다렸다가 진행 (기본 5초 — 느린 디스크·Docker 의 Windows 폴더에서는
+# 큰 저장이 5초를 넘겨 'database is locked' 로 실패했음)
+DB_TIMEOUT = 30
+engine = create_async_engine(SQLALCHEMY_DATABASE_URL, echo=False, connect_args={"timeout": DB_TIMEOUT})
 AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -53,3 +53,41 @@ def test_rule_preds_no_future_data():
         c["high"] *= 3
     b = backtest._rule_preds(st, cs2, cutoff)
     assert a[t][1]["probability"] == b[t][1]["probability"]
+
+
+def test_save_commits_in_chunks(monkeypatch, tmp_path):
+    """1년치(1만 건 이상)를 한 번에 commit 하면 그동안 DB 가 잠겨 모의투자 저장 등이 'database is locked' 로 실패함
+    (2026-11-25 사용자 PC) → SAVE_CHUNK 건씩 나눠 commit"""
+    from sqlalchemy import event, select, func
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from tests.conftest import run
+    from app.core.database import Base
+    from app.models import user, watchlist, portfolio, prediction, flow, paper  # noqa: F401 — 테이블 등록
+    from app.models.prediction import BacktestLog
+    from app.services import analysis
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'b.db'}")
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    commits = []
+    event.listen(engine.sync_engine, "commit", lambda conn: commits.append(1))
+    monkeypatch.setattr(backtest, "AsyncSessionLocal", Session)
+    monkeypatch.setattr(backtest, "SAVE_CHUNK", 50)
+
+    cs = _candles(260)
+    st = {"market": "US", "symbol": "X", "name": "X"}
+    rules = {cs[i]["date"]: (i, analysis.predict_next_day(cs[i - 130:i], analysis.calc_technical_indicators(cs[i - 130:i])))
+             for i in range(140, 260)}                                  # 120일
+    data = {("US", "X"): {"candles": cs, "rules": rules}}
+    existing = {("US", "X", cs[140]["date"])}                          # 이미 저장된 1일은 건너뜀
+
+    async def go():
+        async with engine.begin() as c:
+            await c.run_sync(Base.metadata.create_all)
+        commits.clear()
+        await backtest._save([st], data, {}, {}, existing, lambda *a: None)
+        async with Session() as s:
+            return (await s.execute(select(func.count()).select_from(BacktestLog))).scalar()
+    n = run(go())
+    run(engine.dispose())
+    assert n == 119
+    assert len(commits) == 3            # 50 + 50 + 나머지 19 (예전: 1번에 전부)

@@ -213,24 +213,44 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
             result["universe"] = [{"symbol": s, "name": v["name"]} for s, v in stocks.items()]
             result["benchmark"] = INDEX[market][1]
             result["params"] = params
-            async with AsyncSessionLocal() as db:
-                sim = await db.get(PaperSim, sim_id)
-                sim.status, sim.summary = "done", json.dumps(result["summary"], ensure_ascii=False)
-                sim.result = json.dumps(result, ensure_ascii=False)
-                sim.finished_at = datetime.now()
-                await db.commit()
+            progress("결과 저장 중", 1, 1)
+            await _save_sim(sim_id, status="done", summary=json.dumps(result["summary"], ensure_ascii=False),
+                            result=json.dumps(result, ensure_ascii=False))
         except Exception as e:
             print(f"[paper] 시뮬레이션 {sim_id} 실패: {e}")
             try:
-                async with AsyncSessionLocal() as db:
-                    sim = await db.get(PaperSim, sim_id)
-                    if sim:
-                        sim.status, sim.error, sim.finished_at = "failed", str(e)[:500], datetime.now()
-                        await db.commit()
+                await _save_sim(sim_id, status="failed", error=str(e)[:500])
             except Exception as e2:
                 print(f"[paper] 시뮬레이션 {sim_id} 실패 기록도 실패: {type(e2).__name__}: {e2}")
         finally:
             _sim_progress.pop(sim_id, None)
+
+
+SAVE_RETRY_WAITS = (5, 15, 30)   # DB 가 잠겨 있으면(다른 큰 저장 중) 이만큼 기다렸다가 다시 저장 (초)
+
+
+def _db_locked(e: BaseException) -> bool:
+    return "database is locked" in str(e)
+
+
+async def _save_sim(sim_id: int, **fields):
+    """시뮬레이션 결과·실패 저장. 몇 분 걸려 계산한 결과가 잠깐의 DB 잠금으로 버려지지 않게 잠금이면 다시 시도"""
+    for attempt in range(len(SAVE_RETRY_WAITS) + 1):
+        try:
+            async with AsyncSessionLocal() as db:
+                sim = await db.get(PaperSim, sim_id)
+                if sim is None:
+                    return
+                for k, v in fields.items():
+                    setattr(sim, k, v)
+                sim.finished_at = datetime.now()
+                await db.commit()
+                return
+        except Exception as e:
+            if not _db_locked(e) or attempt == len(SAVE_RETRY_WAITS):
+                raise
+            print(f"[paper] 시뮬레이션 {sim_id} 저장 — DB 잠김, {SAVE_RETRY_WAITS[attempt]}초 뒤 다시")
+            await asyncio.sleep(SAVE_RETRY_WAITS[attempt])
 
 
 def _after_close(market: str) -> bool:

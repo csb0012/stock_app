@@ -33,6 +33,7 @@ RETRY_WAITS = (10, 30, 60)  # 초당 호출 제한으로 실패한 종목만 이
 DAYS = 365       # 대상일 기준 최근 1년 (달력 기준). 예전 90일 → 표본을 늘려 채택 판정·적중률을 더 믿을 수 있게
 WINDOW = 130     # 예측에 쓰는 일봉 개수 (실시간 AI 추천과 같음)
 KR_COUNT = 800   # 백테스트 1년 + 그 앞 학습용 약 2년 (KIS 100개씩 8~10회 호출)
+SAVE_CHUNK = 300  # 백테스트 기록을 이만큼씩 나눠 저장 (한 번에 저장하면 그동안 DB 가 잠김)
 US_PERIOD = "5y"  # yfinance 는 3y 가 없어 5y (학습은 대상일 전 2년만 씀 — ml_model.TRAIN_DAYS)
 
 _lock = asyncio.Lock()
@@ -278,9 +279,16 @@ async def _run(force: bool):
     _status["model_report"] = report
 
     _status["phase"] = "저장 중"
+    await _save(stocks, data, probs, report, existing, idx_change)
+
+
+async def _save(stocks: list, data: dict, probs: dict, report: dict, existing: set, idx_change):
+    """새 날짜의 백테스트 기록 저장 (SAVE_CHUNK 건씩 나눠 commit)"""
+    from app.services.prediction_log import grade  # 순환 import 방지
     adopted = {v: r["adopted"] for v, r in report.items()}
     combo_ok = {v: r["combo_usable"] for v, r in report.items()}
     async with AsyncSessionLocal() as db:
+        pending = 0
         for st in stocks:
             d = data.get((st["market"], st["symbol"]))
             if not d:
@@ -325,6 +333,13 @@ async def _run(force: bool):
                 grade(log, d["candles"], ti, idx_change)
                 db.add(log)
                 _status["added"] += 1
+                pending += 1
+                if pending >= SAVE_CHUNK:
+                    # 1년치(1만 건 이상)를 한 번에 저장하면 그동안 DB 가 잠겨 다른 저장(모의투자·로그인 기록 등)이
+                    # 'database is locked' 로 실패함 → 나눠서 저장하고 그 사이 다른 작업에 차례를 줌
+                    await db.commit()
+                    pending = 0
+                    await asyncio.sleep(0)
         await db.commit()
 
 

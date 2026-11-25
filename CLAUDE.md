@@ -71,6 +71,7 @@ core/
                    fresh_for(값) 로 값마다 신선 기간 조절 (경제 캘린더: 일정·발표값 일시 실패면 5분)
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
+                   DB_TIMEOUT=30초 (다른 연결이 쓰는 중이면 기다리는 한도). 큰 저장은 나눠 commit (백테스트 SAVE_CHUNK=300) — 한 번에 하면 그동안 잠겨 'database is locked'
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
 models/
   user.py        — User (username, hashed_password, totp_secret, totp_enabled, email·email_verified, phone·phone_verified, nickname,
