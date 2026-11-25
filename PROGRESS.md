@@ -706,7 +706,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   `scripts/check.sh`: pytest 144개 통과, 화면 테스트는 1회 '탈퇴' 항목이 일시 실패(같은 시각 Docker 데몬 실행 중 — 이번 변경은 화면 코드와 무관) → 다시 3번 47/47 연속 통과.
   실제 Oracle 계정으로는 실서버 미검증
 
-### 2026-11-25 — AI 모의투자 과거 시뮬레이션 "database is locked" 실패 수정 (commit `TBD`)
+### 2026-11-25 — AI 모의투자 과거 시뮬레이션 "database is locked" 실패 수정 (commit `d9f0f2e`)
 - 증상(사용자 PC): 시뮬레이션 실패 `(sqlite3.OperationalError) database is locked [SQL: SELECT paper_sim ...]` — 몇 분 계산한 결과를 저장하는 순간 실패
 - 원인: 백테스트를 1년으로 늘리면서 첫 실행이 기록 약 1만 5천 건을 **한 번에 commit** → commit 동안 DB 가 잠기고, 다른 연결은 기본 5초만 기다리고 실패.
   PC(특히 Docker 의 Windows 폴더)는 디스크가 느려 commit 이 5초를 넘김. 재현: 6만 건 한 번에 commit(11초) 중 다른 저장이 5초 대기 후 같은 오류
