@@ -29,7 +29,7 @@ const LIMIT_META = {
 };
 
 export const KIS_STATUS = {
-  configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", halted: false, halted_reason: null, halted_at: null,
+  configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", account_source: "KIS_MOCK_ACCOUNT_NO", halted: false, halted_reason: null, halted_at: null,
   limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3 }, limit_meta: LIMIT_META,
   params: { max_positions: 5, buy_score: 60, sell_score: 45, stop_pct: 7, take_pct: 15, max_hold: 20, trailing: true, adaptive: true, trend_filter: true },
   orders_today: 1, window: "open", last_proposal_day: "2026-11-23", last_error: null, loop: { last_tick: "2026-11-24T10:00:00", last_error: null },

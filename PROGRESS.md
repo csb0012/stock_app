@@ -816,6 +816,17 @@ pull 후 패키지 목록이 바뀌었을 때:
 - 검증: pytest 204개 (+1 `test_create_admin_list_and_switch`: 계정 없음 → 1, 첫 계정 관리자 표시, --admin 으로 바꾸면 목록·DB 가 바뀜), 화면 테스트 63개 (관리자/일반 회원 표시·안내 문구 확인 추가),
   `bash scripts/check.sh` 통과, 실제 `create_admin.py` 를 파일 DB 로 실행해 --list → 계정 2개·관리자 first → --admin me → --list 에서 me 로 바뀜 확인
 
+### 2026-11-25 — KIS 모의투자 '잔고를 못 받음: INVALID_CHECK_ACNO' 원인 안내
+- 사용자 화면 오류: `KIS VTTC8434R 실패 (HTTP 200, OPSQ2000): ERROR : INPUT INVALID_CHECK_ACNO` = 모의투자 서버가 계좌번호를 거부 (앱키와 짝이 아닌 계좌 / 실전 계좌번호 / 상품코드 / 모의투자 기간 만료)
+- `kis_order`: 이 응답이면 `AccountRejected` 로 무엇을 고칠지 설명 — `KIS_MOCK_*` 가 비어 시세용 `KIS_ACCOUNT_NO` 를 빌려 쓰는 중이면 그 사실과 세 줄을 넣으라고,
+  모의 계좌를 넣었으면 ①모의투자 계좌번호인지 ②앱키를 그 계좌로 발급받았는지 ③모의투자 기간. `OPSQ2000`(입력값 오류)은 '없는 TR' 목록에서 빼서 주문을 예전 TR 로 다시 보내지 않게
+- `/kis/status` 에 `account_source`(어느 .env 값을 쓰는지), 화면 상태 줄에 `계좌 ****1234-01 (.env KIS_MOCK_ACCOUNT_NO)` + 시세용 계좌를 빌려 쓰면 노란 경고, 잔고 오류 문구를 자르지 않음
+- 문서: kis-mock-trading.md 문제 해결에 INVALID_CHECK_ACNO 항목
+- 검증: pytest 206개 (+2: 실제 오류 문구 그대로 두 경우(시세용 계좌 빌림 / 모의 계좌 거부) 설명·가린 계좌번호·주문은 TR 한 번만, 상태 API 에 오류 문구),
+  화면 테스트 64개 (+1: 계좌 출처 표시·경고·오류 안내), `bash scripts/check.sh` 통과.
+  **실서버 확인**: 실제 `app.main` + 가짜 KIS 모의 서버(앱키와 다른 계좌면 실제와 같은 `OPSQ2000 / ERROR : INPUT INVALID_CHECK_ACNO` 응답)로
+  ①모의 키 비움+KIS_IS_REAL=false → 'KIS_ACCOUNT_NO 를 쓰는 중' 안내 ②다른 모의 계좌번호 → ①②③ 확인 안내 ③맞는 계좌 → 오류 없음. 실서버 미검증: 실제 KIS 가 다른 원인에도 같은 코드를 주는지
+
 ## 알려진 이슈 / 확인 필요
 - [ ] **KIS 모의투자 주문 실서버 미검증** — 가짜 KIS 서버로만 확인. 처음 연결 후 화면 잔고가 KIS 앱과 같은지, 1주 주문 하나로 승인 → 접수 → 체결 확인 (TR: 주문 VTTC0012U/0011U(예전 0802U/0801U)·잔고 VTTC8434R·체결 VTTC0081R(8001R)·취소 VTTC0013U). 보유 20종목 이상이면 잔고 대조를 멈춤 · 국내만 (미국 모의 주문은 아직)
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸

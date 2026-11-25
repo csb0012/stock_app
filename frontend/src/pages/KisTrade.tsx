@@ -119,7 +119,10 @@ export default function KisTrade() {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <strong style={{ fontSize: 15, color: s.halted ? "var(--red)" : "var(--green)" }}>{s.halted ? "정지됨 — 주문 안 함" : "운영 중 — 승인한 주문만 보냄"}</strong>
               {s.halted && <span style={{ fontSize: 12 }}>{s.halted_reason} ({when(s.halted_at)})</span>}
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>계좌 {s.account} · {WINDOW[s.window] || s.window}</span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }} data-testid="kis-account">계좌 {s.account}{s.account_source ? ` (.env ${s.account_source})` : ""} · {WINDOW[s.window] || s.window}</span>
+              {s.account_source === "KIS_ACCOUNT_NO" && (
+                <span style={{ fontSize: 12, color: "var(--yellow)" }}>KIS_MOCK_* 가 비어 있어 시세용 계좌번호를 쓰는 중 — 모의투자 계좌가 아니면 잔고·주문이 안 됩니다</span>
+              )}
             </div>
             {!s.halted ? (
               <button className="btn" data-testid="kis-halt" disabled={halt.isPending}
@@ -150,7 +153,7 @@ export default function KisTrade() {
       {s.configured && (
         <Card icon={Wallet} title="KIS 모의투자 잔고" testid="kis-balance" desc="KIS 서버에서 바로 받은 값 (20초 캐시) · 손절·목표가는 앱이 정한 값"
           right={<button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={refresh}><RefreshCw size={13} /> 새로고침</button>}>
-          {s.balance_error && <p style={{ color: "var(--red)", fontSize: 12 }}>잔고를 못 받음: {s.balance_error}</p>}
+          {s.balance_error && <p data-testid="kis-balance-error" style={{ color: "var(--red)", fontSize: 12, lineHeight: 1.6 }}>잔고를 못 받음: {s.balance_error}</p>}
           {s.mismatches?.length > 0 && (
             <div data-testid="kis-mismatch" style={{ border: "1px solid var(--yellow)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6,
               background: "color-mix(in srgb, var(--yellow) 8%, transparent)" }}>

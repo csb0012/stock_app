@@ -602,6 +602,17 @@ async function run() {
     expect(b.limits.max_orders_day === 5 && b.params.stop_pct === 7 && b.totp_code === "998877", `설정 요청: ${JSON.stringify(b)}`);
   });
 
+  await test("KIS 모의투자: 계좌번호 거부(INVALID_CHECK_ACNO) → 원인 안내 · 시세용 계좌를 빌려 쓰는 중 경고", { api: adminApi({
+    "GET /api/kis/status": { ...KF.KIS_STATUS, account: "****5678-01", account_source: "KIS_ACCOUNT_NO", balance: null, mismatches: [], day_loss: null,
+      balance_error: "모의투자 서버가 계좌번호 ****5678-01 를 거부했습니다 (INVALID_CHECK_ACNO). 지금은 backend/.env 의 KIS_MOCK_* 가 비어 있어 KIS_ACCOUNT_NO(시세용 계좌번호)를 쓰는 중입니다" } }) }, async (page) => {
+    await page.goto(`${BASE}/kis`);
+    const acc = await page.getByTestId("kis-account").innerText();
+    expect(acc.includes("****5678-01") && acc.includes("KIS_ACCOUNT_NO"), `계좌 표시: ${acc}`);
+    expect((await page.getByTestId("kis-status").innerText()).includes("시세용 계좌번호를 쓰는 중"), "시세용 계좌 경고 없음");
+    const err = await page.getByTestId("kis-balance-error").innerText();
+    expect(err.includes("INVALID_CHECK_ACNO") && err.includes("KIS_MOCK_"), `잔고 오류 안내: ${err}`);
+  });
+
   await test("KIS 모의투자: 키가 없으면 연결 안내만 (390px 가로 스크롤 없음)", { width: 390, height: 844, theme: "dark", api: adminApi({
     "GET /api/kis/status": { ...KF.KIS_STATUS, configured: false, account: null, balance: null, log: [] },
     "GET /api/kis/log": { items: [] } }) }, async (page, api) => {

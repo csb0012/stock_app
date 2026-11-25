@@ -23,11 +23,34 @@ TR = {
     "ccld": ("VTTC0081R", "VTTC8001R"),
 }
 _tr_ok: dict = {}          # 종류 → 실제로 된 TR (한 번 되면 계속 그 번호)
-_UNKNOWN_TR = ("OPSQ0002", "EGW00205", "OPSQ2000")   # '없는 서비스/TR' 계열 응답 (이때만 예전 번호로)
+_UNKNOWN_TR = ("OPSQ0002", "EGW00205")   # '없는 서비스/TR' 계열 응답 (이때만 예전 번호로). OPSQ2000 은 입력값 오류라 넣지 않음
 
 
 class NotConfigured(KISError):
     pass
+
+
+class AccountRejected(KISError):
+    """모의투자 서버가 계좌번호를 거부 (INVALID_CHECK_ACNO) — 계좌번호·앱키 설정 문제"""
+    pass
+
+
+def account_source() -> str | None:
+    """계좌번호를 어디서 읽었는지: KIS_MOCK_ACCOUNT_NO / KIS_ACCOUNT_NO(모의 키가 비어 있어 시세용 계좌) / None"""
+    if settings.kis_mock_app_key.strip() and settings.kis_mock_app_secret.strip() and settings.kis_mock_account_no.strip():
+        return "KIS_MOCK_ACCOUNT_NO"
+    return "KIS_ACCOUNT_NO" if creds() else None
+
+
+def _account_help(err: str) -> str:
+    acc = masked_account()
+    if account_source() == "KIS_ACCOUNT_NO":
+        return (f"모의투자 서버가 계좌번호 {acc} 를 거부했습니다 (INVALID_CHECK_ACNO). 지금은 backend/.env 의 KIS_MOCK_* 가 비어 있어 "
+                f"KIS_ACCOUNT_NO(시세용 계좌번호)를 쓰는 중입니다 — 실전 계좌번호는 모의투자 서버에서 안 됩니다. "
+                f"KIS_MOCK_APP_KEY·KIS_MOCK_APP_SECRET·KIS_MOCK_ACCOUNT_NO(모의투자 계좌번호)를 넣고 서버를 다시 켜세요")
+    return (f"모의투자 서버가 계좌번호 {acc} 를 거부했습니다 (INVALID_CHECK_ACNO) — ① KIS_MOCK_ACCOUNT_NO 가 모의투자 계좌번호인지 "
+            f"(실전 계좌번호 아님, 8자리-2자리) ② KIS_MOCK_APP_KEY 를 이 모의투자 계좌로 발급받았는지 (KIS Developers 에서 앱을 신청할 때 고른 계좌) "
+            f"③ 모의투자 신청 기간이 끝나지 않았는지 확인하세요. (KIS 응답: {err[:120]})")
 
 
 def creds() -> tuple | None:
@@ -96,6 +119,8 @@ async def _call(kind: str, method: str, path: str, payload: dict) -> dict:
             _tr_ok[kind] = tr
             return data
         except KISError as e:
+            if "INVALID_CHECK_ACNO" in str(e):
+                raise AccountRejected(_account_help(str(e))) from e
             last = e
             if i + 1 < len(trs) and any(c in str(e) for c in _UNKNOWN_TR):
                 continue

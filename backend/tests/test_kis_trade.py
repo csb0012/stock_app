@@ -499,3 +499,46 @@ def test_status_not_configured(kenv, monkeypatch):
     assert st["configured"] is False and st["balance"] is None and st["server"].startswith("모의투자")
     assert kenv.c.post("/api/kis/propose").status_code == 400
     run(kis_trade.tick())    # 키가 없으면 아무것도 안 함
+
+
+def test_account_rejected_gives_clear_help(monkeypatch):
+    """실제 사용자 오류 (2026-11-25): 'KIS VTTC8434R 실패 (HTTP 200, OPSQ2000): ERROR : INPUT INVALID_CHECK_ACNO'
+    → 계좌번호·앱키 설정을 고치라는 설명. 시세용 계좌를 빌려 쓰는 중이면 그 사실을 알려 줌. 주문은 예전 TR 로 다시 보내지 않음"""
+    real_err = "KIS VTTC8434R 실패 (HTTP 200, OPSQ2000): ERROR : INPUT INVALID_CHECK_ACNO"
+    cl = KISClient(app_key="k", app_secret="s", base_url=KIS_MOCK_BASE)
+    calls = []
+
+    async def get(path, tr, params):
+        calls.append(tr)
+        raise KISError(real_err.replace("VTTC8434R", tr))
+    monkeypatch.setattr(cl, "_get", get)
+    monkeypatch.setattr(cl, "_post", lambda path, tr, body: get(path, tr, body))
+    monkeypatch.setattr(kis_order, "client", lambda: cl)
+    kis_order._tr_ok.clear()
+    # 1) KIS_MOCK_* 비어 있고 KIS_IS_REAL=false → 시세용 계좌번호를 빌려 씀
+    for k in ("kis_mock_app_key", "kis_mock_app_secret", "kis_mock_account_no"):
+        monkeypatch.setattr(settings, k, "")
+    monkeypatch.setattr(settings, "kis_is_real", False)
+    monkeypatch.setattr(settings, "kis_account_no", "12345678-01")
+    assert kis_order.account_source() == "KIS_ACCOUNT_NO"
+    with pytest.raises(kis_order.AccountRejected) as e:
+        run(kis_order.balance())
+    assert "KIS_ACCOUNT_NO" in str(e.value) and "KIS_MOCK_ACCOUNT_NO" in str(e.value) and "****5678-01" in str(e.value)
+    # 2) 모의투자 키·계좌를 넣었는데 거부 → 계좌·앱키 짝 확인 안내
+    monkeypatch.setattr(settings, "kis_mock_app_key", "mk")
+    monkeypatch.setattr(settings, "kis_mock_app_secret", "ms")
+    monkeypatch.setattr(settings, "kis_mock_account_no", "50123456-01")
+    assert kis_order.account_source() == "KIS_MOCK_ACCOUNT_NO"
+    calls.clear()
+    with pytest.raises(kis_order.AccountRejected) as e:
+        run(kis_order.order("buy", "005930", 1))
+    assert "모의투자 계좌번호인지" in str(e.value) and "****3456-01" in str(e.value) and "INVALID_CHECK_ACNO" in str(e.value)
+    assert calls == ["VTTC0012U"]      # 입력값 오류(OPSQ2000)는 예전 TR 로 다시 보내지 않음
+
+
+def test_status_shows_account_error(kenv, monkeypatch):
+    async def bad():
+        raise kis_order.AccountRejected("모의투자 서버가 계좌번호 ****3456-01 를 거부했습니다 (INVALID_CHECK_ACNO) — ① KIS_MOCK_ACCOUNT_NO 가 모의투자 계좌번호인지")
+    monkeypatch.setattr(kis_order, "balance", bad)
+    st = kenv.c.get("/api/kis/status").json()
+    assert "INVALID_CHECK_ACNO" in st["balance_error"] and "KIS_MOCK_ACCOUNT_NO" in st["balance_error"] and st["balance"] is None

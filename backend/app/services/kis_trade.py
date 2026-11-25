@@ -657,6 +657,7 @@ async def overview(with_balance: bool = True) -> dict:
             KisOrder.status.in_(SENT), KisOrder.submitted_at >= _today_start()))).scalar() or 0
         out = {
             "configured": configured(), "server": "모의투자 (가상 자금)", "account": kis_order.masked_account(),
+            "account_source": kis_order.account_source(),
             "halted": bool(row.halted), "halted_reason": row.halted_reason, "halted_at": row.halted_at,
             "limits": limits, "limit_meta": {k: {"default": d, "min": lo, "max": hi, "label": LIMIT_LABELS[k]}
                                              for k, (d, lo, hi) in LIMITS.items()},
@@ -676,7 +677,7 @@ async def overview(with_balance: bool = True) -> dict:
                     m = meta.get(h["symbol"]) or {}
                     h["stop"], h["target"], h["hold_days"] = m.get("stop"), m.get("target"), m.get("hold_days")
             except Exception as e:
-                out["balance_error"] = str(e)[:300]
+                out["balance_error"] = str(e)[:700]
         return out
 
 
