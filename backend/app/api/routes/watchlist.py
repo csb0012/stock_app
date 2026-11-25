@@ -163,6 +163,7 @@ async def _analyze(items: list) -> list:
             **item,
             "current_price": r["price"],
             "change_rate": r["change_rate"],
+            "price_source": r.get("price_source"),   # 미국: KIS / Yahoo (KIS 실패 시 — 최대 15분 지연)
             "prediction": r["prediction"],
             "rsi": ind.get("rsi"),
             "high_period": max(closes),

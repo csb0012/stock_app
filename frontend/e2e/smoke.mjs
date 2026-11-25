@@ -480,6 +480,17 @@ async function run() {
     expect(us.includes("원래 비중 사용") && us.includes("줄일 지표 없음") && !us.includes("×0.3"), `미국 비중: ${us}`);
   });
 
+  await test("관심종목 미국: KIS 현재가면 표시 없음 · KIS 실패로 Yahoo 가격이면 'Yahoo·지연 가능' 표시", { api: makeApi({
+    "GET /api/watchlist/analysis": F.WATCHLIST.map((w) => w.market !== "US" ? w
+      : { ...w, price_source: w.symbol === "AVGO" ? "Yahoo (KIS 실패)" : "KIS" }) }) }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("tab-US").click();
+    const avgo = page.getByTestId("watch-card").filter({ hasText: "브로드컴" }).first();
+    await avgo.getByTestId("price-source").waitFor();
+    expect((await avgo.getByTestId("price-source").innerText()) === "Yahoo·지연 가능", "Yahoo 표시 문구 이상");
+    expect(await page.getByTestId("price-source").count() === 1, "KIS 가격인 종목에도 Yahoo 표시");
+  });
+
   await test("관심종목: 장 마감이면 실시간 요청 안 함", {}, async (page, api) => {
     await page.goto(`${BASE}/watchlist`);
     await page.getByTestId("watch-card").first().waitFor();

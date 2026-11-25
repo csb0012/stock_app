@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import PriceSource from "../components/common/PriceSource";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { portfolioApi, stockApi, errMsg } from "../api/client";
 import FetchStatus from "../components/common/FetchStatus";
@@ -344,6 +345,7 @@ export default function Portfolio() {
                             ? (isKR ? `₩${item.current_price.toLocaleString()}` : `$${item.current_price.toFixed(2)}`)
                             : "-"}
                         </strong>
+                        {" "}<PriceSource src={item.price_source} />
                       </span>
                       {item.change_rate !== undefined && item.change_rate !== 0 && (
                         <ChangeTag value={item.change_rate} />

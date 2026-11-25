@@ -481,13 +481,18 @@ class KISClient:
             "/uapi/overseas-price/v1/quotations/price", "HHDFS00000300",
             {"AUTH": "", "EXCD": exchange, "SYMB": symbol},
         )
-        o = data.get("output", {})
+        o = data.get("output") or {}
+        if isinstance(o, list):
+            o = o[0] if o else {}
+        change, rate = _float(o.get("diff")), _float(o.get("rate"))
+        if o.get("sign") in ("4", "5"):   # 하락인데 부호 없이 오는 경우 (국내 지수와 같은 방식)
+            change, rate = -abs(change), -abs(rate)
         return {
             "symbol": symbol,
             "market": "US",
             "price": _float(o.get("last")),
-            "change": _float(o.get("diff")),
-            "change_rate": _float(o.get("rate")),
+            "change": change,
+            "change_rate": rate,
             "volume": _int(o.get("tvol")),
             "open": _float(o.get("open")),
             "high": _float(o.get("high")),

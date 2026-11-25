@@ -220,6 +220,7 @@ def _with_pnl(item: dict, r: dict) -> dict:
         **item,
         "current_price": price,
         "change_rate": r["change_rate"],
+        "price_source": r.get("price_source"),   # 미국: KIS / Yahoo (KIS 실패 시)
         "invested": round(invested, 2),
         "value": round(value, 2),
         "pnl_pct": round((price - avg) / avg * 100, 2) if avg > 0 else 0,

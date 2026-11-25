@@ -126,7 +126,9 @@ services/
   email_codes.py — 인증 코드 발급·확인 (이메일·문자 공통): 같은 받는 곳·용도 60초 재발송 제한, IP 당 1시간 10통, 용도 signup/reset/change/phone,
                    normalize_phone (010-1234-5678·+82 → 01012345678)
   stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
-  quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치(60초 캐시), 실시간 현재가 패치(국내는 멀티종목 시세 30개씩),
+  quote.py       — 공통 시세+분석: 국내는 KIS, 미국 일봉은 yfinance 배치(60초 캐시), 실시간 현재가 패치(국내는 웹소켓 → 멀티종목 시세 30개씩,
+                   미국은 us_live_prices = KIS 해외 현재가(정규장 실서버 10초·모의 60초·장 밖 10분 캐시), KIS 실패 종목만 yfinance 1분봉 + source 'Yahoo (KIS 실패)'),
+                   analyze_items(관심·투자종목)는 미국 현재가를 KIS 로 받아 오늘 봉에 반영(price_source),
                    analyze_candles 결과 메모(입력 같으면 재계산 안 함), 미국 PER/PBR(KIS 해외 상세), USD/KRW 환율
   news.py        — 종목 뉴스 + 문구·키워드 기반 호재/악재 분위기. 국내 종목: 해외 영문 기사(Yahoo .KS 뉴스 + Google 뉴스 영문,
                    TRUSTED_FOREIGN 매체만, 30분 캐시)만 확률 반영(weight_source="foreign") / 국내 기사(네이버 → Google 한국어,

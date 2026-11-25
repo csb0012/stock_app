@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLivePrices, withLive } from "../components/common/useLivePrices";
 import LiveBadge from "../components/common/LiveBadge";
+import PriceSource from "../components/common/PriceSource";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { watchlistApi, stockApi, errMsg } from "../api/client";
 import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw, LayoutGrid, List } from "lucide-react";
@@ -464,6 +465,7 @@ function WatchCard({ item, analyzing, editing, onEdit, editor, onRemove }: {
             <strong style={{ fontSize: 17, fontVariantNumeric: "tabular-nums" }}>{fmtPrice(item.current_price, item.market)}</strong>
             <ChangeTag value={item.change_rate} />
             <LiveBadge t={item.live_time} />
+            <PriceSource src={item.price_source} />
             <DaytimePrice d={item.daytime} size={11.5} />
           </div>
           <div style={{ display: "flex", gap: 10, fontSize: 11.5, color: "var(--text-secondary)", flexWrap: "wrap" }}>
@@ -543,7 +545,7 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                 ) : (
                   <>
                     <td className="num">
-                      <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /></div>
+                      <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /> <PriceSource src={r.price_source} /></div>
                       {r.daytime && !r.daytime.error && (
                         <div style={{ fontSize: 10.5, color: "var(--accent)" }} title={`주간거래 ${r.daytime.time} 조회`}>
                           주간 {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)

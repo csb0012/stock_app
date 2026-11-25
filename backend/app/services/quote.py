@@ -203,11 +203,16 @@ async def us_valuations(symbols: list) -> dict:
     return out
 
 
-def _us_result(symbol: str, candles: list, news: dict | None, val: dict | None = None) -> dict:
+def _us_result(symbol: str, candles: list, news: dict | None, val: dict | None = None, live: dict | None = None) -> dict:
     master = stock_master.get("US", symbol) or {}
     per, pbr = (val or {}).get("per", 0), (val or {}).get("pbr", 0)
     price = candles[-1]["close"]
     prev = candles[-2]["close"] if len(candles) >= 2 else price
+    change = round((price - prev) / prev * 100, 2) if prev > 0 else 0.0
+    if live:   # KIS 해외 현재가 (등락률도 KIS 값 — 전일 종가 기준)
+        price = live["price"]
+        if live.get("change_rate") is not None:
+            change = live["change_rate"]
     return {
         "symbol": symbol,
         "market": "US",
@@ -216,7 +221,8 @@ def _us_result(symbol: str, candles: list, news: dict | None, val: dict | None =
         "category": stock_master.category({"market": "US", **master}),
         "exchange": master.get("exchange", "NAS"),
         "price": round(price, 2),
-        "change_rate": round((price - prev) / prev * 100, 2) if prev > 0 else 0.0,
+        "change_rate": change,
+        "price_source": (live or {}).get("source") or "Yahoo",
         "per": per, "pbr": pbr,
         "volume": candles[-1]["volume"],
         "candles": candles,
@@ -264,20 +270,28 @@ async def analyze_kr_many(symbols: list, count: int = 100, with_news: bool = Tru
     return out
 
 
-async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = True) -> dict:
-    """미국 종목 여러 개 (yfinance 배치 1회) → {symbol: 결과 또는 {"error": ...}}"""
-    hist, news, vals = await asyncio.gather(
+async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = True, live: bool = False) -> dict:
+    """미국 종목 여러 개 (일봉 yfinance 배치 1회) → {symbol: 결과 또는 {"error": ...}}.
+    live=True 면 현재가를 KIS 해외 현재가로 받아 오늘 봉에 반영하고 확률도 그 가격으로 계산 (관심종목·투자종목)"""
+    hist, news, vals, lp = await asyncio.gather(
         batch_yf_history(symbols, period),
         get_news_many([("US", s) for s in symbols]) if with_news and symbols else _none(),
         us_valuations(symbols),
+        us_live_prices(symbols) if live and symbols else _empty(),
     )
     out = {}
     for s in symbols:
         candles = hist.get(s, [])
         if len(candles) < 20:
             out[s] = {"symbol": s, "market": "US", "error": f"yfinance 가격 데이터 부족 ({len(candles)}일)"}
-        else:
-            out[s] = _us_result(s, candles, (news or {}).get(("US", s)), vals.get(s))
+            continue
+        l = lp.get(("US", s)) or {}
+        if "price" in l:
+            candles = patch_candles("US", candles, l)
+        out[s] = _us_result(s, candles, (news or {}).get(("US", s)), vals.get(s), l if "price" in l else None)
+        if l.get("error"):   # KIS·Yahoo 1분봉 둘 다 못 받음 → 일봉 마지막 값(Yahoo, 늦을 수 있음)이라고 표시
+            out[s]["live_error"] = l["error"]
+            out[s]["price_source"] = "Yahoo (KIS 실패)"
     return out
 
 
@@ -287,7 +301,7 @@ async def analyze_items(items: list, period: str = "6mo") -> dict:
     us = [i["symbol"] for i in items if i["market"] == "US"]
     kr_res, us_res = await asyncio.gather(
         analyze_kr_many(kr) if kr else _empty(),
-        analyze_us_many(us, period) if us else _empty(),
+        analyze_us_many(us, period, live=True) if us else _empty(),
     )
     out = {("KR", k): v for k, v in kr_res.items()}
     out.update({("US", k): v for k, v in us_res.items()})
@@ -309,8 +323,85 @@ def strip_candles(d: dict) -> dict:
 
 # ---------------- 실시간 갱신 (AI 추천) ----------------
 
+# ---------------- 미국 현재가 (KIS 해외 현재가) ----------------
+_us_live_cache: dict = {}   # 종목 → (받은 시각, 값)
+
+
+def _us_live_ttl() -> float:
+    """같은 종목을 다시 KIS 에 묻는 간격 — 정규장 중 실서버 10초 / 모의서버 60초(초당 2건 제한이라 국내 시세가 밀리지 않게), 장 밖 10분(가격이 안 바뀜)"""
+    from app.core.config import settings
+    if not is_market_open("US"):
+        return 600.0
+    return 10.0 if settings.kis_is_real else 60.0
+
+
+def _yf_last_sync(symbols: list) -> dict:
+    """yfinance 1분봉 마지막 값 (KIS 를 못 받은 종목만) → {종목: 가격}"""
+    if not symbols:
+        return {}
+    data = yf.download(symbols, period="1d", interval="1m", progress=False, auto_adjust=True, threads=True)
+    out = {}
+    if data is None or data.empty:
+        return out
+    multi = isinstance(data.columns, pd.MultiIndex)
+    for s in symbols:
+        try:
+            col = (data["Close"][s] if multi else data["Close"]).dropna()
+            if len(col):
+                out[s] = round(float(col.iloc[-1]), 2)
+        except KeyError:
+            pass
+    return out
+
+
+async def us_live_prices(symbols: list) -> dict:
+    """미국 현재가 — KIS 해외 현재가(HHDFS00000300, 거래소 코드는 종목마스터의 NAS/NYS/AMS) → {("US", 종목): {price, change_rate, volume, source}}.
+    KIS 가 실패한 종목만 yfinance 1분봉(최대 15분 지연)으로, source 에 'Yahoo (KIS 실패)' 와 kis_error 를 남김 (숨기지 않음).
+    둘 다 실패하면 {"error": 이유}"""
+    now = time.time()
+    ttl = _us_live_ttl()
+    out, todo = {}, []
+    for s in dict.fromkeys(symbols):
+        hit = _us_live_cache.get(s)
+        if hit and now - hit[0] < ttl:
+            out[("US", s)] = hit[1]
+        else:
+            todo.append(s)
+
+    async def one(s):
+        ex = (stock_master.get("US", s) or {}).get("exchange") or "NAS"
+        try:
+            p = await kis_client.get_us_stock_price(s, ex)
+            if not p["price"] or p["price"] <= 0:
+                return s, {"error": f"KIS 현재가 0 ({ex}:{s} — 거래소 코드 또는 거래 정지 확인)"}
+            v = {"price": round(p["price"], 4), "change_rate": round(p["change_rate"], 2), "volume": p["volume"], "source": "KIS"}
+            _us_live_cache[s] = (time.time(), v)
+            return s, v
+        except Exception as e:
+            return s, {"error": (str(e) or type(e).__name__)[:200]}
+
+    res = await asyncio.gather(*[one(s) for s in todo])
+    failed = {s: v["error"] for s, v in res if "error" in v}
+    for s, v in res:
+        if "error" not in v:
+            out[("US", s)] = v
+    if failed:
+        print(f"[quote] 미국 현재가 KIS 실패 {len(failed)}종목 → Yahoo: {next(iter(failed.values()))[:120]}")
+        try:
+            yfp = await asyncio.get_event_loop().run_in_executor(None, _yf_last_sync, list(failed))
+        except Exception as e:
+            yfp = {}
+            print(f"[quote] 미국 현재가 Yahoo 도 실패: {str(e)[:120]}")
+        for s, err in failed.items():
+            if s in yfp:
+                out[("US", s)] = {"price": yfp[s], "source": "Yahoo (KIS 실패)", "kis_error": err}
+            else:
+                out[("US", s)] = {"error": f"KIS: {err}"}
+    return out
+
+
 async def live_prices(items: list) -> dict:
-    """현재가만 빠르게: 국내 KIS 현재가, 미국 yfinance 1분봉 마지막 값 → {(market, symbol): {price, change_rate}}"""
+    """현재가만 빠르게: 국내 KIS(웹소켓 → 멀티종목 → 종목별), 미국 KIS 해외 현재가(실패 종목만 yfinance) → {(market, symbol): {price, change_rate}}"""
     from app.services import kis_ws
     kr_all_syms = [i["symbol"] for i in items if i["market"] == "KR"]
     us = [i["symbol"] for i in items if i["market"] == "US"]
@@ -344,27 +435,9 @@ async def live_prices(items: list) -> dict:
         rest = [s for s in kr if ("KR", s) not in got]
         return list(got.items()) + list(await asyncio.gather(*[kr_one(s) for s in rest]))
 
-    def us_sync():
-        if not us:
-            return {}
-        data = yf.download(us, period="1d", interval="1m", progress=False, auto_adjust=True, threads=True)
-        out = {}
-        if data is None or data.empty:
-            return out
-        multi = isinstance(data.columns, pd.MultiIndex)
-        for s in us:
-            try:
-                col = data["Close"][s] if multi else data["Close"]
-                col = col.dropna()
-                if len(col):
-                    out[("US", s)] = {"price": round(float(col.iloc[-1]), 2)}
-            except KeyError:
-                pass
-        return out
-
     kr_res, us_res = await asyncio.gather(
         kr_all(),
-        asyncio.get_event_loop().run_in_executor(None, us_sync),
+        us_live_prices(us) if us else _empty(),
     )
     out = dict(kr_res)
     out.update(ws_hit)
