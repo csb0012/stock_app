@@ -754,7 +754,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   실시간 계좌 생성 → 학습형 비중으로 판단·주문. **실서버 미검증**: 실제 HIBP(이 환경에서 api.pwnedpasswords.com 차단)·실제 도메인 HTTPS 인증서·알림 메일 실제 발송·
   우분투 VM 에서 setup-server.sh 보안 단계(문법·비밀번호 입력 부분·set -e 동작만 확인)
 
-### 2026-11-25 — 2단계 인증 필수 · 초대 코드로만 가입 · 관리자(초대·회원 차단) · 한 일/할 일 정리 (commit `TBD`)
+### 2026-11-25 — 2단계 인증 필수 · 초대 코드로만 가입 · 관리자(초대·회원 차단) · 한 일/할 일 정리 (commit `3a756a5`)
 - **정리 문서**: [docs/status.md](docs/status.md) — 지금까지 한 일 / 앞으로 할 일(사용자 할 일 · 2단계 KIS 모의투자 · 3단계 전 보안 · 실서버 확인 목록)
 - **2단계 인증(Google Authenticator) 필수** (`REQUIRE_TOTP`, 기본 켬): `get_current_user` = 로그인 확인(`get_user_before_totp`) + 2단계 확인.
   안 켠 계정은 /me·setup/enable-totp·비밀번호 변경·모든 기기 로그아웃만 되고 나머지 API 는 403 + `X-Totp-Required: 1`.
