@@ -136,3 +136,18 @@ def test_live_endpoint_and_live_prices_use_ws(api_client, monkeypatch, clean):
     monkeypatch.setattr(kis_client, "get_kr_multi_price", multi)
     out = run(quote.live_prices([{"market": "KR", "symbol": "005930"}, {"market": "KR", "symbol": "000660"}]))
     assert out[("KR", "005930")]["price"] == 71900 and asked == [["000660"]]   # 실시간 값이 있는 종목은 REST 안 부름
+
+
+def test_analyze_items_keeps_symbols_with_live_price(monkeypatch, clean):
+    """실시간 가격이 있는 국내 종목이 관심종목·투자종목 분석(analyze_items)에서 빠져 '분석 결과 없음'이 뜨던 문제 (2026-11-25 점검에서 발견)
+    — 실시간 값은 현재가(live_prices)에만 쓰고, 분석 목록에서는 빼지 않음"""
+    from app.services import quote
+    kis_ws._store(kis_ws.parse(f"0|H0STCNT0|001|{REC}"))
+    asked = []
+
+    async def kr_many(symbols, count=100, with_news=True):
+        asked.extend(symbols)
+        return {s: {"symbol": s, "market": "KR", "current_price": 1} for s in symbols}
+    monkeypatch.setattr(quote, "analyze_kr_many", kr_many)
+    out = run(quote.analyze_items([{"market": "KR", "symbol": "005930"}, {"market": "KR", "symbol": "000660"}]))
+    assert asked == ["005930", "000660"] and set(out) == {("KR", "005930"), ("KR", "000660")}

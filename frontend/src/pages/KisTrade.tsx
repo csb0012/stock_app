@@ -20,7 +20,7 @@ const PARAM_LABEL: Record<string, string> = {
 };
 const ACTION: Record<string, string> = {
   propose: "제안", propose_exit: "손절·목표 매도 제안", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
-  submit_fail: "KIS 거부", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
+  submit_fail: "KIS 거부·연결 실패", submit_unknown: "응답 못 받음 — 결과 모름", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
   cancel_fail: "취소 실패", fill_unknown: "체결 확인 안 됨", halt: "정지", resume: "다시 시작", baseline: "기준 맞추기", config: "설정 변경",
   expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름", account_ok: "계좌 확인됨",
 };

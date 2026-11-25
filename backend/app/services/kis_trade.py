@@ -29,6 +29,7 @@ from sqlalchemy import select, update, func as sa_func
 from app.core.database import AsyncSessionLocal
 from app.models.kis import KisTrade, KisOrder, KisLog
 from app.services import kis_order
+from app.services.kis_api import KISConnectionError
 from app.services import paper_engine as pe
 from app.services.market_calendar import _TZ, is_trading_day, next_trading_day, session_hours
 
@@ -265,8 +266,9 @@ async def propose(user_id: int | None = None) -> dict:
                 state = {"cash": float(max(0, bal["d2_cash"])), "positions": positions}
                 orders, notes = pe.decide(state, rows, a["regime"], a["events"], params, MARKET)
             except Exception as e:
-                row.last_error = f"{_kst().isoformat(timespec='seconds')} 제안 실패: {str(e)[:300]}"
-                await audit(db, "propose_fail", str(e)[:300], user_id, ok=False)
+                why = str(e)[:300] or type(e).__name__
+                row.last_error = f"{_kst().isoformat(timespec='seconds')} 제안 실패: {why}"
+                await audit(db, "propose_fail", why, user_id, ok=False)
                 await db.commit()
                 raise
             now = time.time()
@@ -452,10 +454,10 @@ async def submit(order_id: int) -> dict:
             if sent_today >= limits["max_orders_day"]:
                 return await _block(db, k, f"오늘 주문 {sent_today}건 — 하루 주문 횟수 한도({limits['max_orders_day']}건)")
             dup = (await db.execute(select(KisOrder.id).where(KisOrder.id != k.id, KisOrder.symbol == k.symbol, (
-                KisOrder.status.in_(ACTIVE)) | ((KisOrder.side == k.side) & KisOrder.status.in_(("filled", "partial"))
+                KisOrder.status.in_(ACTIVE)) | ((KisOrder.side == k.side) & KisOrder.status.in_(("filled", "partial", "unknown"))
                                                 & (KisOrder.submitted_at >= _today_start()))))).first()
             if dup:
-                return await _block(db, k, "같은 종목 주문이 이미 접수·체결됨 (두 번 주문 방지)")
+                return await _block(db, k, "같은 종목 주문이 이미 접수·체결됐거나 결과를 모름 (두 번 주문 방지 — 결과 모름이면 KIS 앱에서 확인)")
             try:
                 bal = await fetch_balance()
             except Exception as e:
@@ -502,6 +504,18 @@ async def submit(order_id: int) -> dict:
             await db.commit()
             try:
                 r = await kis_order.order(k.side, k.symbol, qty)
+            except KISConnectionError as e:
+                if e.maybe_sent:   # 요청은 갔는데 답을 못 받음 → 들어갔을 수 있음. 다시 보내지 않고 사람이 확인
+                    k.status, k.message = "unknown", f"주문을 보냈는데 KIS 응답을 못 받음 — KIS 앱에서 체결 여부를 확인하세요 ({str(e)[:200]})"
+                    await audit(db, "submit_unknown", k.message, order_id=k.id, ok=False)
+                    await db.commit()
+                    _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}) {qty}주: {k.message}", 5, ["warning"])
+                    return {"status": "unknown", "message": k.message}
+                k.status, k.message = "failed", f"KIS 연결 실패 — 주문은 안 들어감: {str(e)[:200]}"
+                await audit(db, "submit_fail", k.message, order_id=k.id, ok=False)
+                await db.commit()
+                _push(f"KIS 주문 못 보냄 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["x"])
+                return {"status": "failed", "message": k.message}
             except Exception as e:
                 k.status, k.message = "failed", f"KIS 주문 거부: {str(e)[:250]}"
                 await audit(db, "submit_fail", k.message, order_id=k.id, ok=False)

@@ -629,3 +629,43 @@ def test_notify_test_endpoint(kenv, monkeypatch):
         raise notify.NotifyError("ntfy 거부 (HTTP 403) forbidden")
     monkeypatch.setattr(notify, "send", boom)
     assert kenv.c.post("/api/kis/notify-test").status_code == 502
+
+
+def test_network_error_message_and_maybe_sent(monkeypatch):
+    """KIS 에 연결 못 하면 httpx 오류 문구가 비어 '처리 실패: ' 만 보였음 (2026-11-25 점검) → 이유를 적음.
+    연결 자체가 안 됨 = 주문 안 들어감 / 보낸 뒤 응답 시간 초과 = 들어갔을 수 있음"""
+    import httpx
+    from app.services.kis_api import KISConnectionError
+    cl = KISClient(app_key="k", app_secret="s", base_url=KIS_MOCK_BASE)
+    cl._access_token, cl._token_expires = "t", dt.datetime.now() + dt.timedelta(hours=1)
+    for exc, sent in ((httpx.ConnectError(""), False), (httpx.ConnectTimeout(""), False), (httpx.ReadTimeout(""), True),
+                      (httpx.RemoteProtocolError(""), True)):
+        def handler(req, exc=exc):
+            raise exc
+        cl._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        with pytest.raises(KISConnectionError) as e:
+            run(cl._post("/uapi/domestic-stock/v1/trading/order-cash", "VTTC0012U", {}))
+        assert e.value.maybe_sent is sent and "VTTC0012U" in str(e.value) and type(exc).__name__ in str(e.value)
+
+
+def test_order_timeout_after_send_is_unknown_not_failed(kenv):
+    """주문 요청을 보낸 뒤 응답을 못 받으면 '결과 모름' — KIS 거부로 기록하면 실제로 들어간 주문을 놓침. 같은 종목 다음 주문도 막음"""
+    from app.services.kis_api import KISConnectionError
+
+    async def lost(side, symbol, qty):
+        raise KISConnectionError("KIS VTTC0012U 응답 시간 초과 (ReadTimeout)", maybe_sent=True)
+    kenv_order = kis_order.order
+    kis_order.order = lost
+    try:
+        r = approve(kenv, buy(kenv)).json()["results"][0]
+        assert r["status"] == "unknown" and "KIS 앱에서" in r["message"]
+        r2 = approve(kenv, buy(kenv)).json()["results"][0]
+        assert r2["status"] == "blocked" and "결과를 모름" in r2["message"]
+
+        async def refused(side, symbol, qty):
+            raise KISConnectionError("KIS VTTC0012U 연결 실패 (ConnectError)", maybe_sent=False)
+        kis_order.order = refused
+        r3 = approve(kenv, buy(kenv, sym="000660", ref=200_000)).json()["results"][0]
+        assert r3["status"] == "failed" and "안 들어감" in r3["message"]
+    finally:
+        kis_order.order = kenv_order

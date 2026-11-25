@@ -96,7 +96,8 @@ models/
   paper.py       — AI 모의투자: PaperSim (paper_sim: 과거 시뮬레이션 결과 JSON) / PaperAccount (paper_account: 실시간 계좌, 보유·대기 주문·판단 기록은 state JSON) /
                    PaperTrade (체결) / PaperEquity (거래일 종가 기준 자산 + 지수 종가)
 services/
-  kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
+  kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError. 네트워크 오류(httpx)는 KISConnectionError(이유 문구 + maybe_sent:
+                   연결 자체 실패면 False, 보낸 뒤 응답 시간 초과·끊김이면 True — 주문이면 '결과 모름' 처리)
                    국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
                    미국 주간거래 현재가 get_us_daytime_price (해외 현재가 HHDFS00000300, EXCD 를 NAS/NYS/AMS → BAQ/BAY/BAA 로)
   kis_order.py   — KIS 모의투자 서버 주문 API (국내): order(시장가)·cancel·balance(잔고·D+2 예수금·전날 총자산)·executions(일별 체결).
@@ -105,7 +106,7 @@ services/
   kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 주문): propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단,
                    이전 제안 만료, 다음 거래일 15:30 까지 유효) · check_exits(장중 5분, 손절/목표 → 매도 제안) · approve(조건부 UPDATE 로 한 번만, 장중이면 바로 submit) ·
                    submit(직전 확인: 정지·기한·장 시간(09:01~15:20)·하루 횟수·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·가격(+3%/−6%)·1회 한도 →
-                   'submitting' 먼저 저장 후 KIS 주문) · refresh_fills(체결 내역 → expected/meta) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
+                   'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) · refresh_fills(체결 내역 → expected/meta) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
                    loop(1분, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
   us_daytime.py  — 미국 주간거래 가격 (한국 10:00~18:00, 서머타임 ~17:00 · 블루오션): 주간거래 시간에만 KIS 조회, 종목별 30초 캐시,
                    attach(rows) 가 미국 행에 daytime{price,base,change_rate,time} 을 붙인 **새 목록** 반환 (캐시된 원본 안 바꿈).

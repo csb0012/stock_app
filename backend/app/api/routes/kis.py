@@ -57,7 +57,7 @@ def _err(e: Exception):
         raise HTTPException(status_code=404, detail=str(e))
     if isinstance(e, KISError):
         raise HTTPException(status_code=502, detail=str(e))
-    raise HTTPException(status_code=502, detail=f"처리 실패: {str(e)[:300]}")
+    raise HTTPException(status_code=502, detail=f"처리 실패: {str(e)[:300] or type(e).__name__}")
 
 
 @router.get("/status")

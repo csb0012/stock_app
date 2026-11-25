@@ -283,17 +283,8 @@ async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = 
 
 async def analyze_items(items: list, period: str = "6mo") -> dict:
     """[{market, symbol}, ...] → {(market, symbol): 결과}"""
-    from app.services import kis_ws
-    kr_all_syms = [i["symbol"] for i in items if i["market"] == "KR"]
+    kr = [i["symbol"] for i in items if i["market"] == "KR"]
     us = [i["symbol"] for i in items if i["market"] == "US"]
-    # 국내: KIS 웹소켓으로 막 받은 실시간 가격이 있으면 그것 (REST 호출 안 함), 없는 종목만 REST. 물은 종목은 실시간 구독에 올림
-    kis_ws.want(kr_all_syms)
-    ws_hit = {}
-    for s_ in kr_all_syms:
-        p_ = kis_ws.get(s_, max_age=5)
-        if p_:
-            ws_hit[("KR", s_)] = {"price": p_["price"], "change_rate": p_["change_rate"], "volume": p_["volume"]}
-    kr = [s_ for s_ in kr_all_syms if ("KR", s_) not in ws_hit]
     kr_res, us_res = await asyncio.gather(
         analyze_kr_many(kr) if kr else _empty(),
         analyze_us_many(us, period) if us else _empty(),

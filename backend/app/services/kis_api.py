@@ -39,6 +39,23 @@ class KISError(RuntimeError):
     pass
 
 
+class KISConnectionError(KISError):
+    """KIS 에 연결 못 함·응답 못 받음 (네트워크). maybe_sent = 요청이 KIS 까지 갔을 수도 있음
+    (응답 대기 중 시간 초과·연결 끊김) — 주문이면 들어갔을 수 있으니 '결과 모름'으로 다뤄야 함"""
+
+    def __init__(self, msg: str, maybe_sent: bool):
+        super().__init__(msg)
+        self.maybe_sent = maybe_sent
+
+
+def _net_error(what: str, e: Exception) -> "KISConnectionError":
+    """httpx 연결 오류 → 이유가 보이는 KISError (httpx 는 str(e) 가 빈 문자열인 경우가 많음)"""
+    not_sent = isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))
+    kind = "응답 시간 초과" if isinstance(e, httpx.TimeoutException) else "연결 실패"
+    detail = f": {str(e)[:150]}" if str(e) else ""
+    return KISConnectionError(f"{what} {kind} ({type(e).__name__}{detail}) — 인터넷·방화벽·KIS 점검 시간 확인", maybe_sent=not not_sent)
+
+
 class KISRateLimitError(KISError):
     """초당 호출 제한(EGW00201)을 재시도 후에도 넘김 — 잠시 뒤 다시 하면 되는 오류"""
     pass
@@ -123,14 +140,17 @@ class KISClient:
                 self._load_saved_token()
             if self._access_token and self._token_expires and datetime.now() < self._token_expires:
                 return self._access_token
-            resp = await self._client().post(
-                f"{self.base_url}/oauth2/tokenP",
-                json={
-                    "grant_type": "client_credentials",
-                    "appkey": self.app_key,
-                    "appsecret": self.app_secret,
-                },
-            )
+            try:
+                resp = await self._client().post(
+                    f"{self.base_url}/oauth2/tokenP",
+                    json={
+                        "grant_type": "client_credentials",
+                        "appkey": self.app_key,
+                        "appsecret": self.app_secret,
+                    },
+                )
+            except httpx.TransportError as e:
+                raise _net_error("KIS 토큰 발급", e)
             try:
                 data = resp.json() if resp.content else {}
             except ValueError:
@@ -202,10 +222,13 @@ class KISClient:
         }
         for attempt in range(_RATE_RETRIES):
             await self._throttle()
-            if method == "GET":
-                resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
-            else:
-                resp = await self._client().post(f"{self.base_url}{path}", headers=headers, json=body)
+            try:
+                if method == "GET":
+                    resp = await self._client().get(f"{self.base_url}{path}", headers=headers, params=params)
+                else:
+                    resp = await self._client().post(f"{self.base_url}{path}", headers=headers, json=body)
+            except httpx.TransportError as e:
+                raise _net_error(f"KIS {tr_id}", e)
             try:
                 data = resp.json() if resp.content else {}
             except ValueError:  # 점검 시간 등 HTML 오류 페이지
