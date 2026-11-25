@@ -561,6 +561,7 @@ async function run() {
 
   await test("KIS 모의투자: 긴급 정지(코드 없이) · 정지 중 승인 불가 · 다시 시작은 2단계 코드 · 잔고 대조 경고", { api: adminApi({
     "GET /api/kis/status": (req) => ({ ...KF.KIS_STATUS, halted: true, halted_reason: "긴급 정지 버튼", halted_at: 1795000000,
+      last_error: "2026-11-25T17:24:51+09:00 제안 실패: 일봉을 받은 종목이 없음",
       mismatches: [{ symbol: "000660", name: "SK하이닉스", app: 0, kis: 3 }] }),
     "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
     "POST /api/kis/resume": { message: "다시 시작했습니다" },
@@ -569,6 +570,8 @@ async function run() {
     const st = await page.getByTestId("kis-status").innerText();
     expect(st.includes("정지됨") && st.includes("긴급 정지 버튼"), `정지 상태: ${st}`);
     expect(await page.getByTestId("kis-halt").count() === 0, "정지 중인데 긴급 정지 버튼이 보임");
+    const le = await page.getByTestId("kis-last-error").innerText();
+    expect(le.includes("마지막 자동 제안 실패 — 2026-11-25 17:24:51") && le.includes("지금 제안 만들기"), `제안 실패 표시: ${le}`);
     await page.getByTestId("kis-proposals").getByRole("button", { name: "모두 선택" }).click();
     await page.getByLabel("승인 2단계 코드").fill("112233");
     expect(await page.getByTestId("kis-approve").isDisabled(), "정지 중인데 승인이 눌림");

@@ -52,6 +52,7 @@ STATUS_LABELS = {
 OPEN_AFTER = 1            # 개장 몇 분 뒤 승인된 주문 보내기
 STOP_BEFORE_CLOSE = 10    # 장 마감 몇 분 전부터 새 주문 안 보냄 (15:20~ 동시호가)
 PROPOSE_AFTER = 15        # 장 마감 몇 분 뒤 제안
+PROPOSE_RETRY = 1800      # 자동 제안이 실패하면 이만큼(초) 뒤 다시 (매분 KIS 를 부르지 않게)
 EXIT_EVERY = 300          # 장중 손절·목표 확인 / 손실 한도 확인 주기 (초)
 LOG_KEEP = 60
 ACTIVE = ("submitting", "submitted")           # KIS 로 나갔고 아직 끝나지 않은 주문
@@ -670,6 +671,17 @@ async def overview(with_balance: bool = True) -> dict:
             try:
                 bal = await fetch_balance(max_age=20)
                 out["balance"] = bal
+                if row.last_error and "INVALID_CHECK_ACNO" in row.last_error:
+                    # 계좌번호 오류로 제안이 실패했었는데 이제 잔고가 받아짐 (.env 를 고치고 다시 켬)
+                    # → 지난 오류는 지우고, 오늘 자동 제안을 다시 하게 (장 마감 15분 뒤면 1분 안에)
+                    async with AsyncSessionLocal() as db2:
+                        r2 = await _row(db2)
+                        r2.last_error = None
+                        if r2.last_proposal_day == _kst().date().isoformat():
+                            r2.last_proposal_day = None
+                        await audit(db2, "account_ok", "계좌 확인됨 — 계좌번호 오류로 실패한 제안을 다시 합니다")
+                        await db2.commit()
+                        out["last_error"], out["last_proposal_day"] = None, r2.last_proposal_day
                 out["mismatches"] = mismatches(s, bal)
                 out["day_loss"] = day_loss(s, bal)
                 meta = s["meta"]
@@ -751,6 +763,17 @@ async def mark_interrupted():
         await db.commit()
 
 
+def _propose_failed_at(last_error: str | None, today: date) -> float | None:
+    """오늘 자동 제안이 실패했으면 그 시각 (last_error = 'ISO시각 제안 실패: ...')"""
+    if not last_error or "제안 실패" not in last_error:
+        return None
+    try:
+        t = datetime.fromisoformat(last_error.split(" ", 1)[0])
+    except ValueError:
+        return None
+    return t.timestamp() if t.date() == today else None
+
+
 async def tick():
     global _last_exit
     if not configured():
@@ -764,7 +787,7 @@ async def tick():
     async with AsyncSessionLocal() as db:
         row = await _row(db)
         await db.commit()
-        halted, last_day = row.halted, row.last_proposal_day
+        halted, last_day, last_err = row.halted, row.last_proposal_day, row.last_error
     if w == "open":
         if not halted:
             await submit_approved()
@@ -776,11 +799,13 @@ async def tick():
         await refresh_fills()
     elif hm >= c + PROPOSE_AFTER:
         await refresh_fills(final=True)
-        if not halted and last_day != now.date().isoformat():
+        failed_at = _propose_failed_at(last_err, now.date())
+        retry = failed_at is not None and time.time() - failed_at >= PROPOSE_RETRY
+        if not halted and (last_day != now.date().isoformat() or retry):
             try:
                 await propose()
             except Exception:
-                async with AsyncSessionLocal() as db:   # 실패해도 매분 다시 하지 않게 (오늘은 손으로 '지금 제안 만들기')
+                async with AsyncSessionLocal() as db:   # 실패해도 매분 다시 하지 않게 — 30분 뒤 다시 (또는 손으로 '지금 제안 만들기')
                     row = await _row(db)
                     row.last_proposal_day = now.date().isoformat()
                     await db.commit()

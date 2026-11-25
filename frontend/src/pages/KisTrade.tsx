@@ -22,7 +22,7 @@ const ACTION: Record<string, string> = {
   propose: "제안", propose_exit: "손절·목표 매도 제안", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
   submit_fail: "KIS 거부", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
   cancel_fail: "취소 실패", fill_unknown: "체결 확인 안 됨", halt: "정지", resume: "다시 시작", baseline: "기준 맞추기", config: "설정 변경",
-  expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름",
+  expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름", account_ok: "계좌 확인됨",
 };
 
 function Card({ icon: Icon, title, desc, children, testid, right }: { icon: any; title: string; desc?: string; children: React.ReactNode; testid?: string; right?: React.ReactNode }) {
@@ -145,7 +145,12 @@ export default function KisTrade() {
             <div>1회 매수 한도 <strong>{won(s.limits.max_order_krw)}</strong></div>
             <div>마지막 자동 제안 <strong>{s.last_proposal_day || "-"}</strong></div>
           </div>
-          {s.last_error && <p style={{ color: "var(--red)", fontSize: 12 }}>{s.last_error}</p>}
+          {s.last_error && (
+            <p data-testid="kis-last-error" style={{ color: "var(--red)", fontSize: 12, lineHeight: 1.6 }}>
+              마지막 자동 제안 실패 — {s.last_error.replace("T", " ").replace(/\+09:00/, "")}
+              <span style={{ display: "block", color: "var(--text-muted)" }}>30분마다 다시 시도합니다. 설정을 고쳤으면 아래 '지금 제안 만들기'로 바로 다시 해 보세요.</span>
+            </p>
+          )}
           {s.loop?.last_error && <p style={{ color: "var(--text-muted)", fontSize: 11.5 }}>자동 운영 오류: {s.loop.last_error}</p>}
         </section>
       )}

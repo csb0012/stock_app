@@ -542,3 +542,57 @@ def test_status_shows_account_error(kenv, monkeypatch):
     monkeypatch.setattr(kis_order, "balance", bad)
     st = kenv.c.get("/api/kis/status").json()
     assert "INVALID_CHECK_ACNO" in st["balance_error"] and "KIS_MOCK_ACCOUNT_NO" in st["balance_error"] and st["balance"] is None
+
+
+def _fake_analyze(monkeypatch):
+    from app.services import papertrade
+
+    async def fake(market, user_id, positions, params):
+        r = {"name": "삼성", "score": 75, "prob": 62, "close": 70_000, "quant": 80, "grade": "A", "accum": 30, "accum_ok": False, "ma50": 60_000}
+        return {"rows": {"005930": r}, "regime": "상승 추세", "events": [], "aw": None, "last": "2026-11-23", "errors": [], "index": []}
+    monkeypatch.setattr(papertrade, "analyze_live", fake)
+
+
+def test_auto_propose_retries_after_failure(kenv, monkeypatch):
+    """자동 제안이 실패하면(예: 계좌번호 오류) 그날은 끝이 아니라 30분 뒤 다시 — 매분은 아님"""
+    _fake_analyze(monkeypatch)
+    good = kenv.b.balance
+    calls = {"n": 0}
+
+    async def bad():
+        calls["n"] += 1
+        raise kis_order.AccountRejected("모의투자 서버가 계좌번호 ****3456-01 를 거부했습니다 (INVALID_CHECK_ACNO)")
+    monkeypatch.setattr(kis_order, "balance", bad)
+    kenv.clock["t"] = dt.datetime(2026, 11, 23, 15, 46, tzinfo=KST)
+    with pytest.raises(kis_order.AccountRejected):
+        run(kis_trade.tick())
+    kenv.clock["t"] += dt.timedelta(minutes=1)
+    run(kis_trade.tick())                       # 1분 뒤엔 다시 안 함
+    assert calls["n"] == 1
+    monkeypatch.setattr(kis_order, "balance", good)   # 사용자가 .env 를 고침
+    kenv.clock["t"] += dt.timedelta(minutes=30)
+    run(kis_trade.tick())                       # 30분 뒤 다시 → 성공
+    st = run(kis_trade.overview())
+    assert st["last_error"] is None and st["last_proposal_day"] == "2026-11-23"
+    assert [o["symbol"] for o in run(kis_trade.list_orders())] == ["005930"]
+
+
+def test_account_error_cleared_when_balance_ok(kenv, monkeypatch):
+    """실제 사용자 화면 (2026-11-25): .env 를 고친 뒤 잔고는 받아지는데 '제안 실패: INVALID_CHECK_ACNO' 가 남아 있음
+    → 잔고가 받아지면 지난 계좌 오류를 지우고 오늘 제안을 다시 함"""
+    from app.models.kis import KisTrade
+    _fake_analyze(monkeypatch)
+    kenv.clock["t"] = dt.datetime(2026, 11, 23, 17, 30, tzinfo=KST)
+
+    async def stale():
+        async with kenv.Session() as s:
+            s.add(KisTrade(id=1, halted=False, limits=json.dumps(kis_trade.clean_limits({})),
+                           params=json.dumps(kis_trade.pe.clean_params({})), state="{}", last_proposal_day="2026-11-23",
+                           last_error="2026-11-23T17:24:51+09:00 제안 실패: KIS VTTC8434R 실패 (HTTP 200, OPSQ2000): ERROR : INPUT INVALID_CHECK_ACNO"))
+            await s.commit()
+    run(stale())
+    st = kenv.c.get("/api/kis/status").json()
+    assert st["balance"] and st["last_error"] is None and st["last_proposal_day"] is None
+    run(kis_trade.tick())                       # 다음 1분 → 바로 제안
+    assert len(run(kis_trade.list_orders())) == 1
+    assert any(l["action"] == "account_ok" for l in run(kis_trade.list_log()))
