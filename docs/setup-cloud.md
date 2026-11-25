@@ -204,10 +204,57 @@ bash deploy/setup-server.sh
      - SSH 키를 만든다.
      - 90초마다 VM 생성을 재시도한다. 성공하면 공인 IP 를 알려 준다.
   4. 성공하면 Cloud Shell ⚙ → **Download** → `/home/<이름>/.ssh/oci_rsa` 를 받아 PC 의 `C:\Users\내이름\.ssh\oracle.key` 로 저장한다. 이후 3단계부터 진행한다.
-  - Cloud Shell 은 오래 손대지 않으면 세션이 끊길 수 있다. 탭을 열어 두고, 끊기면 같은 명령을 다시 실행한다(이미 만든 건 건너뜀).
+  - **Cloud Shell 은 몇 시간 지나면 세션이 끊긴다** (브라우저에 '사이트에서 나가시겠습니까?' 가 뜨고 재시도도 멈춤). 며칠 걸릴 수 있으니
+    아래 **"PC 에서 자동 재시도"** 로 집 PC 의 Docker 에서 돌리는 것을 권장한다. 끊긴 뒤 다시 실행해도 이미 만든 네트워크·규칙은 건너뛴다.
   - 그래도 며칠째 안 되면 두 가지 방법이 있다:
     - **종량제로 업그레이드**: 무료 자원은 그대로 0원이고, 자리 배정이 잘 된다는 사례가 많다. 예산 알림을 걸어 둔 상태여야 한다.
-    - **E2.1.Micro**(AMD 1GB)로 만든다.
+    - **E2.1.Micro**(AMD 1GB)로 만든다 — 자리가 거의 항상 있다. 재시도 스크립트에 `MICRO=1` 을 주면 이 모양으로 만든다.
+      1GB 라 설치 스크립트가 스왑 2GB 를 붙이고, 첫 빌드 20~30분·AI 모의투자 1년 시뮬레이션 수 분~10분 이상으로 느리다.
+
+### PC 에서 자동 재시도 (Cloud Shell 이 끊길 때 — 집 PC Docker)
+PC 가 켜져 있는 동안 계속 재시도한다. Docker Desktop 만 있으면 되고 Python·OCI CLI 를 PC 에 설치하지 않는다.
+
+1. **Oracle API 키 만들기** (PC 에서 Oracle 에 로그인하는 열쇠):
+   콘솔 오른쪽 위 프로필 아이콘 → **My profile(내 프로필)** → 왼쪽 아래 **API keys** → **Add API key** →
+   **Generate API key pair** → **Download private key** (`.pem` 파일) → **Add** → 나오는 **Configuration file preview** 내용을 복사해 둔다.
+2. **PC 에 파일 두 개 두기** (PowerShell):
+   ```powershell
+   mkdir $env:USERPROFILE\.oci
+   ```
+   - 받은 `.pem` 파일을 탐색기에서 `C:\Users\내이름\.oci\oci_api_key.pem` 으로 이름을 바꿔 옮긴다.
+   - 설정 파일(확장자 없음)을 만들고 메모장으로 연다:
+     ```powershell
+     New-Item -ItemType File $env:USERPROFILE\.oci\config
+     ```
+     ```powershell
+     notepad $env:USERPROFILE\.oci\config
+     ```
+     1번에서 복사한 내용을 붙여 넣고, **`key_file=` 줄만 `key_file=~/.oci/oci_api_key.pem` 으로 바꿔** 저장한다
+     (Docker 안에서 읽는 경로라 `C:\...` 가 아니라 이 모양이어야 함). `region=` 은 홈 리전(예: `ap-osaka-1`) 그대로.
+3. **재시도 시작** — Docker Desktop 을 켜고, 최신 코드를 받은 뒤(`git pull`) 저장소 폴더에서:
+   ```powershell
+   cd C:\claude\stock_app
+   ```
+   ```powershell
+   docker run -d --name oci-retry -v "$env:USERPROFILE\.oci:/root/.oci" -v "${PWD}\deploy:/w" -w /w -e KEY=/root/.oci/stock_ssh_key -e OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True python:3.12-slim bash -c "pip install -q oci-cli && bash oci-launch-retry.sh"
+   ```
+   - AMD 1GB(E2.1.Micro)로 만들려면 `-e KEY=...` 앞에 `-e MICRO=1` 을 넣는다.
+   - 진행 보기: `docker logs -f oci-retry` (Ctrl+C 는 보기만 멈춤, 재시도는 계속). 처음 1~2분은 OCI CLI 설치.
+   - "Oracle 로그인(API 키) 실패" 가 나오면 2번의 config 내용(특히 `key_file`·`region`)과 `.pem` 파일 위치를 확인하고, `docker rm oci-retry` 후 다시 실행.
+4. **PC 가 절전 모드로 들어가면 멈춘다** → 재시도하는 동안 절전 끄기 (전원 연결 시 '절전 안 함'):
+   ```powershell
+   powercfg /change standby-timeout-ac 0
+   ```
+   PC 를 껐다 켰으면 `docker rm oci-retry` 후 3번 명령을 다시 실행한다 (만든 네트워크·SSH 키는 그대로 다시 씀).
+5. **성공하면** 로그 마지막에 `서버 공인 IP` 가 나온다. SSH 개인키는 `C:\Users\내이름\.oci\stock_ssh_key` 에 있다 → 3단계용으로 복사:
+   ```powershell
+   Copy-Item $env:USERPROFILE\.oci\stock_ssh_key $env:USERPROFILE\.ssh\oracle.key
+   ```
+   ```powershell
+   docker rm oci-retry
+   ```
+   이어서 위 **2. DuckDNS** 부터 진행한다 (80/443 은 스크립트가 이미 열었음). 성공한 뒤 절전 설정은 원래대로 돌려도 된다.
+   API 키는 VM 을 만든 뒤엔 필요 없으니 콘솔 API keys 에서 지워도 된다.
 - **VM 이 사라짐(유휴 회수)**: 위 "꼭 알아둘 조건" 참고. 다시 만들고 백업한 `stock_app.db` 를 복사한다.
 
 ## 구성

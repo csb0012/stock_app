@@ -684,6 +684,19 @@ pull 후 패키지 목록이 바뀌었을 때:
   빌드된 화면으로 로그인 → AI 모의투자 두 탭, 밝은·어두운 모드·폭 390px 가로 스크롤 없음·콘솔 오류 없음.
   **실서버 미검증**: 실제 KIS·Yahoo·FRED 데이터로 시뮬레이션·실시간 계좌 (아래 알려진 이슈)
 
+### 2026-11-25 — Oracle VM 자동 재시도를 집 PC Docker 에서 (Cloud Shell 이 몇 시간이면 끊김) (commit `TBD`)
+- 문제: `deploy/oci-launch-retry.sh` 를 Oracle Cloud Shell 에서 돌리면 몇 시간 뒤 세션이 끊기고 브라우저에 '사이트에서 나가시겠습니까?' → 재시도가 멈춤
+- 스크립트를 PC 의 Docker(`python:3.12-slim` + `pip install oci-cli`)에서도 돌게 고침: 테넌시를 `~/.oci/config` 에서 읽음, `jq`·`ssh-keygen` 이 없으면
+  python(oci-cli 와 같이 설치되는 cryptography)으로 대신, `oci` 가 없거나 API 키 로그인이 안 되면 실제 오류를 보여 주고 멈춤,
+  `MICRO=1` 이면 AMD 1GB(VM.Standard.E2.1.Micro — 자리 거의 항상 있음, 느림)로 생성. Cloud Shell 에서는 예전처럼 그대로 동작
+- `docs/setup-cloud.md` 에 "PC 에서 자동 재시도" 절차 (API 키 만들기 → `C:\Users\내이름\.oci\config`·`oci_api_key.pem` → `docker run -d --name oci-retry ...` →
+  `docker logs -f oci-retry` → 절전 끄기 → 성공 시 SSH 키 `.oci\stock_ssh_key` 를 `.ssh\oracle.key` 로 복사)
+- 검증: 이 환경의 Docker 에서 문서의 명령과 같은 `python:3.12-slim` + oci-cli 3.96.3 설치 → 가짜 API 키 config 로 실행해 테넌시를 config 에서 읽고
+  "Oracle 로그인(API 키) 실패" + 실제 오류 문구 표시 확인 (이 환경은 Oracle 접속이 막혀 시간 초과). 가짜 `oci` 명령으로 jq·ssh-keygen 없는 컨테이너에서
+  전체 흐름: 서브넷 → 80/443 규칙 생성·연결(보안 목록 JSON 합치기) → SSH 키 생성(OpenSSH RSA 4096, 공개키 일치 확인) → '자리 없음' 2번 재시도 → 성공 → 공인 IP,
+  A1 은 1 OCPU/2GB shape-config 전달·Micro 는 생략 확인, `oci` 없을 때 안내. `bash -n` 문법 확인. 앱 코드 변경 없음.
+  **실제 Oracle 계정으로는 실서버 미검증** (알려진 이슈)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류
@@ -716,6 +729,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 - [ ] 국내 '간밤 미국장 반영' 예측은 08:20~08:58 에 서버가 켜져 있어야 자동 기록됨 (꺼져 있으면 전날 저녁 예측이 채점됨)
 - [ ] 뉴스·외부 데이터 보정폭(±2~3%p)은 과거 데이터가 없어 검증 안 된 값
 - [ ] 클라우드: Oracle 은 7일간 CPU(p95)·네트워크·메모리(A1만) **모두** 20% 미만이면 VM 회수 → VM 을 1 OCPU/2GB 로 작게 만들어 평소 메모리 사용률(약 35~45%)로 유휴 조건을 피함 (CPU 꼼수 불필요). 일주일 뒤 콘솔 Metrics 의 Memory Utilization 확인 필요. 실제 Oracle VM 에서 미검증(ARM 이미지 빌드 포함)
+- [ ] Oracle VM 자동 재시도(PC Docker): 실제 Oracle API 키로 미검증 — "Oracle 로그인(API 키) 실패" 가 뜨면 오류 문구와 `.oci\\config` 의 `key_file=~/.oci/oci_api_key.pem`·`region` 확인. Windows 에서 마운트한 키 파일 권한 경고는 `OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING` 으로 끔
 - [ ] 클라우드: 2026-11 무료 가입 목록에 한국 리전이 없음 → 일본 오사카(우선)·도쿄 리전 사용. **해외 IP 에서 KIS API 호출은 미검증** — 설치 직후 setup-cloud.md 의 KIS 확인 명령으로 확인
 - [ ] 백테스트가 국내 종목마다 KIS 일봉 800개(호출 8~10회)를 받음 → 1년으로 늘린 뒤 첫 실행은 예전보다 오래 걸림(실서버 5~10분 예상, 이후는 새 날짜만 계산). 실서버 미검증
 - [ ] 미국 종목 가격은 yfinance 기준 (장중 15분 지연 가능). 대시보드는 정규장 종가 + 시간외 가격을 따로 표시
