@@ -58,6 +58,7 @@ def config() -> dict:
                         "costs": {k: v for k, v in pe.COSTS[m].items() if k != "currency"}} for m in ("KR", "US")},
         "params": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
         "trailing": {"default": True, "label": pe.PARAM_LABELS["trailing"]},
+        "options": {k: {"default": True, "label": pe.PARAM_LABELS[k]} for k in ("adaptive", "trend_filter")},
         "months": list(MONTHS), "weights": pe.WEIGHTS, "regime_exposure": pe.REGIME_EXPOSURE,
         "min_prob": pe.MIN_PROB, "max_accounts": MAX_ACCOUNTS,
     }
@@ -91,8 +92,9 @@ def _closed_only(market: str, candles: list) -> list:
     return candles
 
 
-async def fetch_stocks(market: str, items: list, kr_count: int, us_period: str) -> tuple:
-    """→ ({종목: {name, candles}}, 오류 목록). 국내는 KIS(호출 제한이면 잠시 쉬고 그 종목만 다시), 미국은 yfinance 한 번에"""
+async def fetch_stocks(market: str, items: list, kr_count: int, us_period: str, progress=None) -> tuple:
+    """→ ({종목: {name, candles}}, 오류 목록). 국내는 KIS(호출 제한이면 잠시 쉬고 그 종목만 다시), 미국은 yfinance 한 번에.
+    progress(단계, 완료, 전체): 종목마다 호출 (예외를 올리면 중단)"""
     from app.services.quote import batch_yf_history
     out, errors = {}, []
     if market == "US":
@@ -104,7 +106,9 @@ async def fetch_stocks(market: str, items: list, kr_count: int, us_period: str) 
                 continue
             out[i["symbol"]] = {"name": i["name"], "candles": cs}
         return out, errors
-    for i in items:
+    for n, i in enumerate(items):
+        if progress:
+            progress(f"일봉 받는 중 ({i['name']})", n, len(items))
         for attempt in range(3):
             try:
                 cs = (await kis_client.get_kr_chart(i["symbol"], kr_count))["candles"]
@@ -154,6 +158,22 @@ async def macro_events(start: str, end: str) -> tuple:
 
 # ---------------- 과거 시뮬레이션 ----------------
 
+class SimCancelled(Exception):
+    pass
+
+
+_cancel: set = set()   # 중단을 요청한 시뮬레이션 번호
+
+
+def cancel_sim(sim_id: int) -> bool:
+    """계산 중이면 중단 요청 (다음 진행 표시 시점 — 길어야 몇 초 — 에 멈춤). 계산 중이 아니면 False"""
+    if sim_id not in _sim_progress:
+        return False
+    _cancel.add(sim_id)
+    _sim_progress[sim_id]["phase"] = "중단하는 중"
+    return True
+
+
 def sim_progress(sim_id: int) -> dict | None:
     return _sim_progress.get(sim_id)
 
@@ -189,6 +209,8 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
     prog = _sim_progress[sim_id]
 
     def progress(phase, done, total):
+        if sim_id in _cancel:
+            raise SimCancelled()
         prog.update(phase=phase, done=done, total=total)
 
     async with _sim_lock:
@@ -201,14 +223,26 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
             end_s = end.isoformat()
             items = base_universe(market)
             progress(f"일봉 받는 중 ({len(items)}종목)", 0, len(items))
-            kr_count = months * 22 + pe.WARMUP + 20
-            stocks, errors = await fetch_stocks(market, items, kr_count, "5y")
+            kr_count = months * 22 + pe.WARMUP + 20 + int(pe.ADAPT_WARMUP_DAYS * 0.7)   # 학습형 비중용 앞쪽 점수까지
+            stocks, errors = await fetch_stocks(market, items, kr_count, "5y", progress)
             if len(stocks) < max(3, len(items) // 2):
                 raise RuntimeError(f"일봉을 받은 종목이 {len(stocks)}/{len(items)}개뿐 — " + " / ".join(errors[:3]))
             index = await fetch_index(market, "5y")
             progress("경제 일정 받는 중", 0, 1)
             macro, notes = await macro_events(start, end_s)
-            result = await asyncio.to_thread(pe.simulate, stocks, index, macro, market, capital, start, end_s, params, progress)
+            feats = await asyncio.to_thread(pe.prepare, stocks, market, start, end_s, progress)
+            result = await asyncio.to_thread(pe.simulate, stocks, index, macro, market, capital, start, end_s, params,
+                                             progress, feats)
+            if params.get("adaptive") or params.get("trend_filter"):
+                # 같은 데이터·같은 설정에서 개선 옵션만 끈 '기본 방식' — 개선이 실제로 나은지 매번 비교해 보여줌
+                base_params = {**params, "adaptive": False, "trend_filter": False}
+
+                def base_progress(phase, done, total):
+                    progress(f"비교용 기본 방식 — {phase}", done, total)
+                base = await asyncio.to_thread(pe.simulate, stocks, index, macro, market, capital, start, end_s,
+                                               base_params, base_progress, feats)
+                result["compare"] = {"params": base_params, "summary": base["summary"],
+                                     "equity": [{"date": c["date"], "equity": c["equity"]} for c in base["equity"]]}
             result["notes"] = notes + ([f"일봉 못 받은 종목 {len(errors)}개: " + " / ".join(errors[:3])] if errors else [])
             result["universe"] = [{"symbol": s, "name": v["name"]} for s, v in stocks.items()]
             result["benchmark"] = INDEX[market][1]
@@ -216,6 +250,12 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
             progress("결과 저장 중", 1, 1)
             await _save_sim(sim_id, status="done", summary=json.dumps(result["summary"], ensure_ascii=False),
                             result=json.dumps(result, ensure_ascii=False))
+        except SimCancelled:
+            print(f"[paper] 시뮬레이션 {sim_id} 중단 (사용자 요청)")
+            try:
+                await _save_sim(sim_id, status="cancelled", error="사용자가 중단함")
+            except Exception as e2:
+                print(f"[paper] 시뮬레이션 {sim_id} 중단 기록 실패: {type(e2).__name__}: {e2}")
         except Exception as e:
             print(f"[paper] 시뮬레이션 {sim_id} 실패: {e}")
             try:
@@ -224,6 +264,7 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
                 print(f"[paper] 시뮬레이션 {sim_id} 실패 기록도 실패: {type(e2).__name__}: {e2}")
         finally:
             _sim_progress.pop(sim_id, None)
+            _cancel.discard(sim_id)
 
 
 SAVE_RETRY_WAITS = (5, 15, 30)   # DB 가 잠겨 있으면(다른 큰 저장 중) 이만큼 기다렸다가 다시 저장 (초)
@@ -374,8 +415,13 @@ async def decide_account(acc_id: int, manual: bool = False) -> dict:
                         probs[sym] = a["prediction"]["probability"]
                     except Exception as e:   # 학습 모델 포함 확률 실패 → 규칙 점수 확률 (build_features 가 계산)
                         print(f"[paper] {sym} AI 추천 확률 실패: {e}")
-                feats = await asyncio.to_thread(pe.build_features, stocks, market, last, probs, overrides)
+                adaptive = bool(params.get("adaptive"))
+                # 학습형 비중: 최근 약 140거래일 점수와 그 뒤 결과로 (오늘 판단엔 오늘까지 확정된 결과만)
+                feat_from = (date.fromisoformat(last) - timedelta(days=200)).isoformat() if adaptive else last
+                feats = await asyncio.to_thread(pe.build_features, stocks, market, feat_from, probs, overrides)
                 rows = feats.get(last) or {}
+                aw = (await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(stocks), last)) if adaptive else None
+                pe.rescore(rows, aw["weights"] if aw else pe.WEIGHTS)
                 index = _closed_only(market, await fetch_index(market, "2y"))
                 regime = pe.regime_on(pe.regime_map(index), last)
                 nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
@@ -402,7 +448,8 @@ async def decide_account(acc_id: int, manual: bool = False) -> dict:
                 top = [{"symbol": s, "name": r["name"], "score": r["score"], "prob": r["prob"], "quant": r["quant"],
                         "accum": r["accum"]} for s, r in sorted(rows.items(), key=lambda kv: -kv[1]["score"])[:5]]
                 state["log"].append({"ts": _now_ts(market), "base_date": last, "regime": regime, "events": ev,
-                                     "manual": manual, "notes": notes + ([f"일봉 못 받은 종목 {len(errors)}개"] if errors else []),
+                                     "manual": manual, "notes": ([pe.weights_text(aw)] if adaptive else []) + notes
+                                     + ([f"일봉 못 받은 종목 {len(errors)}개"] if errors else []),
                                      "orders": [f"{'매수' if o['side'] == 'buy' else '매도'} {o['name']} — {o['reason']}" for o in orders],
                                      "top": top, "universe": len(rows)})
                 acc.last_decision_day = market_today(market).isoformat() if _after_close(market) or not is_trading_day(
@@ -588,9 +635,24 @@ async def tick():
             print(f"[paper] 계좌 {acc_id} 자동 운영 실패: {e}")
 
 
+async def mark_interrupted():
+    """서버가 계산 도중 꺼졌던 시뮬레이션(상태가 계속 '계산 중')을 실패로 — 안 그러면 지우지도 중단하지도 못함"""
+    from sqlalchemy import update
+    async with AsyncSessionLocal() as db:
+        r = await db.execute(update(PaperSim).where(PaperSim.status == "running")
+                             .values(status="failed", error="서버가 다시 시작돼 계산이 중단됨 — 다시 시작하세요"))
+        await db.commit()
+        if r.rowcount:
+            print(f"[paper] 중단된 시뮬레이션 {r.rowcount}건 정리")
+
+
 async def loop():
     from app.services.kis_api import mark_background
     mark_background()
+    try:
+        await mark_interrupted()
+    except Exception as e:
+        print(f"[paper] 중단된 시뮬레이션 정리 실패: {e}")
     await asyncio.sleep(30)
     while True:
         try:

@@ -328,8 +328,9 @@ async def search_stocks(
 @router.get("/test/kis")
 async def test_kis_connection():
     try:
-        token = await kis_client._get_token()
-        return {"status": "ok", "token_preview": token[:20] + "..."}
+        await kis_client._get_token()
+        # 로그인 없이 열리는 주소라 토큰 일부도 보여주지 않음 (예전엔 앞 20자를 보여줬음)
+        return {"status": "ok", "message": "KIS 토큰 발급 정상"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

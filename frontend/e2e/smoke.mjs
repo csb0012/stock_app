@@ -3,7 +3,7 @@
 // 백엔드·외부 API 없이 동작. 실제 응답 형식은 backend/tests 가 따로 검사.
 import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import * as F from "./fixtures.mjs";
 import * as PF from "./paper_fixtures.mjs";
 
@@ -52,7 +52,8 @@ function makeApi(overrides = {}) {
     const req = route.request();
     const url = new URL(req.url());
     const key = `${req.method()} ${url.pathname}`;
-    calls.push({ key, body: req.postData() });
+    const hd = req.headers();
+    calls.push({ key, body: req.postData(), token: hd["x-access-token"], authorization: hd["authorization"] });
     let body = table[key];
     if (typeof body === "function") body = body(req);
     if (body && body.__status) {   // 오류 응답 흉내: { __status: 401, detail: "..." }
@@ -722,22 +723,28 @@ async function run() {
     await page.getByTestId("tab-sim").click();
     await page.getByTestId("sim-detail").waitFor();
     const t = await page.locator("body").innerText();
-    for (const s of ["최종 자산", "AI 수익률", "-7.06%", "최대 낙폭", "승률", "지수 대비"]) expect(t.includes(s), `결과에 '${s}' 없음`);
+    for (const s of ["최종 자산", "AI 수익률", "+1.00%", "최대 낙폭", "승률", "지수 대비"]) expect(t.includes(s), `결과에 '${s}' 없음`);
+    // 개선 옵션 vs 기본 방식 비교 (같은 데이터)
+    const cmp = await page.getByTestId("sim-compare").innerText();
+    for (const s of ["학습형 가중치 + 추세 필터", "+1%", "-7.06%", "개선 옵션이 더 나았습니다"]) expect(cmp.includes(s), `비교 표에 '${s}' 없음: ${cmp}`);
     expect((await page.getByTestId("sim-trades").innerText()).includes("매도"), "거래 내역 없음");
     expect((await page.getByTestId("sim-log").innerText()).length > 20, "판단 기록 없음");
     expect((await page.getByTestId("sim-notes").innerText()).includes("FRED"), "데이터 경고 없음");
     const chart = await page.getByTestId("equity-chart").innerText();
-    expect(chart.includes("AI") && chart.includes("코스피 같은 금액"), `그래프 범례: ${chart}`);
-    expect(await page.getByTestId("equity-chart").locator("path").count() === 2, "AI·지수 선 2개가 아님");
+    expect(chart.includes("AI") && chart.includes("코스피 같은 금액") && chart.includes("기본 방식"), `그래프 범례: ${chart}`);
+    expect(await page.getByTestId("equity-chart").locator("path").count() === 3, "AI·지수·기본 방식 선 3개가 아님");
     await shot(page, "paper-sim");
     await page.getByRole("button", { name: "6개월" }).click();
     await page.getByRole("button", { name: /매매 규칙/ }).click();
     await page.getByTestId("param-max_positions").fill("3");
+    expect(await page.getByTestId("opt-adaptive").isChecked() && await page.getByTestId("opt-trend_filter").isChecked(), "개선 옵션 기본 켬이 아님");
+    await page.getByTestId("opt-trend_filter").uncheck();
     await page.getByTestId("sim-start").click();
     await page.waitForTimeout(300);
     const call = api.calls.find((c) => c.key === "POST /api/paper/simulations");
     const body = JSON.parse(call.body);
-    expect(body.months === 6 && body.params.max_positions === 3 && body.capital === 10000000, `요청 본문: ${call.body}`);
+    expect(body.months === 6 && body.params.max_positions === 3 && body.capital === 10000000 && body.params.trend_filter === false,
+      `요청 본문: ${call.body}`);
     // 탭 기억
     await page.reload();
     await page.getByTestId("sim-detail").waitFor();
@@ -755,6 +762,76 @@ async function run() {
     expect(await page.getByTestId("sim-start").isDisabled(), "계산 중인데 시작 버튼이 눌림");
     await page.getByTestId("sim-list").getByText("실패").click();
     await page.getByTestId("sim-error").getByText("0/40개뿐").waitFor();
+  });
+
+  await test("AI 모의투자: 계산 중 시뮬레이션 중단 버튼 (확인 후 요청) · 중단 표시", { api: makeApi({
+    "GET /api/paper/simulations": { busy: true, items: [
+      { id: 1, market: "KR", capital: 1e7, months: 12, params: {}, status: "running", summary: null, progress: { phase: "점수 계산 중 (삼성전자)", done: 3, total: 25 } },
+      { id: 3, market: "KR", capital: 1e7, months: 3, params: {}, status: "cancelled", error: "사용자가 중단함", summary: null }] },
+    "GET /api/paper/simulations/1": { id: 1, market: "KR", status: "running", progress: { phase: "점수 계산 중 (삼성전자)", done: 3, total: 25 } },
+    "GET /api/paper/simulations/3": { id: 3, market: "KR", status: "cancelled", error: "사용자가 중단함" },
+    "POST /api/paper/simulations/1/cancel": { message: "중단을 요청했습니다 — 몇 초 안에 멈춥니다" } }),
+    init: { "paper-tab": "sim" } }, async (page, api) => {
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("sim-cancel").waitFor();
+    page.once("dialog", (d) => d.dismiss());                     // 취소하면 요청 안 함
+    await page.getByTestId("sim-cancel").click();
+    await page.waitForTimeout(200);
+    expect(!api.calls.some((c) => c.key === "POST /api/paper/simulations/1/cancel"), "확인 취소했는데 중단 요청함");
+    page.once("dialog", (d) => d.accept());
+    await page.getByTestId("sim-cancel").click();
+    await page.getByTestId("sim-cancel").getByText("중단하는 중").waitFor();
+    expect(api.calls.some((c) => c.key === "POST /api/paper/simulations/1/cancel"), "중단 요청 안 보냄");
+    await page.getByTestId("sim-list").getByText("중단", { exact: true }).click();
+    await page.getByTestId("sim-cancelled").getByText("사용자가 중단함").waitFor();
+  });
+
+  await test("로그인 토큰은 X-Access-Token 으로 (Authorization 은 클라우드 접속 비밀번호 자리 — 덮으면 모든 요청 401)", {}, async (page, api) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    const calls = api.calls.filter((c) => c.key.startsWith("GET /api/"));
+    expect(calls.length > 0 && calls.every((c) => c.token === "e2e-token"), "토큰을 X-Access-Token 으로 안 보냄");
+    expect(calls.every((c) => !c.authorization), `Authorization 헤더를 씀: ${calls.find((c) => c.authorization)?.authorization}`);
+  });
+
+  // 서버(Caddy)가 붙이는 보안 정책(CSP)을 그대로 걸고 화면을 열어 봄 — 막히는 스크립트·이미지가 있으면 콘솔 오류로 실패
+  const CSP = readFileSync(new URL("../../deploy/Caddyfile", import.meta.url), "utf8").match(/Content-Security-Policy "([^"]+)"/)[1];
+  for (const theme of ["dark", "light"]) {
+    await test(`보안 정책(CSP)을 걸어도 화면·테마가 정상 (${theme})`, { theme, api: makeApi({
+      "POST /api/auth/setup-totp": { qr_code: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", secret: "ABC", uri: "otpauth://x" } }) },
+    async (page) => {
+      await page.route(`${BASE}/**`, async (route) => {
+        if (route.request().resourceType() !== "document") return route.fallback();
+        const resp = await route.fetch();
+        await route.fulfill({ response: resp, headers: { ...resp.headers(), "content-security-policy": CSP } });
+      });
+      for (const p of ["/", "/paper", "/watchlist", "/calendar", "/mypage"]) {
+        await page.goto(`${BASE}${p}`);
+        await page.waitForLoadState("networkidle");
+        expect(await page.evaluate(() => document.documentElement.dataset.theme) === theme, `${p}: 테마 초기화 스크립트가 막힘`);
+      }
+      // 2단계 인증 QR(data: 이미지)도 보여야 함
+      await page.getByTestId("totp-section").getByRole("button", { name: /켜기|설정/ }).first().click();
+      await page.getByAltText("2단계 인증 QR 코드").waitFor();
+    });
+  }
+
+  await test("유출된 비밀번호면 모든 화면 위에 경고 + 마이페이지 링크", { api: makeApi({
+    "GET /api/auth/me": { id: 1, username: "tester", display_name: "tester", totp_enabled: false, email: null, phone: null, verified: false,
+                          password_leaked: true, created_at: "2026-11-01T00:00:00" } }) }, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    const b = page.getByTestId("leaked-banner");
+    await b.waitFor();
+    expect((await b.innerText()).includes("유출 목록"), "경고 문구 없음");
+    await b.getByRole("link").click();
+    await page.waitForURL(/\/mypage/);
+    await shot(page, "leaked-banner");
+  });
+
+  await test("정상 비밀번호면 경고 없음", {}, async (page) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    expect(await page.getByTestId("leaked-banner").count() === 0, "유출 아닌데 경고가 보임");
   });
 
   // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)

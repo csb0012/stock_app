@@ -60,6 +60,8 @@ npm run dev
 | `SMTP_HOST`·`SMTP_PORT`·`SMTP_USER`·`SMTP_PASSWORD`·`SMTP_FROM` | 선택 | 회원가입·비밀번호 찾기·이메일 변경 인증 코드 메일 (네이버 smtp.naver.com 465). 없으면 그 기능만 503 |
 | `SMS_API_KEY`·`SMS_API_SECRET`·`SMS_FROM`·`SMS_DAILY_LIMIT` | 선택 | 휴대폰 문자 인증 (솔라피 solapi.com, SMS_FROM = 등록한 발신번호, 하루 기본 50건). 없으면 휴대폰 인증만 503 |
 | `SIGNUP_OPEN` | — | 기본 true (이메일 또는 휴대폰 인증하면 누구나 가입). false 면 가입 막음 |
+| `PWNED_CHECK` | — | 기본 true — 가입·비밀번호 변경 때 유출 비밀번호(HIBP, 해시 앞 5글자만 전송) 거부, 로그인 때 경고 |
+| `LOGIN_ALERT` | — | 기본 true — 처음 보는 IP 로그인·계정 잠금을 인증된 이메일로 알림 (SMTP 설정 있을 때) |
 
 ## 아키텍처
 
@@ -72,10 +74,10 @@ core/
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
                    DB_TIMEOUT=30초 (다른 연결이 쓰는 중이면 기다리는 한도). 큰 저장은 나눠 commit (백테스트 SAVE_CHUNK=300) — 한 번에 하면 그동안 잠겨 'database is locked'
-  security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
+  security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP, totp_step(코드의 30초 칸 번호 — 재사용 방지용, _now 로 테스트 시각 고정)
 models/
   user.py        — User (username, hashed_password, totp_secret, totp_enabled, email·email_verified, phone·phone_verified, nickname,
-                   password_changed_at, session_epoch(모든 기기 로그아웃))
+                   password_changed_at, session_epoch(모든 기기 로그아웃), totp_last_step(쓴 2단계 코드), password_leaked(유출 비밀번호 경고))
                    EmailCode (email_codes: 6자리 코드 — 받는 곳 = 이메일 또는 휴대폰 번호, HMAC 해시만 저장, 10분, 5번 틀리면 무효)
                    AccountEvent (account_events: 로그인·실패·비밀번호/연락처 변경 등 활동 기록, 사용자당 최근 100개)
   watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
@@ -91,6 +93,7 @@ services/
   us_daytime.py  — 미국 주간거래 가격 (한국 10:00~18:00, 서머타임 ~17:00 · 블루오션): 주간거래 시간에만 KIS 조회, 종목별 30초 캐시,
                    attach(rows) 가 미국 행에 daytime{price,base,change_rate,time} 을 붙인 **새 목록** 반환 (캐시된 원본 안 바꿈).
                    표시 전용 — 예측 확률·매입가 계산엔 안 씀. 관심종목·투자종목·AI 추천·종목 조회·대시보드 빅테크/ETF 응답에 붙음
+  pwned.py       — 유출 비밀번호 확인 (Have I Been Pwned range API, SHA-1 앞 5글자만 전송 + Add-Padding, 앞자리 캐시). 확인 못 하면 None(막지 않음)
   mailer.py      — SMTP 메일 발송 (465 = SSL, 그 외 STARTTLS). 설정 없으면 MailError(보낸 척 안 함), 오류 문구에 비밀번호 안 넣음
   sms.py         — 휴대폰 문자 발송 (솔라피 /messages/v4/send-many/detail, HMAC-SHA256 서명). 설정 없으면 SmsError, 하루 SMS_DAILY_LIMIT 건
   email_codes.py — 인증 코드 발급·확인 (이메일·문자 공통): 같은 받는 곳·용도 60초 재발송 제한, IP 당 1시간 10통, 용도 signup/reset/change/phone,
@@ -148,10 +151,14 @@ services/
                    INDICATORS(지표별 시리즈·계산·해설: about + 오름/내림/같음 시장 영향). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음 (err_text)
                    '오늘'·발표 여부는 미국 중부 날짜(fred_today) 기준 — 한국 날짜로 FRED 에 realtime_start 를 보내면 미래 날짜라 HTTP 400
   paper_engine.py— AI 모의투자 계산만 (DB·외부 호출 없음): AI 점수 = 상승확률 45%(규칙 점수, 실시간은 학습 모델 포함 AI 추천 확률) + 퀀트 종합 백분위 35%
-                   (요인 비중은 그날 결과가 확정된 과거로만, 20거래일마다) + 매집 20%(40점 초과분). 시장 상태(market_regime)로 주식 비중 상한 100/60/30%,
+                   (요인 비중은 그날 결과가 확정된 과거로만, 20거래일마다) + 매집 20%(40점 초과분).
+                   개선 옵션(기본 켬): adaptive = 세 신호 비중을 최근 120거래일 IC(10거래일 뒤 수익률, 확정일 ≤ 판단일만)로 20거래일마다 + 고정 비중과 반반(축소),
+                   trend_filter = 50일선 아래는 안 삼. prepare() = 시작 180일 전부터 점수(학습형용, 비교 실행이 재사용). 시장 상태(market_regime)로 주식 비중 상한 100/60/30%,
                    다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
                    intraday_exit(손절 먼저), after_close(보유일·추격 손절), simulate() = 하루씩 그날 종가까지로 판단 → 다음 날 시가 체결 → 장중 손절/목표 → 종가 평가
-  papertrade.py  — AI 모의투자 실행: 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim) /
+  papertrade.py  — AI 모의투자 실행: 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim,
+                   개선 옵션이 켜져 있으면 같은 점수로 옵션 끈 '기본 방식'도 계산해 result.compare, 중단 = cancel_sim → 진행 표시 때 SimCancelled,
+                   결과 저장은 DB 잠금이면 재시도, 서버 시작 때 '계산 중'으로 남은 기록은 실패로 정리) /
                    실시간 계좌(사용자당 5개): 만들면 바로 판단(장중이면 바로 현재가 체결), loop() 1분마다 — 개장 1분 뒤 대기 주문 체결, 장중 5분마다 손절·목표,
                    장 마감 15분 뒤 판단(실패 시 30분 뒤 재시도, 같은 날 자동 판단 중복 안 함). 실시간 대상 = 후보 + 내 관심·투자종목 + (국내) 전 종목 퀀트·매집 상위 + 보유.
                    계좌별 asyncio 잠금으로 state 를 순서대로 고침. 오늘 미완성 봉은 판단에서 뺌(_closed_only)
@@ -169,7 +176,7 @@ api/routes/
                    /delete-account (비밀번호 + 2단계 코드, 관심·투자종목·활동 기록 같이 삭제),
                    /setup-totp (이미 켜져 있으면 거부), /enable-totp, /disable-totp (현재 코드 필요), /me (nickname·display_name·email·phone·verified·created_at).
                    토큰의 pwv(비밀번호 버전) ≠ password_changed_at 이거나 sev ≠ session_epoch 이면 401 → 비밀번호 변경·모든 기기 로그아웃 시 다른 기기 끊김
-  stocks.py      — /search, /test/kis (인증 불필요), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
+  stocks.py      — /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
                    /screener/{kr,us}/{mode}
@@ -182,6 +189,7 @@ api/routes/
                    GET /quant (?limit, 퀀트 점수 상위·요인 비중·검증 — 전 종목 점수표는 응답에 안 실음)
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
   papertrade.py  — /paper/config (기본값·설정 범위·자동 운영 상태), /paper/simulations (POST 시작 {market, capital, months, params} — 범위 밖 422·계산 중 409 / GET 목록 / GET·DELETE /{id}),
+                   POST /paper/simulations/{id}/cancel (계산 중이 아니면 409),
                    /paper/accounts (POST 생성 / GET 목록(현재가 평가) / GET /{id} 거래·자산 곡선·판단 기록 / POST /{id}/run / PUT /{id}/active / DELETE /{id}). 남의 것 404
 ```
 
@@ -206,7 +214,8 @@ api/routes/
 ### 프론트엔드 (`frontend/src/`)
 
 ```
-api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → /login 리디렉트
+api/client.ts      — axios 인스턴스; 로그인 토큰을 **X-Access-Token** 헤더로 자동 주입 (Authorization 은 클라우드 Caddy 접속 비밀번호(Basic)
+                     자리라 쓰면 안 됨 — 덮으면 모든 요청이 Caddy 401); 401 → /login 리디렉트
 api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
@@ -251,12 +260,17 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 
 ### 인증
 
-- JWT를 `localStorage`에 저장, `Authorization: Bearer …` 헤더로 전송.
+- JWT를 `localStorage`에 저장, **`X-Access-Token` 헤더**로 전송 (백엔드는 `Authorization: Bearer` 도 받음 — API 문서·스크립트용).
+  클라우드에선 `Authorization` 헤더를 Caddy 접속 비밀번호(basic auth)가 쓰므로 화면이 거기에 토큰을 넣으면 안 됨.
+- 유출 비밀번호(HIBP) 가입·변경 거부 + 로그인 경고(`password_leaked`, 상단 빨간 띠), 계정별 잠금(15분 안 10번 → 15분, 어느 IP 든),
+  처음 보는 IP 로그인·잠금 알림 메일, 2단계 코드 재사용 불가(`totp_last_step`). IP 는 X-Forwarded-For **맨 뒤** 값 (맨 앞은 위조 가능).
+- Caddy 응답 헤더: CSP(`script-src 'self'` — 페이지 안 스크립트 금지라 테마 초기화는 `frontend/public/theme-init.js`), Permissions-Policy, COOP, HSTS, X-Frame-Options.
+  CSP 를 바꾸면 화면 테스트(`smoke.mjs` 가 Caddyfile 의 CSP 를 그대로 걸고 화면을 엶)로 확인.
 - 회원가입은 **이메일 또는 휴대폰 6자리 인증만 하면 누구나** (사용자 결정, 2026-11-25 — 휴대폰은 문자 수신 확인이지 실명 본인확인 아님). `SIGNUP_OPEN=false` 로 막을 수 있음. 서버에서 직접: `create_admin.py <아이디> <비밀번호>`,
   `--reset-password <아이디> <새 비밀번호>` (이메일 없는 예전 계정), `--reset-totp <아이디>` (휴대폰 분실).
 - 비밀번호를 바꾸면(변경·찾기·서버 명령) 그 전에 발급된 토큰은 무효 (토큰 pwv ≠ password_changed_at). 마이페이지 '모든 기기에서 로그아웃'도 같음 (sev ≠ session_epoch).
 - 백엔드는 `127.0.0.1` 에만 바인딩 (같은 네트워크의 다른 PC 접속 차단). 클라우드에선 backend 는 공개하지 않고 Caddy(80/443)만 공개 — Caddy basic auth(`deploy/auth.caddy`, git 제외) 한 겹 + 앱 로그인.
-- 로그인 5회 실패(10분 안) → 그 IP 15분 차단 (`auth.py`, X-Forwarded-For 기준).
+- 로그인 5회 실패(10분 안) → 그 IP 15분 차단 (`auth.py`, X-Forwarded-For 맨 뒤 값 기준) + 계정별 10회(15분 안) → 그 계정 15분 잠금.
 - TOTP(Google Authenticator)는 선택사항; 마이페이지에서 켜고 끔 (`/api/auth/setup-totp` → `/api/auth/enable-totp`, `/disable-totp`).
 
 ## Git

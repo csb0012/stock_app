@@ -16,6 +16,11 @@
   매도: 손절가(매입가 −손절%, 추격 손절이면 보유 중 최고 종가 기준으로 올라감) / 목표가(매입가 +익절%) 는 장중 도달 즉시,
         AI 점수 < 매도 기준 · 상승확률 ≤ 40% · 최대 보유일 도달은 다음 날 시가
   비용: 수수료(사고팔 때) + 증권거래세(국내, 팔 때) + 슬리피지(불리한 쪽으로 체결)
+개선 옵션 (기본 켬 — 과거 시뮬레이션이 같은 데이터로 '기본 방식'과 나란히 비교해 보여줌)
+  학습형 가중치  상승확률·퀀트·매집의 비중을 고정값 대신, 그날까지 결과(10거래일 뒤 수익률)가 확정된 최근 120거래일에서
+               '점수가 높을수록 실제로 더 올랐는지'(날짜별 순위 상관 IC)만큼 20거래일마다 다시 정함. 셋 다 안 맞으면 고정 비중.
+               학습한 비중은 고정 비중과 반반 섞음(축소 추정) — 짧은 기간 결과에 과하게 맞추지 않게
+  추세 필터     종가가 50일 이동평균 아래인 종목은 새로 사지 않음 (떨어지는 칼날 피하기 — 추세 추종)
 """
 import math
 
@@ -31,6 +36,12 @@ from app.services.market_calendar import is_trading_day
 WINDOW = 130                 # 상승확률 계산에 쓰는 일봉 (AI 추천·백테스트와 같음)
 WARMUP = 260                 # 시뮬레이션 시작 전에 필요한 일봉 (200일 고저·퀀트 비중 학습)
 WEIGHTS = {"prob": 0.45, "quant": 0.35, "accum": 0.20}
+ADAPT_HORIZON = 10           # 학습형 가중치: 10거래일 뒤 수익률로 신호가 맞았는지 봄
+ADAPT_LOOKBACK = 120         # 최근 120거래일 (결과가 확정된 날만)
+ADAPT_MIN_DATES = 20         # 이보다 적으면 고정 비중
+ADAPT_EVERY = 20             # 20거래일마다 다시 정함
+ADAPT_SHRINK = 0.5           # 학습한 비중을 고정 비중과 반반 섞음 — 120일 결과는 들쭉날쭉해서 한 신호에 몰빵(100%)하지 않게
+ADAPT_WARMUP_DAYS = 180      # 시뮬레이션 시작 전에도 점수를 계산해 두는 기간(달력) — 첫날부터 학습형 비중을 쓰기 위해
 REGIME_EXPOSURE = {"상승 추세": 1.0, "상승 압박": 0.6, "하락 추세": 0.3}
 EVENT_SIZE = 0.5             # 이벤트 전날 새 매수 금액 배율
 MIN_PROB = 55
@@ -56,6 +67,7 @@ PARAMS = {
 PARAM_LABELS = {
     "max_positions": "최대 보유 종목 수", "buy_score": "매수 기준 AI 점수", "sell_score": "매도 기준 AI 점수",
     "stop_pct": "손절 %", "take_pct": "익절(목표) %", "max_hold": "최대 보유 거래일", "trailing": "추격 손절",
+    "adaptive": "학습형 가중치", "trend_filter": "추세 필터 (50일선 아래는 안 삼)",
 }
 
 
@@ -77,6 +89,8 @@ def clean_params(raw: dict | None) -> dict:
     if out["sell_score"] >= out["buy_score"]:
         raise ValueError("매도 기준 AI 점수는 매수 기준보다 낮아야 함")
     out["trailing"] = bool(raw.get("trailing", True))
+    out["adaptive"] = bool(raw.get("adaptive", True))
+    out["trend_filter"] = bool(raw.get("trend_filter", True))
     return out
 
 
@@ -94,11 +108,84 @@ def check_capital(market: str, capital) -> float:
 
 # ---------------- 점수 ----------------
 
-def ai_score(prob, qpct, accum, accum_ok) -> int:
+def components(prob, qpct, accum, accum_ok) -> tuple:
+    """상승확률·퀀트·매집을 -1~1 (매집은 0~1) 로"""
     P = max(-1.0, min(1.0, (prob - 50) / 15)) if prob is not None else 0.0
     Q = (qpct - 50) / 50 if qpct is not None else 0.0
     A = max(0.0, min(1.0, (accum - 40) / 40)) if accum is not None and accum_ok else 0.0
-    return int(round(50 + 50 * (WEIGHTS["prob"] * P + WEIGHTS["quant"] * Q + WEIGHTS["accum"] * A)))
+    return P, Q, A
+
+
+def ai_score(prob, qpct, accum, accum_ok, weights: dict | None = None) -> int:
+    w = weights or WEIGHTS
+    P, Q, A = components(prob, qpct, accum, accum_ok)
+    return int(round(50 + 50 * (w["prob"] * P + w["quant"] * Q + w["accum"] * A)))
+
+
+def forward_labels(stocks: dict, horizon: int = ADAPT_HORIZON) -> dict:
+    """{(날짜, 종목): (결과 확정일, horizon 거래일 뒤 수익률)} — 학습형 가중치 전용.
+    미래 값이라 '결과 확정일 ≤ 판단일' 인 것만 쓴다 (adaptive_weights)"""
+    out = {}
+    for sym, s in stocks.items():
+        cs = s["candles"]
+        for i in range(len(cs) - horizon):
+            c0 = float(cs[i]["close"])
+            if c0 > 0:
+                out[(cs[i]["date"][:10], sym)] = (cs[i + horizon]["date"][:10], float(cs[i + horizon]["close"]) / c0 - 1)
+    return out
+
+
+def _rank_ic(x: list, y: list) -> float | None:
+    if len(x) < 5:
+        return None
+    xr, yr = pd.Series(x).rank(), pd.Series(y).rank()
+    if xr.std() == 0 or yr.std() == 0:
+        return None
+    c = float(np.corrcoef(xr, yr)[0, 1])
+    return None if math.isnan(c) else c
+
+
+def adaptive_weights(feats: dict, labels: dict, day: str) -> dict | None:
+    """day 판단에 쓸 비중: 결과 확정일 ≤ day 인 최근 ADAPT_LOOKBACK 개 날짜에서 요소별 날짜별 순위 상관(IC) 평균 → 양수만큼 비중.
+    → {"weights", "ic", "dates"} 또는 표본 부족 None. 셋 다 0 이하면 고정 비중 + ic 표시"""
+    keys = ("prob", "quant", "accum")
+    days = [d for d in sorted(feats) if d < day]
+    usable = []
+    for d in reversed(days):
+        rows = [(sym, r) for sym, r in feats[d].items() if (d, sym) in labels and labels[(d, sym)][0] <= day]
+        if len(rows) >= 5:
+            usable.append((d, rows))
+        if len(usable) >= ADAPT_LOOKBACK:
+            break
+    if len(usable) < ADAPT_MIN_DATES:
+        return None
+    ics = {k: [] for k in keys}
+    for d, rows in usable:
+        comps = [components(r["prob"], r["quant"], r["accum"], r["accum_ok"]) for _, r in rows]
+        rets = [labels[(d, sym)][1] for sym, _ in rows]
+        for j, k in enumerate(keys):
+            v = _rank_ic([c[j] for c in comps], rets)
+            if v is not None:
+                ics[k].append(v)
+    ic = {k: (float(np.mean(v)) if v else 0.0) for k, v in ics.items()}
+    pos = {k: max(v, 0.0) for k, v in ic.items()}
+    tot = sum(pos.values())
+    w = ({k: ADAPT_SHRINK * pos[k] / tot + (1 - ADAPT_SHRINK) * WEIGHTS[k] for k in keys} if tot > 0
+         else dict(WEIGHTS))
+    return {"weights": w, "ic": {k: round(v, 3) for k, v in ic.items()}, "dates": len(usable), "fallback": tot <= 0}
+
+
+def rescore(rows: dict, weights: dict):
+    for r in rows.values():
+        r["score"] = ai_score(r["prob"], r["quant"], r["accum"], r["accum_ok"], weights)
+
+
+def weights_text(aw: dict | None) -> str:
+    if not aw:
+        return "고정 비중 (학습할 과거 결과 부족)"
+    w = aw["weights"]
+    base = f"확률 {w['prob'] * 100:.0f}% · 퀀트 {w['quant'] * 100:.0f}% · 매집 {w['accum'] * 100:.0f}%"
+    return ("고정 비중 (최근 세 신호 모두 결과와 반대·무관)" if aw["fallback"] else f"학습형 비중 {base}") + f" (최근 {aw['dates']}일 기준)"
 
 
 def _prob_series(candles: list, from_date: str, to_date: str = "9999") -> dict:
@@ -153,16 +240,20 @@ def _quant_panel(frames: dict, market: str, from_date: str) -> dict:
 
 
 def build_features(stocks: dict, market: str, from_date: str, prob_override: dict | None = None,
-                   overrides: dict | None = None, to_date: str = "9999") -> dict:
+                   overrides: dict | None = None, to_date: str = "9999", progress=None) -> dict:
     """stocks: {종목: {"name", "candles"(오름차순)}} → {날짜: {종목: 행}} (from_date 이후 날짜만).
     각 날짜의 행은 그날 종가까지의 데이터로만 계산.
     prob_override / overrides: 실시간용 — 마지막 날 상승확률(학습 모델 포함 AI 추천) / 전 종목 퀀트·매집 결과로 덮어씀"""
-    probs, accs, qframes = {}, {}, {}
-    for sym, s in stocks.items():
+    probs, accs, qframes, ma50 = {}, {}, {}, {}
+    for n, (sym, s) in enumerate(stocks.items()):
+        if progress:
+            progress(f"점수 계산 중 ({s.get('name') or sym})", n, len(stocks))
         cs = s["candles"]
         if len(cs) < 30:
             continue
         probs[sym] = _prob_series(cs, from_date, to_date)
+        closes = pd.Series([float(c["close"]) for c in cs])
+        ma50[sym] = dict(zip((c["date"][:10] for c in cs), closes.rolling(50).mean()))
         if len(cs) >= 120:
             af = accumulation.score_frame(cs)
             accs[sym] = {str(d)[:10]: (None if pd.isna(sc) else int(sc), bool(el))
@@ -182,6 +273,7 @@ def build_features(stocks: dict, market: str, from_date: str, prob_override: dic
                 "name": s.get("name") or sym, "close": float(c["close"]),
                 "prob": probs[sym][d], "quant": q[0] if q else None, "grade": q[1] if q else None,
                 "accum": acc, "accum_ok": ok,
+                "ma50": None if pd.isna(ma50[sym].get(d, np.nan)) else float(ma50[sym][d]),
             }
     last = max(out) if out else None
     if last:
@@ -301,6 +393,11 @@ def decide(state: dict, rows: dict, regime, events_next: list, params: dict, mar
     cands = sorted(((s, r) for s, r in rows.items()
                     if s not in state["positions"] and r["score"] >= params["buy_score"] and r["prob"] >= MIN_PROB),
                    key=lambda kv: (-kv[1]["score"], -kv[1]["prob"], kv[0]))
+    if params.get("trend_filter"):
+        below = [r["name"] for s, r in cands if r.get("ma50") is not None and r["close"] < r["ma50"]]
+        cands = [(s, r) for s, r in cands if r.get("ma50") is None or r["close"] >= r["ma50"]]
+        if below:
+            notes.append(f"추세 필터: 50일선 아래라 안 삼 — {', '.join(below[:3])}{' 외' if len(below) > 3 else ''}")
     for sym, r in cands:
         if slots <= 0:
             break
@@ -386,14 +483,21 @@ def after_close(state: dict, closes: dict, params: dict):
 
 # ---------------- 과거 시뮬레이션 ----------------
 
+def prepare(stocks: dict, market: str, start: str, end: str, progress=None) -> dict:
+    """시뮬레이션용 점수 (그날까지 데이터로만) — 학습형 가중치용으로 시작 ADAPT_WARMUP_DAYS 전부터 계산.
+    같은 데이터로 '기본 방식' 비교를 돌릴 때 다시 계산하지 않게 따로 둠"""
+    feat_from = (date.fromisoformat(start) - timedelta(days=ADAPT_WARMUP_DAYS)).isoformat()
+    return build_features(stocks, market, feat_from, to_date=end, progress=progress)
+
+
 def simulate(stocks: dict, index_candles: list, macro: list, market: str, capital: float, start: str, end: str,
-             params: dict, progress=None) -> dict:
+             params: dict, progress=None, feats: dict | None = None) -> dict:
     """과거 시뮬레이션. stocks 일봉은 start 전 WARMUP 개 이상 있어야 점수가 나옴.
-    progress(단계, 완료, 전체) — 진행 표시용 (선택)."""
-    if progress:
-        progress("점수 계산 중 (그날까지의 데이터로만)", 0, 1)
-    feats = build_features(stocks, market, start, to_date=end)
-    days = sorted(d for d in feats if d <= end)
+    progress(단계, 완료, 전체) — 진행 표시용 (선택, 예외를 올리면 중단). feats: prepare() 결과 (없으면 계산)"""
+    if feats is None:
+        feats = prepare(stocks, market, start, end, progress)
+    feats = {d: {s: dict(r) for s, r in rows.items()} for d, rows in feats.items()}   # 점수를 바꿔 쓰므로 복사
+    days = sorted(d for d in feats if start <= d <= end)
     if len(days) < 2:
         raise ValueError("시뮬레이션 기간에 거래일 데이터가 부족함")
     bars = {sym: {c["date"][:10]: c for c in s["candles"]} for sym, s in stocks.items()}
@@ -408,9 +512,11 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
 
     state = new_state(capital)
     pending: list = []
-    trades, curve, log = [], [], []
+    trades, curve, log, weight_log = [], [], [], []
     bench0 = idx_on(days[0])
     exposure_sum = 0.0
+    labels = forward_labels(stocks) if params.get("adaptive") else {}
+    aw, since = None, ADAPT_EVERY
     for k, d in enumerate(days):
         acts = []
         if k > 0:
@@ -454,8 +560,16 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
                       "bench": round(capital * b / bench0, 2) if b and bench0 else None})
         notes, top = [], []
         if k < len(days) - 1:
+            if params.get("adaptive"):
+                if since >= ADAPT_EVERY:
+                    aw, since = adaptive_weights(feats, labels, d), 0
+                    weight_log.append({"date": d, **(aw or {"weights": dict(WEIGHTS), "ic": None, "dates": 0, "fallback": True})})
+                    notes.append(weights_text(aw))
+                since += 1
+            rescore(feats[d], aw["weights"] if aw else WEIGHTS)
             ev = event_labels(market, days[k + 1], macro)
-            pending, notes = decide(state, feats[d], regime, ev, params, market)
+            pending, dnotes = decide(state, feats[d], regime, ev, params, market)
+            notes += dnotes
             top = [{"symbol": s, "name": r["name"], "score": r["score"], "prob": r["prob"]}
                    for s, r in sorted(feats[d].items(), key=lambda kv: -kv[1]["score"])[:3]]
             acts += [f"주문(다음 날 시가): {'매수' if o['side'] == 'buy' else '매도'} {o['name']} — {o['reason']}" for o in pending]
@@ -463,7 +577,7 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
         if progress and k % 10 == 0:
             progress("매매 시뮬레이션 중", k + 1, len(days))
     return {"summary": summarize(curve, trades, capital, exposure_sum / len(days)), "equity": curve, "trades": trades,
-            "log": log, "positions": positions_view(state, market), "days": len(days)}
+            "log": log, "positions": positions_view(state, market), "days": len(days), "weights": weight_log}
 
 
 def _act_text(t: dict, market: str) -> str:

@@ -1,3 +1,4 @@
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import pyotp
@@ -48,6 +49,25 @@ def get_totp_uri(secret: str, username: str) -> str:
 def verify_totp(secret: str, code: str) -> bool:
     totp = pyotp.TOTP(secret)
     return totp.verify(code, valid_window=1)
+
+
+def _now() -> float:
+    return time.time()   # 테스트에서 시각을 고정하려고 따로 둠
+
+
+def totp_step(secret: str, code: str, now: float | None = None) -> int | None:
+    """맞는 코드면 그 코드의 30초 칸 번호 (앞뒤 한 칸 허용 = verify_totp 와 같은 범위), 틀리면 None.
+    같은 칸 번호를 두 번 받지 않으면 코드 재사용(엿본 코드로 다시 로그인)을 막을 수 있음"""
+    code = (code or "").strip()
+    if not secret or not code.isdigit() or len(code) != 6:
+        return None
+    totp = pyotp.TOTP(secret)
+    t = now if now is not None else _now()
+    for off in (0, -1, 1):
+        at = t + off * totp.interval
+        if totp.at(at) == code:
+            return int(at // totp.interval)
+    return None
 
 
 def generate_qr_code_base64(uri: str) -> str:

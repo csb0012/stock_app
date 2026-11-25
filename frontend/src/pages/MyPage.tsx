@@ -244,7 +244,7 @@ function PasswordSection({ username }: { username: string }) {
 }
 
 const KIND_LABEL: Record<string, string> = {
-  login: "로그인", login_fail: "로그인 실패", signup: "가입", password_change: "비밀번호 변경", password_reset: "비밀번호 찾기로 재설정",
+  login: "로그인", login_fail: "로그인 실패", account_locked: "계정 잠금 (로그인 실패 많음)", signup: "가입", password_change: "비밀번호 변경", password_reset: "비밀번호 찾기로 재설정",
   email_change: "이메일 인증", phone_change: "휴대폰 인증", contact_remove: "본인인증 수단 삭제", logout_all: "모든 기기 로그아웃",
   totp_on: "2단계 인증 켬", totp_off: "2단계 인증 끔",
 };

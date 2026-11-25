@@ -17,6 +17,17 @@ os.environ.setdefault("KIS_ACCOUNT_NO", "00000000-01")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+@pytest.fixture(autouse=True)
+def _no_external_security_calls(monkeypatch):
+    """유출 비밀번호 확인(HIBP)·새 IP 로그인 알림 메일은 테스트에서 끔 — 그 기능 테스트는 직접 켜고 가짜로 바꿈"""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "pwned_check", False)
+    monkeypatch.setattr(settings, "login_alert", False)
+    from app.api.routes import auth   # 로그인 실패·잠금 기록은 모듈에 남으므로 테스트마다 비움
+    for d in (auth._fails, auth._locked, auth._acct_fails, auth._acct_locked):
+        d.clear()
+
+
 def run(coro):
     """async 함수를 테스트 안에서 실행 (pytest-asyncio 없이)"""
     return asyncio.run(coro)

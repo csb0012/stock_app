@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 클라우드 서버(Ubuntu 22.04/24.04) 처음 설치 — 저장소 폴더에서:  bash deploy/setup-server.sh
-# 하는 일: Docker 설치 → (메모리 작으면) 스왑 → 방화벽 80/443 열기 → 도메인·비밀번호 설정 → 앱 실행
+# 하는 일: Docker 설치 → (메모리 작으면) 스왑 → 방화벽 80/443 열기 → 보안(자동 보안 업데이트·비밀 파일 권한·SSH 점검)
+#          → 도메인·비밀번호 설정 → 앱 실행
 set -euo pipefail
 cd "$(dirname "$0")/.."
 COMPOSE="sudo docker compose -f docker-compose.cloud.yml"
@@ -29,11 +30,30 @@ if sudo iptables -S INPUT 2>/dev/null | grep -q -- "-j REJECT"; then
   if command -v netfilter-persistent >/dev/null 2>&1; then sudo netfilter-persistent save; fi
 fi
 
+echo "== 3-1/6 보안: 자동 보안 업데이트 · SSH 점검"
+# 우분투 보안 패치를 매일 자동 설치 (재부팅이 필요한 커널 패치는 설치만 하고 재부팅은 안 함)
+if ! dpkg -s unattended-upgrades >/dev/null 2>&1; then
+  sudo apt-get install -y unattended-upgrades
+fi
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' | sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+# SSH 는 키로만 들어와야 함 (비밀번호 로그인이 켜져 있으면 인터넷에서 대입 공격을 받음) — Oracle 기본은 꺼짐
+if sudo sshd -T 2>/dev/null | grep -qi '^passwordauthentication yes'; then
+  echo "경고: SSH 비밀번호 로그인이 켜져 있습니다. 끄는 방법 (키로 접속되는 것 확인 후):"
+  echo "  echo 'PasswordAuthentication no' | sudo tee /etc/ssh/sshd_config.d/99-no-password.conf && sudo systemctl restart ssh"
+fi
+
 echo "== 4/6 KIS 키 파일 확인"
 if [ ! -f backend/.env ]; then
   echo "backend/.env 가 없습니다. PC 의 C:\\claude\\stock_app\\backend\\.env 를 이 서버의 $(pwd)/backend/.env 로 복사한 뒤 다시 실행하세요."
   echo "(복사 방법: docs/setup-cloud.md 의 '파일 옮기기')"
   exit 1
+fi
+# KIS 키·로그인 서명 키·DB 는 이 계정만 읽게 (같은 서버의 다른 계정·프로그램이 못 읽음)
+chmod 600 backend/.env
+for f in backend/.secret_key backend/stock_app.db backend/.kis_token.json; do [ -f "$f" ] && chmod 600 "$f"; done
+if grep -qi '^SIGNUP_OPEN *= *false' backend/.env; then :; else
+  echo "참고: 회원가입이 열려 있습니다 (접속 비밀번호를 아는 사람은 가입 가능). 혼자 쓰면 내 계정을 만든 뒤"
+  echo "      backend/.env 에 SIGNUP_OPEN=false 를 넣고 'sudo docker compose -f docker-compose.cloud.yml restart backend'"
 fi
 mkdir -p backend/app/data
 
@@ -46,7 +66,13 @@ domain=$(grep '^DOMAIN=' deploy/.env | cut -d= -f2)
 if [ ! -f deploy/auth.caddy ]; then
   echo "앱 로그인 앞에 한 번 더 묻는 접속 계정을 만듭니다 (브라우저가 처음 접속할 때 물어봄)"
   read -rp "  접속 아이디: " bu
-  read -rsp "  접속 비밀번호 (12자 이상 권장): " bp; echo
+  while true; do   # 인터넷에서 누구나 대입해 볼 수 있는 첫 관문이라 짧은 비밀번호는 받지 않음
+    read -rsp "  접속 비밀번호 (12자 이상): " bp; echo
+    if [ "${#bp}" -lt 12 ]; then echo "  12자 이상으로 정하세요 (예: 단어 3~4개를 이어 붙이기)"; continue; fi
+    read -rsp "  한 번 더: " bp2; echo
+    [ "$bp" = "$bp2" ] && break
+    echo "  두 번 입력한 값이 다릅니다"
+  done
   hash=$(sudo docker run --rm caddy:2.8-alpine caddy hash-password --plaintext "$bp")
   printf 'basic_auth {\n\t%s %s\n}\n' "$bu" "$hash" > deploy/auth.caddy
   chmod 600 deploy/auth.caddy

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, History, Play, RefreshCw, Trash2, Pause, Info, ChevronDown, ChevronUp } from "lucide-react";
+import { Bot, History, Play, RefreshCw, Trash2, Pause, Info, ChevronDown, ChevronUp, Square } from "lucide-react";
 import { paperApi, errMsg, type PaperParams } from "../api/client";
 import { fmtPrice } from "../components/common/format";
 
@@ -16,12 +16,14 @@ const pct = (v: number | null | undefined, d = 2) => (v == null ? "-" : `${v > 0
 
 // ---------------- 자산 곡선 (AI vs 지수) ----------------
 function EquityChart({ points, market, bench }: { points: any[]; market: Market; bench: string }) {
+  // points[i].base = 같은 데이터·개선 옵션 끈 '기본 방식' 자산 (과거 시뮬레이션 비교, 없으면 안 그림)
   const [hover, setHover] = useState<number | null>(null);
   if (!points || points.length < 2) {
     return <p style={{ fontSize: 12, color: "var(--text-muted)", padding: "16px 0" }}>자산 그래프는 거래일이 2일 이상 쌓이면 표시됩니다</p>;
   }
   const W = 800, H = 220, P = 6;
-  const vals = points.flatMap((p) => [p.equity, p.bench].filter((v) => v != null)) as number[];
+  const vals = points.flatMap((p) => [p.equity, p.bench, p.base].filter((v) => v != null)) as number[];
+  const hasBase = points.some((p) => p.base != null);
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const span = hi - lo || 1;
   const x = (i: number) => P + (i / (points.length - 1)) * (W - 2 * P);
@@ -37,6 +39,8 @@ function EquityChart({ points, market, bench }: { points: any[]; market: Market;
           AI {fmtPrice(h.equity, market)} <span style={{ color: pctColor(h.equity / base - 1) }}>{pct((h.equity / base - 1) * 100)}</span></span>
         {h.bench != null && <span><span style={{ display: "inline-block", width: 10, height: 3, background: "var(--text-muted)", verticalAlign: "middle", marginRight: 4 }} />
           {bench} 같은 금액 {fmtPrice(h.bench, market)} <span style={{ color: pctColor(h.bench / base - 1) }}>{pct((h.bench / base - 1) * 100)}</span></span>}
+        {h.base != null && <span><span style={{ display: "inline-block", width: 10, height: 0, borderTop: "2px dashed var(--yellow)", verticalAlign: "middle", marginRight: 4 }} />
+          기본 방식 {fmtPrice(h.base, market)} <span style={{ color: pctColor(h.base / base - 1) }}>{pct((h.base / base - 1) * 100)}</span></span>}
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: "100%", height: 200, display: "block" }}
         onMouseLeave={() => setHover(null)}
@@ -47,6 +51,7 @@ function EquityChart({ points, market, bench }: { points: any[]; market: Market;
         }}>
         <line x1={P} x2={W - P} y1={y(base)} y2={y(base)} stroke="var(--border)" strokeDasharray="4 4" vectorEffect="non-scaling-stroke" />
         <path d={line("bench")} fill="none" stroke="var(--text-muted)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+        {hasBase && <path d={line("base")} fill="none" stroke="var(--yellow)" strokeWidth={1.5} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />}
         <path d={line("equity")} fill="none" stroke="var(--accent)" strokeWidth={2} vectorEffect="non-scaling-stroke" />
         {hover != null && <line x1={x(hover)} x2={x(hover)} y1={0} y2={H} stroke="var(--text-muted)" strokeWidth={1} vectorEffect="non-scaling-stroke" />}
       </svg>
@@ -72,6 +77,15 @@ function ParamsForm({ cfg, value, onChange }: { cfg: any; value: PaperParams; on
   if (!cfg) return null;
   return (
     <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 6 }} data-testid="improve-options">
+        {Object.entries((cfg.options || {}) as Record<string, any>).map(([k, o]) => (
+          <label key={k} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" data-testid={`opt-${k}`} checked={(value as any)[k] ?? o.default}
+              onChange={(e) => onChange({ ...value, [k]: e.target.checked })} />
+            {o.label}
+          </label>
+        ))}
+      </div>
       <button type="button" className="btn btn-ghost" style={{ fontSize: 12, padding: "4px 8px" }} onClick={() => setOpen(!open)}>
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />} 매매 규칙 (고급 설정)
       </button>
@@ -123,6 +137,9 @@ function HowItWorks({ cfg }: { cfg: any }) {
           <p><strong>매수</strong>: AI 점수 ≥ 매수 기준 + 상승확률 ≥ {cfg?.min_prob ?? 55}% 인 종목을 점수 높은 순으로, 총자산 ÷ 최대 보유 종목 수 만큼</p>
           <p><strong>매도</strong>: 손절가·목표가는 장중에 닿으면 바로 · AI 점수 &lt; 매도 기준, 상승확률 ≤ 40%, 최대 보유일 도달은 다음 날 시가</p>
           <p><strong>다음 날 데이터를 모르는 상태</strong>: 판단은 장 마감 종가까지의 데이터로만 하고, 주문은 다음 거래일 시가에 체결됩니다 (그날 종가로 사지 않음). 퀀트 요인 비중도 그날 이미 결과가 나온 과거로만 정합니다.</p>
+          <p><strong>개선 옵션 (기본 켬)</strong>: ① 학습형 가중치 — 세 신호의 비중을 고정값 대신, 그날까지 결과(10거래일 뒤 수익률)가 확정된 최근 120거래일에서
+            '점수가 높을수록 실제로 더 올랐는지' 만큼 20거래일마다 다시 정함 (짧은 기간에 과하게 맞추지 않게 고정 비중과 반반 섞음) ② 추세 필터 — 50일선 아래로 떨어지는 종목은 사지 않음.
+            과거 시뮬레이션은 같은 데이터로 <strong>옵션을 끈 기본 방식도 같이 계산해 비교</strong>해 보여주므로, 실제로 나은지 직접 확인하세요.</p>
           <p><strong>비용</strong>: 국내 수수료 0.015%·거래세 0.20%(팔 때), 미국 수수료 0.25%, 슬리피지 0.05% 를 빼고 계산</p>
           <p style={{ color: "var(--text-muted)" }}>과거 시뮬레이션 대상 = AI 추천 후보 종목(고정 목록). 지금 점수가 높은 종목을 고르면 미래를 보고 고른 셈이라 넣지 않습니다. 뉴스·공시는 과거 기록이 없어 과거 시뮬레이션에서 빠집니다.
             실시간 모의투자는 여기에 학습 모델 포함 AI 추천 확률, 국내 전 종목 퀀트·매집 상위 종목, 내 관심·투자종목을 더합니다.</p>
@@ -206,8 +223,13 @@ function SimDetail({ id }: { id: number }) {
   if (!d) return <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>;
   if (d.status === "running") return <SimProgress sim={d} />;
   if (d.status === "failed") return <p style={{ color: "var(--red)" }} data-testid="sim-error">시뮬레이션 실패: {d.error}</p>;
+  if (d.status === "cancelled") return <p style={{ color: "var(--text-muted)" }} data-testid="sim-cancelled">중단한 시뮬레이션입니다 ({d.error})</p>;
   const r = d.result, s = r.summary, m = d.market as Market;
   const log = (r.log as any[]).filter((x) => !onlyActions || x.actions.length).slice().reverse();
+  const cmp = r.compare;
+  const baseBy: Record<string, number> = {};
+  (cmp?.equity || []).forEach((e: any) => { baseBy[e.date] = e.equity; });
+  const points = cmp ? (r.equity as any[]).map((e) => ({ ...e, base: baseBy[e.date] ?? null })) : r.equity;
   return (
     <div data-testid="sim-detail">
       <div style={statGrid}>
@@ -222,8 +244,9 @@ function SimDetail({ id }: { id: number }) {
       </div>
       <div className="card" style={{ marginBottom: 12 }}>
         <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>자산 변화 — AI vs {r.benchmark}에 같은 금액을 그냥 넣어 둔 경우</p>
-        <EquityChart points={r.equity} market={m} bench={r.benchmark} />
+        <EquityChart points={points} market={m} bench={r.benchmark} />
       </div>
+      {cmp && <CompareCard main={s} base={cmp.summary} params={r.params} />}
       {r.notes?.length > 0 && (
         <div style={{ fontSize: 12, color: "var(--yellow)", marginBottom: 12 }} data-testid="sim-notes">
           {r.notes.map((n: string, i: number) => <p key={i}>⚠ {n}</p>)}
@@ -260,12 +283,69 @@ function SimDetail({ id }: { id: number }) {
   );
 }
 
+function CompareCard({ main, base, params }: { main: any; base: any; params: any }) {
+  const on = [params?.adaptive && "학습형 가중치", params?.trend_filter && "추세 필터"].filter(Boolean).join(" + ");
+  const rows: [string, string, number | null, number | null, boolean][] = [
+    // 이름, 단위, 개선, 기본, 높을수록 좋음
+    ["수익률", "%", main.return_pct, base.return_pct, true],
+    ["지수 대비", "%p", main.excess_pct, base.excess_pct, true],
+    ["최대 낙폭", "%", main.mdd_pct, base.mdd_pct, true],
+    ["승률", "%", main.win_rate, base.win_rate, true],
+    ["손익비", "", main.profit_factor, base.profit_factor, true],
+    ["매도 건수", "", main.trades, base.trades, false],
+  ];
+  const better = (main.return_pct ?? 0) > (base.return_pct ?? 0) && (main.mdd_pct ?? -100) >= (base.mdd_pct ?? -100) - 2;
+  const worse = (main.return_pct ?? 0) < (base.return_pct ?? 0);
+  return (
+    <div className="card" style={{ marginBottom: 12 }} data-testid="sim-compare">
+      <p style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>개선 옵션 효과 — 같은 데이터로 '{on}' 켬 vs 끔(기본 방식)</p>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 360 }}>
+          <thead><tr style={{ color: "var(--text-muted)", fontSize: 11, borderBottom: "1px solid var(--border)" }}>
+            {["", "개선 (켬)", "기본 (끔)"].map((h) => <th key={h} style={{ textAlign: "left", padding: "5px 8px", fontWeight: 600 }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.map(([name, unit, a, b, hi]) => {
+              const win = a != null && b != null && a !== b && hi ? (a > b ? "a" : "b") : null;
+              const signed = name === "수익률" || name === "지수 대비";
+              const f = (v: number | null) => (v == null ? "-" : `${signed && v > 0 ? "+" : ""}${v}${unit}`);
+              return (
+                <tr key={name} style={{ borderBottom: "1px solid var(--border)" }}>
+                  <td style={{ padding: "5px 8px", color: "var(--text-secondary)" }}>{name}</td>
+                  <td style={{ padding: "5px 8px", fontWeight: win === "a" ? 700 : 400 }}>{f(a)}</td>
+                  <td style={{ padding: "5px 8px", fontWeight: win === "b" ? 700 : 400 }}>{f(b)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p style={{ fontSize: 12, marginTop: 8, color: better ? "var(--green)" : worse ? "var(--red)" : "var(--text-secondary)" }}>
+        {better ? "이 기간에는 개선 옵션이 더 나았습니다." : worse ? "이 기간에는 기본 방식이 더 나았습니다 — 개선 옵션을 끄고 비교해 보세요." : "이 기간에는 차이가 크지 않습니다."}
+        <span style={{ color: "var(--text-muted)" }}> 한 기간 결과는 운일 수 있으니 기간·시장을 바꿔 여러 번 확인하세요.</span>
+      </p>
+    </div>
+  );
+}
+
 function SimProgress({ sim }: { sim: any }) {
+  const qc = useQueryClient();
+  const cancel = useMutation({
+    mutationFn: () => paperApi.cancelSim(sim.id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["paper-sim", sim.id] }); qc.invalidateQueries({ queryKey: ["paper-sims"] }); },
+  });
   const p = sim.progress;
   const ratio = p?.total ? Math.round((p.done / p.total) * 100) : 0;
   return (
     <div className="card" data-testid="sim-progress">
-      <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><RefreshCw size={13} className="spin" /> {p?.phase || "계산 중"} {p?.total > 1 ? `${p.done}/${p.total}` : ""}</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <p style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}><RefreshCw size={13} className="spin" /> {p?.phase || "계산 중"} {p?.total > 1 ? `${p.done}/${p.total}` : ""}</p>
+        <button className="btn btn-ghost" style={{ fontSize: 12, padding: "4px 10px", color: "var(--red)" }} data-testid="sim-cancel"
+          disabled={cancel.isPending || cancel.isSuccess || p?.phase === "중단하는 중"}
+          onClick={() => { if (confirm("계산 중인 시뮬레이션을 중단할까요? (지금까지 계산한 것은 저장되지 않음)")) cancel.mutate(); }}>
+          <Square size={11} /> {cancel.isSuccess || p?.phase === "중단하는 중" ? "중단하는 중" : "중단"}
+        </button>
+      </div>
       <div style={{ height: 6, background: "var(--bg-secondary)", borderRadius: 3, marginTop: 8 }}>
         <div style={{ width: `${ratio}%`, height: "100%", background: "var(--accent)", borderRadius: 3 }} />
       </div>
@@ -337,6 +417,7 @@ function SimTab({ cfg }: { cfg: any }) {
               <span>{s.market === "KR" ? "국내" : "미국"} · {s.months >= 12 ? `${s.months / 12}년` : `${s.months}개월`} · {fmtPrice(s.capital, s.market)}</span>
               {s.status === "running" ? <span style={{ color: "var(--accent)" }}>계산 중</span>
                 : s.status === "failed" ? <span style={{ color: "var(--red)" }}>실패</span>
+                : s.status === "cancelled" ? <span style={{ color: "var(--text-muted)" }}>중단</span>
                 : <span style={{ fontWeight: 700, color: pctColor(s.summary?.return_pct) }}>{pct(s.summary?.return_pct)}
                     <span style={{ fontWeight: 400, color: "var(--text-muted)" }}> (지수 {pct(s.summary?.bench_return_pct)})</span></span>}
               {s.status !== "running" && (

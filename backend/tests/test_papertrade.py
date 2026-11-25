@@ -243,7 +243,10 @@ def _fake_data(monkeypatch, n=360):
     stocks = _recent_universe(6, n)
     start = dt.date.today() - dt.timedelta(days=int(n * 7 / 5) + 3)
 
-    async def fetch_stocks(market, items, kr_count, us_period):
+    async def fetch_stocks(market, items, kr_count, us_period, progress=None):
+        if progress:
+            for n, i in enumerate(items):
+                progress("일봉 받는 중", n, len(items))
         return {k: dict(v) for k, v in stocks.items()}, ["X(X): 일봉 0개"]
 
     async def fetch_index(market, period):
@@ -467,3 +470,147 @@ def test_db_wait_limit_is_long():
     """다른 연결이 쓰는 동안 기다리는 한도 (기본 5초면 느린 디스크에서 큰 저장 중 'database is locked')"""
     from app.core import database
     assert database.DB_TIMEOUT >= 30
+
+
+# ---------------- 개선 옵션: 학습형 가중치 · 추세 필터 ----------------
+
+def _panel(n_days=60, n_stocks=10, seed=3):
+    """퀀트 점수가 10거래일 뒤 수익률을 맞히고 상승확률은 무관한 가짜 패널"""
+    rng = np.random.default_rng(seed)
+    days = [(dt.date(2026, 1, 1) + dt.timedelta(days=i)).isoformat() for i in range(n_days)]
+    feats, labels = {}, {}
+    for i, d in enumerate(days):
+        feats[d] = {}
+        for k in range(n_stocks):
+            q = float(rng.uniform(1, 99))
+            feats[d][f"S{k}"] = {"name": f"S{k}", "close": 100.0, "prob": int(rng.integers(35, 66)), "quant": q,
+                                 "grade": "B", "accum": None, "accum_ok": False, "ma50": None}
+            if i + 10 < n_days:
+                labels[(d, f"S{k}")] = (days[i + 10], (q - 50) / 500 + float(rng.normal(0, 0.002)))
+    return days, feats, labels
+
+
+def test_adaptive_weights_learn_the_working_signal():
+    days, feats, labels = _panel()
+    aw = pe.adaptive_weights(feats, labels, days[-1])
+    assert aw and not aw["fallback"] and aw["dates"] >= pe.ADAPT_MIN_DATES
+    assert aw["weights"]["quant"] > 0.6 and aw["ic"]["quant"] > 0.5          # 맞히는 신호에 비중이 더 감 (고정 35% → 60%↑)
+    assert min(aw["weights"].values()) >= 0.5 * pe.WEIGHTS["accum"] - 1e-9     # 고정 비중과 반반 → 어떤 신호도 0 이 안 됨
+    assert abs(sum(aw["weights"].values()) - 1) < 1e-9
+    assert pe.adaptive_weights(feats, labels, days[15]) is None             # 결과가 확정된 날이 부족하면 고정 비중
+    assert "학습형 비중" in pe.weights_text(aw) and "고정 비중" in pe.weights_text(None)
+
+
+def test_adaptive_weights_ignore_results_not_known_yet():
+    """판단일 이후에 확정되는 결과(10거래일 뒤가 판단일보다 늦은 것)는 안 씀 — 그 값을 바꿔도 비중이 같아야 함"""
+    days, feats, labels = _panel()
+    day = days[45]
+    a = pe.adaptive_weights(feats, labels, day)
+    changed = {k: ((v[0], -v[1] * 50) if v[0] > day else v) for k, v in labels.items()}
+    assert pe.adaptive_weights(feats, changed, day) == a
+    flipped = {k: (v[0], -v[1]) for k, v in labels.items()}                  # 이미 확정된 결과가 바뀌면 달라져야 (테스트가 의미 있는지)
+    assert pe.adaptive_weights(feats, flipped, day) != a
+
+
+def test_adaptive_weights_fallback_when_nothing_works():
+    days, feats, labels = _panel()
+    neg = {k: (v[0], -v[1]) for k, v in labels.items()}                     # 퀀트가 반대로 맞음, 나머지는 무관
+    for d in feats:                                                         # 상승확률도 결과와 반대가 되게
+        for sym, r in feats[d].items():
+            if (d, sym) in neg:
+                r["prob"] = 50 - int(neg[(d, sym)][1] * 1000)
+    aw = pe.adaptive_weights(feats, neg, days[-1])
+    assert aw["fallback"] and aw["weights"] == pe.WEIGHTS
+
+
+def test_trend_filter_skips_below_ma50():
+    params = pe.clean_params({"max_positions": 5})
+    assert params["adaptive"] is True and params["trend_filter"] is True     # 기본 켬
+    rows = _rows({"UP": 80, "DOWN": 85})
+    rows["UP"]["ma50"], rows["DOWN"]["ma50"] = 90.0, 120.0                   # 종가 100
+    orders, notes = pe.decide(pe.new_state(1e6), rows, "상승 추세", [], params, "US")
+    assert [o["symbol"] for o in orders] == ["UP"] and any("50일선 아래" in n and "DOWN" in n for n in notes)
+    orders, _ = pe.decide(pe.new_state(1e6), rows, "상승 추세", [], {**params, "trend_filter": False}, "US")
+    assert [o["symbol"] for o in orders] == ["DOWN", "UP"]
+
+
+def test_simulate_records_weights_and_baseline_differs():
+    stocks, idx = universe(), series(360, 99, 0.0003)
+    dates = [c["date"] for c in stocks["S0"]["candles"]]
+    feats = pe.prepare(stocks, "US", dates[250], dates[-1])
+    assert min(feats) < dates[250]                                          # 시작 전부터 점수 (학습형 비중용)
+    on = pe.simulate(stocks, idx, [], "US", 1e5, dates[250], dates[-1], pe.clean_params({}), feats=feats)
+    off = pe.simulate(stocks, idx, [], "US", 1e5, dates[250], dates[-1],
+                      pe.clean_params({"adaptive": False, "trend_filter": False}), feats=feats)
+    assert on["weights"] and on["weights"][0]["date"] == dates[250] and off["weights"] == []
+    assert on["days"] == off["days"] == 110 and on["equity"][0]["date"] == dates[250]
+    assert any("비중" in n for x in on["log"] for n in x["notes"])
+    # 같은 feats 를 두 번 써도 서로 영향 없음 (복사해서 씀)
+    again = pe.simulate(stocks, idx, [], "US", 1e5, dates[250], dates[-1], pe.clean_params({}), feats=feats)
+    assert again["summary"] == on["summary"]
+
+
+# ---------------- 중단 · 비교 · 재시작 정리 (API) ----------------
+
+def test_api_cancel_simulation(api_client, monkeypatch):
+    client, Session, user = api_client
+    _fake_data(monkeypatch)
+    from app.services import papertrade
+    monkeypatch.setattr(papertrade, "base_universe", lambda m: [{"symbol": f"S{i}", "name": f"종목{i}"} for i in range(6)])
+    real_prepare = pe.prepare
+
+    def slow_prepare(*a, **k):        # 점수 계산 중 진행 표시를 계속 부르며 오래 걸리는 상황
+        prog = a[4] if len(a) > 4 else k.get("progress")
+        for i in range(200):
+            prog("점수 계산 중", i, 200)
+            time.sleep(0.05)
+        return real_prepare(*a, **k)
+    monkeypatch.setattr(papertrade.pe, "prepare", slow_prepare)
+    sid = client.post("/api/paper/simulations", json={"market": "US", "months": 3}).json()["id"]
+    _wait(client, f"/api/paper/simulations/{sid}", lambda x: (x.get("progress") or {}).get("phase") == "점수 계산 중")
+    r = client.post(f"/api/paper/simulations/{sid}/cancel")
+    assert r.status_code == 200 and "중단" in r.json()["message"]
+    d = _wait(client, f"/api/paper/simulations/{sid}", lambda x: x["status"] != "running", timeout=20)
+    assert d["status"] == "cancelled" and "중단" in d["error"]
+    assert client.post(f"/api/paper/simulations/{sid}/cancel").status_code == 409     # 이미 끝난 것
+    assert client.delete(f"/api/paper/simulations/{sid}").status_code == 200
+    assert not papertrade._cancel and not papertrade.busy()
+
+
+def test_api_simulation_has_baseline_compare(api_client, monkeypatch):
+    client, Session, user = api_client
+    _fake_data(monkeypatch)
+    from app.services import papertrade
+    monkeypatch.setattr(papertrade, "base_universe", lambda m: [{"symbol": f"S{i}", "name": f"종목{i}"} for i in range(6)])
+    sid = client.post("/api/paper/simulations", json={"market": "US", "months": 3}).json()["id"]
+    d = _wait(client, f"/api/paper/simulations/{sid}", lambda x: x["status"] != "running")
+    r = d["result"]
+    assert d["status"] == "done" and r["params"]["adaptive"] and r["params"]["trend_filter"]
+    c = r["compare"]
+    assert c["params"]["adaptive"] is False and c["params"]["trend_filter"] is False
+    assert len(c["equity"]) == len(r["equity"]) and "return_pct" in c["summary"]
+    # 개선 옵션을 다 끄면 비교 계산 안 함
+    sid2 = client.post("/api/paper/simulations", json={"market": "US", "months": 3,
+                                                        "params": {"adaptive": False, "trend_filter": False}}).json()["id"]
+    d2 = _wait(client, f"/api/paper/simulations/{sid2}", lambda x: x["status"] != "running")
+    assert d2["status"] == "done" and "compare" not in d2["result"]
+
+
+def test_interrupted_running_sim_is_cleaned(api_client):
+    client, Session, user = api_client
+    from app.services import papertrade
+    from app.models.paper import PaperSim
+
+    async def mk():
+        async with Session() as s:
+            sim = PaperSim(user_id=user.id, market="KR", capital=1e7, months=1, params="{}", status="running")
+            s.add(sim)
+            await s.commit()
+            return sim.id
+    a, b = run(mk()), run(mk())
+    # 계산 중이 아닌 '계산 중' 기록은 중단 버튼으로 바로 정리
+    assert client.post(f"/api/paper/simulations/{a}/cancel").status_code == 200
+    assert client.get(f"/api/paper/simulations/{a}").json()["status"] == "cancelled"
+    run(papertrade.mark_interrupted())                                      # 서버 시작 때
+    d = client.get(f"/api/paper/simulations/{b}").json()
+    assert d["status"] == "failed" and "다시 시작" in d["error"]

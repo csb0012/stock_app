@@ -66,6 +66,18 @@ async def get_simulation(sim_id: int, db: AsyncSession = Depends(get_db), curren
     return papertrade.sim_row(await _own_sim(db, sim_id, current_user), full=True)
 
 
+@router.post("/simulations/{sim_id}/cancel")
+async def cancel_simulation(sim_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    sim = await _own_sim(db, sim_id, current_user)
+    if sim.status != "running":
+        raise HTTPException(409, "계산 중인 시뮬레이션이 아닙니다")
+    if not papertrade.cancel_sim(sim_id):   # 서버가 다시 시작돼 실제로는 계산하지 않는 기록 → 바로 중단으로
+        sim.status, sim.error = "cancelled", "서버가 다시 시작돼 중단됨"
+        await db.commit()
+        return {"message": "중단했습니다"}
+    return {"message": "중단을 요청했습니다 — 몇 초 안에 멈춥니다"}
+
+
 @router.delete("/simulations/{sim_id}")
 async def delete_simulation(sim_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     sim = await _own_sim(db, sim_id, current_user)

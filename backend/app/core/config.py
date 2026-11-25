@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     smtp_password: str = ""          # 네이버 2단계 인증을 쓰면 '애플리케이션 비밀번호'
     smtp_from: str = ""              # 비우면 smtp_user
     signup_open: bool = True         # false 면 회원가입 막음 (기존 계정의 비밀번호 찾기·마이페이지는 그대로)
+    pwned_check: bool = True         # 가입·비밀번호 변경 때 유출 비밀번호 목록(HIBP, 앞 5글자만 전송) 확인. false 면 끔
+    login_alert: bool = True         # 처음 보는 IP 로 로그인하면 인증된 이메일로 알림 (메일 설정이 있을 때)
 
     # 휴대폰 문자 발송 (이메일 대신 휴대폰으로 본인인증) — 솔라피(solapi.com) API 키
     sms_api_key: str = ""

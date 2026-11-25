@@ -25,6 +25,10 @@ class User(Base):
     phone_verified = Column(Boolean, default=False)
     # '모든 기기에서 로그아웃' 한 시각 — 토큰의 sev 가 이 값과 다르면 무효
     session_epoch = Column(Float, nullable=True)
+    # 2단계 인증 코드 재사용 방지: 마지막으로 쓴 코드의 30초 칸 번호 (같은 코드·이전 코드는 다시 못 씀)
+    totp_last_step = Column(Integer, nullable=True)
+    # 로그인 때 확인한 비밀번호가 유출 목록(HIBP)에 있으면 True → 화면 위에 바꾸라는 경고. 비밀번호를 바꾸면 False
+    password_leaked = Column(Boolean, default=False)
 
 
 class AccountEvent(Base):

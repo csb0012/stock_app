@@ -245,7 +245,10 @@ def test_email_register_for_old_account(env):
     assert c.post("/api/auth/signup/send-code", json={"email": "old@naver.com"}).status_code == 400
 
 
-def test_delete_account(env):
+def test_delete_account(env, monkeypatch):
+    from app.core import security
+    t0 = 1_800_000_000.0
+    monkeypatch.setattr(security, "_now", lambda: t0)
     c, sent, Session = env
     tok = signup(c, sent, "leaver", "bye@naver.com", "byebye123").json()["access_token"]
     from app.services import stock_master
@@ -257,10 +260,12 @@ def test_delete_account(env):
     assert c.post("/api/auth/delete-account", json={"password": "wrong"}, headers=h(tok)).status_code == 400
     # 2단계 인증이 켜져 있으면 코드도 필요
     sec = c.post("/api/auth/setup-totp", headers=h(tok)).json()["secret"]
-    c.post("/api/auth/enable-totp", json={"totp_code": pyotp.TOTP(sec).now()}, headers=h(tok))
+    c.post("/api/auth/enable-totp", json={"totp_code": pyotp.TOTP(sec).at(t0)}, headers=h(tok))
     r = c.post("/api/auth/delete-account", json={"password": "byebye123"}, headers=h(tok))
     assert r.status_code == 400 and "2단계" in r.json()["detail"]
-    r = c.post("/api/auth/delete-account", json={"password": "byebye123", "totp_code": pyotp.TOTP(sec).now()}, headers=h(tok))
+    r = c.post("/api/auth/delete-account", json={"password": "byebye123", "totp_code": pyotp.TOTP(sec).at(t0)}, headers=h(tok))
+    assert r.status_code == 400                                                   # 켤 때 쓴 코드 재사용 불가
+    r = c.post("/api/auth/delete-account", json={"password": "byebye123", "totp_code": pyotp.TOTP(sec).at(t0 + 30)}, headers=h(tok))
     assert r.status_code == 200
     assert c.get("/api/auth/me", headers=h(tok)).status_code == 401
     assert c.post("/api/auth/login", json={"username": "leaver", "password": "byebye123"}).status_code == 401

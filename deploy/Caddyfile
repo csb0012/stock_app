@@ -10,6 +10,11 @@
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy no-referrer
+		# 다른 곳의 스크립트·페이지 안 스크립트를 막음 → 화면에 이상한 글이 끼어들어도 로그인 토큰을 못 훔쳐 감 (XSS 방어).
+		# 화면이 쓰는 것: 자기 서버 파일 · 인라인 style · QR 코드(data: 이미지). 바꾸면 frontend/e2e/smoke.mjs 의 CSP 테스트가 같이 확인
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy same-origin
 		-Server
 	}
 

@@ -108,14 +108,18 @@ def test_login_messages_korean(auth_client):
     assert r.status_code == 401 and r.json()["detail"] == "아이디 또는 비밀번호가 틀렸습니다"
 
 
-def test_totp_full_flow(auth_client):
+def test_totp_full_flow(auth_client, monkeypatch):
+    from app.core import security
+    t0 = 1_800_000_000.0
+    monkeypatch.setattr(security, "_now", lambda: t0)    # 시각 고정 (30초 칸 경계에서 흔들리지 않게)
     c = auth_client
     tok = login(c).json()["access_token"]
     h = {"Authorization": f"Bearer {tok}"}
     setup = c.post("/api/auth/setup-totp", headers=h).json()
     assert setup["qr_code"] and setup["secret"]
     assert c.post("/api/auth/enable-totp", json={"totp_code": "000000"}, headers=h).status_code == 400
-    code = pyotp.TOTP(setup["secret"]).now()
+    T = pyotp.TOTP(setup["secret"])
+    code = T.at(t0 - 30)                                   # 앞 칸 코드 (허용 범위)
     assert c.post("/api/auth/enable-totp", json={"totp_code": code}, headers=h).status_code == 200
     assert c.get("/api/auth/me", headers=h).json()["totp_enabled"] is True
     # 켜진 상태에서 다시 등록하면 앱 코드가 안 맞게 되므로 거부
@@ -123,11 +127,15 @@ def test_totp_full_flow(auth_client):
     assert r.status_code == 400 and "이미 켜져" in r.json()["detail"]
     # 로그인: 코드 없으면 요청, 틀리면 한국어 오류, 맞으면 토큰
     assert login(c).json() == {"requires_totp": True}
-    assert "인증 코드가 틀렸습니다" in login(c, code="000000").json()["detail"]
-    assert "access_token" in login(c, code=pyotp.TOTP(setup["secret"]).now()).json()
+    assert "인증 코드가 틀렸" in login(c, code="000000").json()["detail"]
+    # 한 번 쓴 코드(켤 때 쓴 코드)는 다시 못 씀 — 엿본 코드로 로그인하는 것 방지
+    assert "이미 쓴 코드" in login(c, code=code).json()["detail"]
+    assert "access_token" in login(c, code=T.at(t0)).json()
+    assert "이미 쓴 코드" in login(c, code=T.at(t0)).json()["detail"]                  # 같은 코드 두 번째
     # 끄기: 틀린 코드 거부, 맞으면 꺼짐 → 비밀번호만으로 로그인
     assert c.post("/api/auth/disable-totp", json={"totp_code": "000000"}, headers=h).status_code == 400
-    assert c.post("/api/auth/disable-totp", json={"totp_code": pyotp.TOTP(setup["secret"]).now()}, headers=h).status_code == 200
+    assert c.post("/api/auth/disable-totp", json={"totp_code": T.at(t0)}, headers=h).status_code == 400   # 이미 씀
+    assert c.post("/api/auth/disable-totp", json={"totp_code": T.at(t0 + 30)}, headers=h).status_code == 200
     assert c.get("/api/auth/me", headers=h).json()["totp_enabled"] is False
     assert "access_token" in login(c).json()
     assert c.post("/api/auth/disable-totp", json={"totp_code": "123456"}, headers=h).status_code == 400   # 이미 꺼짐

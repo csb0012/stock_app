@@ -5,7 +5,9 @@ const api = axios.create({ baseURL: "/api" });
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  // 로그인 토큰은 Authorization 이 아니라 X-Access-Token 으로 보냄 — 클라우드 서버의 접속 비밀번호(Caddy basic auth)가
+  // 브라우저의 Authorization 헤더를 쓰는데, 거기에 토큰을 넣으면 접속 비밀번호가 지워져 모든 요청이 401 이 됨
+  if (token) config.headers["X-Access-Token"] = token;
   return config;
 });
 
@@ -144,7 +146,7 @@ export const portfolioApi = {
 
 // AI 모의투자 — 과거 시뮬레이션 / 실시간 모의투자 계좌
 export type PaperParams = Partial<{ max_positions: number; buy_score: number; sell_score: number; stop_pct: number;
-  take_pct: number; max_hold: number; trailing: boolean }>;
+  take_pct: number; max_hold: number; trailing: boolean; adaptive: boolean; trend_filter: boolean }>;
 export const paperApi = {
   config: () => api.get("/paper/config"),
   sims: () => api.get("/paper/simulations"),
@@ -152,6 +154,7 @@ export const paperApi = {
   startSim: (market: string, capital: number, months: number, params: PaperParams) =>
     api.post("/paper/simulations", { market, capital, months, params }),
   removeSim: (id: number) => api.delete(`/paper/simulations/${id}`),
+  cancelSim: (id: number) => api.post(`/paper/simulations/${id}/cancel`),
   accounts: () => api.get("/paper/accounts"),
   account: (id: number) => api.get(`/paper/accounts/${id}`),
   createAccount: (market: string, capital: number, name: string, params: PaperParams) =>

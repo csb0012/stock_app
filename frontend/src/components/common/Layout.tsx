@@ -100,6 +100,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
         </div>
         <div className="page-body">
+          {me?.password_leaked && (
+            <div data-testid="leaked-banner" role="alert" style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 8, fontSize: 13,
+              border: "1px solid var(--red)", background: "color-mix(in srgb, var(--red) 8%, transparent)", color: "var(--text-primary)" }}>
+              <strong style={{ color: "var(--red)" }}>지금 비밀번호가 해킹 유출 목록에 있습니다.</strong>{" "}
+              다른 사이트에서 털린 비밀번호 목록에 같은 비밀번호가 있어, 해커가 가장 먼저 대입해 보는 비밀번호입니다.{" "}
+              <NavLink to="/mypage#password" style={{ color: "var(--accent)", fontWeight: 600 }}>마이페이지에서 비밀번호 바꾸기 →</NavLink>
+            </div>
+          )}
           {children}
         </div>
       </main>

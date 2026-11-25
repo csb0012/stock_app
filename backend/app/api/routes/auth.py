@@ -10,20 +10,23 @@ from app.core.database import get_db
 from app.core.security import (
     verify_password, get_password_hash, create_access_token,
     decode_token, generate_totp_secret, get_totp_uri,
-    verify_totp, generate_qr_code_base64,
+    verify_totp, generate_qr_code_base64, totp_step,
 )
 from app.models.user import User, AccountEvent
 from app.models.watchlist import WatchlistItem
 from app.models.portfolio import PortfolioItem
 from app.models import paper as _paper  # noqa: F401 — 탈퇴 시 모의투자 기록 삭제 (테이블 등록)
-from app.services import mailer, email_codes, sms
+from app.services import mailer, email_codes, sms, pwned
+import asyncio
 from app.services.email_codes import CodeError, normalize_email, normalize_phone, format_phone
 from app.core.config import settings
 from sqlalchemy import delete, func as sa_func
 import re
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+# 화면은 로그인 토큰을 X-Access-Token 헤더로 보냄 (클라우드에선 Authorization 헤더를 Caddy 접속 비밀번호가 씀).
+# Authorization: Bearer 도 계속 받음 (API 문서 화면·스크립트용). auto_error=False → 둘 다 없으면 아래에서 401
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
 # 로그인 실패 제한 (클라우드에 올리면 인터넷에서 비밀번호를 무작정 대입하는 공격을 막아야 함)
@@ -35,15 +38,84 @@ _locked: dict = {}       # ip -> 차단 해제 시각
 
 
 def _client_ip(request: Request) -> str:
-    # 클라우드에선 Caddy 가 앞에서 받아 X-Forwarded-For 로 실제 IP 를 넘겨줌 (백엔드는 Caddy 로만 접근 가능)
+    # 클라우드에선 Caddy 가 앞에서 받아 X-Forwarded-For 로 실제 IP 를 넘겨줌 (백엔드는 Caddy 로만 접근 가능).
+    # 맨 뒤 값 = 바로 앞 프록시(Caddy)가 본 접속 IP. 맨 앞 값은 접속자가 헤더를 직접 넣어 꾸밀 수 있어서
+    # (그러면 IP 를 바꿔 가며 로그인 차단을 피함) 쓰지 않음
     fwd = request.headers.get("x-forwarded-for")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "?")
+    parts = [p.strip() for p in fwd.split(",") if p.strip()] if fwd else []
+    return parts[-1] if parts else (request.client.host if request.client else "?")
 
 
 def _check_lock(ip: str):
     until = _locked.get(ip, 0)
     if until > time.time():
         raise HTTPException(status_code=429, detail=f"로그인 실패가 많아 {int((until - time.time()) // 60) + 1}분 동안 차단됨")
+
+
+# 계정 기준 잠금 — IP 를 바꿔 가며(여러 대에서) 한 계정에 대입하는 공격 대비. IP 차단보다 느슨하게
+_ACCT_FAIL_MAX = 10      # 한 계정에 이 횟수만큼 틀리면 (어느 IP 든)
+_ACCT_WINDOW = 900       # (15분 안에)
+_ACCT_LOCK = 900         # 15분 동안 그 계정 로그인 잠금 (비밀번호가 맞아도)
+_acct_fails: dict = {}   # user id -> [실패 시각...]
+_acct_locked: dict = {}  # user id -> 잠금 해제 시각
+
+
+def _check_acct_lock(user_id: int):
+    until = _acct_locked.get(user_id, 0)
+    if until > time.time():
+        raise HTTPException(status_code=429, detail=f"이 계정에 로그인 실패가 많아 {int((until - time.time()) // 60) + 1}분 동안 잠겼습니다 "
+                                                    "(본인이 아니면 잠금이 풀린 뒤 비밀번호를 바꾸세요)")
+
+
+def _record_acct_fail(user_id: int) -> bool:
+    """계정 실패 기록 → 이번에 잠겼으면 True"""
+    now = time.time()
+    fails = [t for t in _acct_fails.get(user_id, []) if now - t < _ACCT_WINDOW] + [now]
+    _acct_fails[user_id] = fails
+    if len(fails) >= _ACCT_FAIL_MAX:
+        _acct_locked[user_id] = now + _ACCT_LOCK
+        _acct_fails.pop(user_id, None)
+        print(f"[auth] 계정 {user_id} 로그인 {len(fails)}회 실패 → 15분 잠금")
+        return True
+    return False
+
+
+def _use_totp(user: User, code: str) -> bool:
+    """2단계 인증 코드 확인 + 재사용 방지 (한 번 쓴 코드와 그 이전 코드는 다시 안 됨). 호출한 쪽이 commit"""
+    step = totp_step(user.totp_secret, code)
+    if step is None or (user.totp_last_step is not None and step <= user.totp_last_step):
+        return False
+    user.totp_last_step = step
+    return True
+
+
+def _alert(user: User, subject: str, body: str):
+    """보안 알림 메일 (인증된 이메일이 있고 메일 설정이 있을 때만, 뒤에서 보냄 — 실패해도 로그인은 그대로)"""
+    if not (settings.login_alert and user.email and user.email_verified and mailer.configured()):
+        return
+
+    async def go():
+        try:
+            await mailer.send(user.email, subject, body)
+        except Exception as e:   # noqa: BLE001
+            print(f"[auth] 보안 알림 메일 실패: {type(e).__name__}: {str(e)[:100]}")
+    asyncio.get_event_loop().create_task(go())
+
+
+def _alert_body(what: str, request: Request) -> str:
+    from datetime import datetime
+    return (f"{what}\n\n시각: {datetime.now().strftime('%Y-%m-%d %H:%M')}\nIP: {_client_ip(request)}\n"
+            f"기기: {(request.headers.get('user-agent') or '-')[:160]}\n\n"
+            "본인이 아니면 바로 StockApp 마이페이지에서 ① 비밀번호 변경 ② 모든 기기에서 로그아웃 ③ 2단계 인증 켜기를 하세요.\n"
+            "(이 메일은 StockApp 이 자동으로 보낸 알림입니다)")
+
+
+async def _leak_guard(password: str):
+    """가입·변경 때: 유출 목록에 있는 비밀번호면 거부 (확인을 못 하면 통과)"""
+    n = await pwned.leak_count(password)
+    if n:
+        raise HTTPException(status_code=400, detail=f"이 비밀번호는 다른 사이트 해킹으로 유출된 비밀번호 목록에 {n:,}번 나옵니다 — "
+                                                    "해커가 가장 먼저 대입해 보는 비밀번호라 쓸 수 없습니다. 다른 비밀번호를 쓰세요")
 
 
 def _record_fail(ip: str):
@@ -71,7 +143,11 @@ class RegisterRequest(BaseModel):
     password: str
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+async def get_current_user(request: Request, bearer: Optional[str] = Depends(oauth2_scheme),
+                           db: AsyncSession = Depends(get_db)):
+    token = request.headers.get("x-access-token") or bearer
+    if not token:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다")
     payload = decode_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -311,6 +387,7 @@ async def register(req: SignupRequest, request: Request, db: AsyncSession = Depe
         raise HTTPException(status_code=400, detail="아이디는 영문·숫자·밑줄 3~20자로 만드세요")
     check_password(req.password, username)
     kind, target = _contact(req.email, req.phone)
+    await _leak_guard(req.password)
     if (await db.execute(select(User.id).where((sa_func.lower(User.username) == username.lower())
                                                | (sa_func.lower(User.nickname) == username.lower())).limit(1))).first():
         raise HTTPException(status_code=400, detail="이미 있는 아이디입니다")   # 남의 닉네임과 같은 아이디도 막음 (사칭 방지)
@@ -354,9 +431,11 @@ async def password_reset(req: ResetRequest, request: Request, db: AsyncSession =
     if not user:
         raise HTTPException(status_code=400, detail="인증 코드가 없거나 만료됐습니다 — 코드를 다시 받으세요")
     check_password(req.new_password, user.username)
+    await _leak_guard(req.new_password)
     await _check_code(db, target, "reset", req.code)
     user.hashed_password = get_password_hash(req.new_password)
     user.password_changed_at = time.time()
+    user.password_leaked = False
     await db.commit()
     _fails.pop(_client_ip(request), None)
     await _event(db, user.id, "password_reset", request, detail="이메일 인증" if kind == "email" else "휴대폰 인증")
@@ -378,25 +457,45 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
             except CodeError:
                 user = None
 
-    if not user or user.is_active is False or not verify_password(req.password, user.hashed_password):
+    if user:
+        _check_acct_lock(user.id)
+
+    async def fail(detail: str, msg: str):
         _record_fail(ip)
         if user:
-            await _event(db, user.id, "login_fail", request, ok=False, detail="비밀번호 틀림")
-        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 틀렸습니다")
+            await _event(db, user.id, "login_fail", request, ok=False, detail=detail)
+            if _record_acct_fail(user.id):
+                await _event(db, user.id, "account_locked", request, ok=False, detail="로그인 실패가 많아 15분 잠금")
+                _alert(user, "[StockApp] 로그인 실패가 많아 계정을 15분 잠갔습니다",
+                       _alert_body("누군가 계정에 비밀번호를 여러 번 틀리게 입력해 15분 동안 로그인을 잠갔습니다.", request))
+        raise HTTPException(status_code=401, detail=msg)
 
-    # TOTP 검증
+    if not user or user.is_active is False or not verify_password(req.password, user.hashed_password):
+        await fail("비밀번호 틀림", "아이디 또는 비밀번호가 틀렸습니다")
+
+    # TOTP 검증 (한 번 쓴 코드는 다시 안 됨)
     if user.totp_enabled:
         if not req.totp_code:
             return {"requires_totp": True}
-        if not verify_totp(user.totp_secret, req.totp_code):
-            _record_fail(ip)
-            await _event(db, user.id, "login_fail", request, ok=False, detail="2단계 인증 코드 틀림")
-            raise HTTPException(status_code=401, detail="인증 코드가 틀렸습니다 (Google Authenticator 의 6자리, 30초마다 바뀜)")
+        if not _use_totp(user, req.totp_code):
+            await fail("2단계 인증 코드 틀림", "인증 코드가 틀렸거나 이미 쓴 코드입니다 "
+                                         "(Google Authenticator 의 6자리, 30초마다 바뀜 — 방금 쓴 코드면 다음 코드를 기다리세요)")
 
     _fails.pop(ip, None)
-    await _event(db, user.id, "login", request)
+    _acct_fails.pop(user.id, None)
+    # 처음 보는 IP 면 알림 메일 (전에 로그인한 적이 있는 계정만 — 가입 직후 첫 로그인은 제외)
+    seen = {r for (r,) in (await db.execute(select(AccountEvent.ip).where(
+        AccountEvent.user_id == user.id, AccountEvent.kind == "login"))).all()}
+    if seen and ip not in seen:
+        _alert(user, "[StockApp] 새 IP 에서 로그인했습니다", _alert_body("처음 보는 IP 에서 계정에 로그인했습니다.", request))
+    # 이 비밀번호가 다른 사이트 유출 목록에 있으면 화면 위에 바꾸라는 경고 (확인을 못 하면 이전 표시 유지)
+    leaked = await pwned.leak_count(req.password)
+    if leaked is not None:
+        user.password_leaked = leaked > 0
+    await _event(db, user.id, "login", request)   # (commit 포함 — 2단계 코드 사용 기록·유출 표시도 같이 저장)
     token = token_for(user)
-    return {"access_token": token, "token_type": "bearer", "totp_enabled": user.totp_enabled, "username": user.username}
+    return {"access_token": token, "token_type": "bearer", "totp_enabled": user.totp_enabled, "username": user.username,
+            "password_leaked": bool(user.password_leaked)}
 
 
 @router.post("/setup-totp")
@@ -424,7 +523,7 @@ async def enable_totp(
 ):
     if not current_user.totp_secret:
         raise HTTPException(status_code=400, detail="먼저 QR 코드를 만드세요 (setup-totp)")
-    if not verify_totp(current_user.totp_secret, req.totp_code):
+    if not _use_totp(current_user, req.totp_code):
         raise HTTPException(status_code=400, detail="인증 코드가 틀렸습니다 — 앱에 보이는 6자리를 다시 입력하세요")
 
     current_user.totp_enabled = True
@@ -443,10 +542,11 @@ async def disable_totp(
     """2단계 인증 끄기 — 지금 앱에 보이는 코드가 맞아야 함 (로그인 토큰만 훔친 사람이 끄지 못하게)"""
     if not current_user.totp_enabled:
         raise HTTPException(status_code=400, detail="2단계 인증이 꺼져 있습니다")
-    if not verify_totp(current_user.totp_secret, req.totp_code):
-        raise HTTPException(status_code=400, detail="인증 코드가 틀렸습니다")
+    if not _use_totp(current_user, req.totp_code):
+        raise HTTPException(status_code=400, detail="인증 코드가 틀렸거나 이미 쓴 코드입니다")
     current_user.totp_enabled = False
     current_user.totp_secret = None
+    current_user.totp_last_step = None
     await db.commit()
     await _event(db, current_user.id, "totp_off", request)
     return {"message": "2단계 인증을 껐습니다"}
@@ -457,6 +557,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return {
         "id": current_user.id,
         "username": current_user.username,
+        "password_leaked": bool(current_user.password_leaked),
         "totp_enabled": bool(current_user.totp_enabled),
         "nickname": current_user.nickname,
         "display_name": current_user.nickname or current_user.username,
@@ -479,8 +580,10 @@ async def password_change(req: ChangePasswordRequest, request: Request, current_
     if req.current_password == req.new_password:
         raise HTTPException(status_code=400, detail="새 비밀번호가 지금 비밀번호와 같습니다")
     check_password(req.new_password, current_user.username)
+    await _leak_guard(req.new_password)
     current_user.hashed_password = get_password_hash(req.new_password)
     current_user.password_changed_at = time.time()
+    current_user.password_leaked = False
     await db.commit()
     await _event(db, current_user.id, "password_change", request)
     return {"message": "비밀번호를 바꿨습니다 (다른 기기는 다시 로그인해야 함)",
@@ -521,7 +624,7 @@ async def delete_account(req: DeleteAccountRequest, current_user: User = Depends
     """회원 탈퇴 — 비밀번호(+2단계 인증이면 코드) 확인 후 관심종목·투자종목과 함께 삭제. 되돌릴 수 없음"""
     if not verify_password(req.password, current_user.hashed_password):
         raise HTTPException(status_code=400, detail="비밀번호가 틀렸습니다")
-    if current_user.totp_enabled and not verify_totp(current_user.totp_secret, req.totp_code or ""):
+    if current_user.totp_enabled and not _use_totp(current_user, req.totp_code or ""):
         raise HTTPException(status_code=400, detail="2단계 인증 코드가 틀렸습니다")
     uid = current_user.id
     await db.execute(delete(WatchlistItem).where(WatchlistItem.user_id == uid))
