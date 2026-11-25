@@ -20,7 +20,7 @@ from app.services.kis_api import kis_client
 from app.services import stock_master
 from app.services.news import get_news_many
 from app.services.extras import get_extra
-from app.services import ml_model, flows, events
+from app.services import ml_model, flows, events, factor_weights
 from app.services.market_calendar import prediction_target, market_today, is_market_open
 from app.services.analysis import calc_technical_indicators, predict_next_day, classify_investment_style
 
@@ -109,7 +109,7 @@ def _memo_key(market, candles, per, pbr, news, extra, symbol):
             (n.get("pos"), n.get("neg"), n.get("total"), n.get("error"), n.get("kr_total"), n.get("foreign_error")),
             json.dumps(extra, sort_keys=True, default=str) if extra else None,
             ml_model._ctx.get("ts"), tuple(id(ml_model.load(v)) for v in ml_model.VARIANT_FEATURES),
-            len(flows.series(symbol)) if symbol and market == "KR" else 0, events.version(),
+            len(flows.series(symbol)) if symbol and market == "KR" else 0, events.version(), factor_weights.version(),
             market_today(market))  # 날짜가 바뀌면 대상일 라벨이 달라지므로
 
 
@@ -135,7 +135,7 @@ def _analyze_candles(market: str, candles: list, per: float = 0, pbr: float = 0,
             model = ml_model.live_predict(market, symbol, candles)
         except Exception as e:  # 부가 기능 — 실패하면 규칙 점수로 (화면에 사유 표시)
             model = {"status": f"학습 모델 계산 실패: {e}"}
-    prediction = predict_next_day(candles, indicators, news, extra, model)
+    prediction = predict_next_day(candles, indicators, news, extra, model, factor_weights.live(market))
     prediction.update(prediction_target(market, candles[-1]["date"]))
     # 대상일에 걸린 변동성 이벤트(FOMC·CPI 발표, 옵션 만기일) — 확률은 그대로, 경고만
     ev = events.warnings_for(market, prediction["target_date"])
@@ -283,8 +283,17 @@ async def analyze_us_many(symbols: list, period: str = "6mo", with_news: bool = 
 
 async def analyze_items(items: list, period: str = "6mo") -> dict:
     """[{market, symbol}, ...] → {(market, symbol): 결과}"""
-    kr = [i["symbol"] for i in items if i["market"] == "KR"]
+    from app.services import kis_ws
+    kr_all_syms = [i["symbol"] for i in items if i["market"] == "KR"]
     us = [i["symbol"] for i in items if i["market"] == "US"]
+    # 국내: KIS 웹소켓으로 막 받은 실시간 가격이 있으면 그것 (REST 호출 안 함), 없는 종목만 REST. 물은 종목은 실시간 구독에 올림
+    kis_ws.want(kr_all_syms)
+    ws_hit = {}
+    for s_ in kr_all_syms:
+        p_ = kis_ws.get(s_, max_age=5)
+        if p_:
+            ws_hit[("KR", s_)] = {"price": p_["price"], "change_rate": p_["change_rate"], "volume": p_["volume"]}
+    kr = [s_ for s_ in kr_all_syms if ("KR", s_) not in ws_hit]
     kr_res, us_res = await asyncio.gather(
         analyze_kr_many(kr) if kr else _empty(),
         analyze_us_many(us, period) if us else _empty(),
@@ -311,8 +320,17 @@ def strip_candles(d: dict) -> dict:
 
 async def live_prices(items: list) -> dict:
     """현재가만 빠르게: 국내 KIS 현재가, 미국 yfinance 1분봉 마지막 값 → {(market, symbol): {price, change_rate}}"""
-    kr = [i["symbol"] for i in items if i["market"] == "KR"]
+    from app.services import kis_ws
+    kr_all_syms = [i["symbol"] for i in items if i["market"] == "KR"]
     us = [i["symbol"] for i in items if i["market"] == "US"]
+    # 국내: KIS 웹소켓으로 막 받은 실시간 가격이 있으면 그것 (REST 호출 안 함), 없는 종목만 REST. 물은 종목은 실시간 구독에 올림
+    kis_ws.want(kr_all_syms)
+    ws_hit = {}
+    for s_ in kr_all_syms:
+        p_ = kis_ws.get(s_, max_age=5)
+        if p_:
+            ws_hit[("KR", s_)] = {"price": p_["price"], "change_rate": p_["change_rate"], "volume": p_["volume"]}
+    kr = [s_ for s_ in kr_all_syms if ("KR", s_) not in ws_hit]
 
     async def kr_one(s):
         try:
@@ -358,6 +376,7 @@ async def live_prices(items: list) -> dict:
         asyncio.get_event_loop().run_in_executor(None, us_sync),
     )
     out = dict(kr_res)
+    out.update(ws_hit)
     out.update(us_res)
     return out
 

@@ -159,6 +159,13 @@ async def run(force: bool = False) -> dict:
         try:
             await _run(force)
             _status["last_run_date"] = date.today().isoformat()
+            # 예측 검증 결과로 지표 비중 조정 (덜 맞은 지표 비중 축소 — 검증을 통과할 때만 실시간에 씀) — factor_weights.py
+            _status["phase"] = "지표 비중 검증 중"
+            try:
+                from app.services import factor_weights
+                await factor_weights.recompute()
+            except Exception as e:   # 부가 기능 — 실패해도 백테스트 결과는 그대로
+                _status["errors"].append(f"지표 비중 계산 실패: {e}")
         except Exception as e:
             _status["errors"].append(f"백테스트 실패: {e}")
             print(f"[backtest] 실패: {e}")

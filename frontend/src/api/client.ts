@@ -117,6 +117,8 @@ export const marketApi = {
 
 // Stocks
 export const stockApi = {
+  // 국내 실시간 현재가 (서버가 KIS 웹소켓으로 받아 둔 값 — KIS 호출 없음)
+  live: (symbols: string[]) => api.get("/stocks/live", { params: { symbols: symbols.join(",") } }),
   kr: (symbol: string) => api.get(`/stocks/kr/${symbol}`),
   us: (symbol: string, exchange = "NAS") => api.get(`/stocks/us/${symbol}?exchange=${exchange}`),
   volumeSurge: () => api.get("/stocks/volume-surge"),

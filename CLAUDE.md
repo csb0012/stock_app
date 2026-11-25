@@ -113,6 +113,11 @@ services/
   invites.py     — 초대 코드: 헷갈리는 글자 뺀 12글자(XXXX-XXXX-XXXX, 약 60비트), HMAC(SECRET_KEY) 해시만 저장, 1회용·기본 3일(1~14)·관리자당 사용 가능 10개,
                    consume = 조건부 UPDATE (같은 코드 동시 가입은 한 명만)
   pwned.py       — 유출 비밀번호 확인 (Have I Been Pwned range API, SHA-1 앞 5글자만 전송 + Add-Padding, 앞자리 캐시). 확인 못 하면 None(막지 않음)
+  factor_weights.py — 예측 검증 결과로 지표 비중 조정: 백테스트 기록의 RSI·MACD·볼린저·이평 점수로 지표별 적중률(상승·하락 신호 적중률 평균) → 51%↑ 1배 / 46%↓ 0.3배 (줄이기만, 신호 150건↑),
+                   walk-forward(그 날짜 전 결과만으로 비중) 방향 적중률이 원래보다 0.3%p↑ 일 때만 채택 → live(market) 를 quote.analyze_candles 가 predict_next_day(weights=) 로.
+                   백테스트·과거 시뮬레이션엔 안 씀(미래 데이터). backtest.run 끝에 recompute → app/data/factor_weights.json. 학습 모델이 쓰이면 모델 우선(모델 입력은 원래 비중)
+  kis_ws.py      — KIS 실시간 체결가 웹소켓 (국내 H0STCNT0): 장 시간(08:55~15:35)·보는 종목이 있을 때만 연결, want()=구독 목록(2분 TTL·최대 40), get()=10초 안 값,
+                   접속키 /oauth2/Approval, PINGPONG 되돌림, 끊기면 5~60초 뒤 재연결. quote.live_prices 가 5초 안 값이 있으면 REST 안 부름. status() → scheduler-status 의 kis_ws
   notify.py      — 휴대폰 푸시 (ntfy): send(제목·내용·우선순위·태그, JSON 으로 POST — 한글 제목), send_bg(뒤에서, 실패해도 계속), status()(주제 이름 없이 켜짐·서버·마지막 결과).
                    kis_trade 가 씀: 제안·정지 = 푸시+메일(_alert_admins), 체결·막힘·거부·결과 모름 = 푸시만(_push). 테스트는 conftest 가 NTFY_TOPIC 을 비움
   mailer.py      — SMTP 메일 발송 (465 = SSL, 그 외 STARTTLS). 설정 없으면 MailError(보낸 척 안 함), 오류 문구에 비밀번호 안 넣음
@@ -204,7 +209,7 @@ api/routes/
   kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
                    POST /kis/propose · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
                    POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·기준·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403)
-  stocks.py      — /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
+  stocks.py      — /live?symbols= (국내 실시간 현재가 — kis_ws 메모리 값, KIS 호출 없음, 물은 종목은 구독), /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
                    /screener/{kr,us}/{mode}
@@ -215,7 +220,7 @@ api/routes/
   themes.py      — GET /themes (테마 전체, SWR 60초), GET /themes/{no} (테마 종목), POST /themes/refresh, GET /themes/status
   accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산),
                    GET /quant (?limit, 퀀트 점수 상위·요인 비중·검증 — 전 종목 점수표는 응답에 안 실음)
-  predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
+  predictions.py — /review (채점 후 적중률·기록·method_accuracy·factor_weights(지표 비중 조정)·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
   papertrade.py  — /paper/config (기본값·설정 범위·자동 운영 상태), /paper/simulations (POST 시작 {market, capital, months, params} — 범위 밖 422·계산 중 409 / GET 목록 / GET·DELETE /{id}),
                    POST /paper/simulations/{id}/cancel (계산 중이 아니면 409),
                    /paper/accounts (POST 생성 / GET 목록(현재가 평가) / GET /{id} 거래·자산 곡선·판단 기록 / POST /{id}/run / PUT /{id}/active / DELETE /{id}). 남의 것 404
@@ -267,7 +272,8 @@ components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관�
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
-                     LongTermPanel (장기 보유 분석 표·지수 카드), format.ts
+                     LongTermPanel (장기 보유 분석 표·지수 카드), format.ts,
+                     useLivePrices (국내 장중에만 2초마다 /stocks/live — 관심종목·종목 상세 카드 현재가 덮어쓰기, withLive) · LiveBadge ('● 실시간 HH:MM:SS')
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
                      색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)
                      ThemeToggle.tsx 가 <html data-theme> + localStorage("theme") 변경, index.html 인라인 스크립트가 첫 화면 깜빡임 방지

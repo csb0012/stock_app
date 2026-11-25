@@ -325,6 +325,23 @@ async def search_stocks(
     return stock_master.search(q, market, limit)
 
 
+@router.get("/live")
+async def live_quotes(symbols: str = "", current_user: User = Depends(get_current_user)):
+    """국내 실시간 현재가 (KIS 웹소켓으로 받아 둔 값, KIS 호출 없음 — 화면이 2초마다 물음). 물은 종목은 실시간 구독 목록에 올라감.
+    받은 지 10초 안 된 값만 돌려줌 (없으면 빠짐 — 화면은 기존 15초·1분 갱신 가격을 그대로 씀). symbols = 콤마 구분 국내 종목코드 (최대 40)"""
+    from app.services import kis_ws
+    codes = [c.strip().upper() for c in symbols.split(",") if c.strip()][: kis_ws.MAX_SUBS]
+    kis_ws.want(codes)
+    items = {}
+    for c in codes:
+        p = kis_ws.get(c)
+        if p:
+            items[c] = {"price": p["price"], "change": p["change"], "change_rate": p["change_rate"], "volume": p["volume"],
+                        "time": p["time"], "age": round(kis_ws._now() - p["at"], 1)}
+    st = kis_ws.status()
+    return {"items": items, "connected": st["connected"], "session": st["session"], "source": "KIS 실시간 체결가 (웹소켓)"}
+
+
 @router.get("/test/kis")
 async def test_kis_connection():
     try:

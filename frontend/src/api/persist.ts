@@ -11,7 +11,7 @@ import { QueryClient, dehydrate, hydrate } from "@tanstack/react-query";
 
 const KEY = "rq-cache-v1";
 const MAX_AGE = 24 * 60 * 60 * 1000;
-const SKIP = new Set(["stock-search", "chat-status", "backtest-status"]);
+const SKIP = new Set(["live-prices", "stock-search", "chat-status", "backtest-status"]);
 
 export function restorePersisted(qc: QueryClient) {
   try {

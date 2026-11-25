@@ -42,9 +42,13 @@ async def lifespan(app: FastAPI):
     # KIS 모의투자 주문 (AI 제안 → 관리자 승인 → 모의투자 서버) — 키가 없으면 아무것도 안 함. kis_trade.py
     from app.services import kis_trade
     kis_task = asyncio.create_task(kis_trade.loop())
+    # 국내 실시간 현재가 (KIS 웹소켓 — 장 시간에 화면이 보는 종목만 구독) — kis_ws.py
+    from app.services import kis_ws
+    ws_task = asyncio.create_task(kis_ws.loop())
     # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
     asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
+    ws_task.cancel()
     kis_task.cancel()
     paper_task.cancel()
     ctx_task.cancel()

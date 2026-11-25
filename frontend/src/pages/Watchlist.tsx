@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { useLivePrices, withLive } from "../components/common/useLivePrices";
+import LiveBadge from "../components/common/LiveBadge";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { watchlistApi, stockApi, errMsg } from "../api/client";
 import { Star, Plus, Trash2, X, Search, Edit2, Check, Target, RefreshCw, LayoutGrid, List } from "lucide-react";
@@ -105,7 +107,12 @@ export default function Watchlist() {
   });
 
   const analysisMap = new Map((analysis as any[]).map((a: any) => [a.id, a]));
-  const allRows = (watchlist as any[]).map((w: any) => ({ ...w, ...(analysisMap.get(w.id) || {}) }));
+  // 국내 종목 현재가는 KIS 실시간(웹소켓) 값으로 2초마다 덮어씀 — 전망·확률은 1분 갱신 그대로
+  const live = useLivePrices((watchlist as any[]).filter((w: any) => w.market === "KR").map((w: any) => w.symbol));
+  const allRows = (watchlist as any[]).map((w: any) => {
+    const r = { ...w, ...(analysisMap.get(w.id) || {}) };
+    return r.current_price !== undefined ? withLive(r, live) : r;
+  });
   const counts = { KR: allRows.filter((r) => r.market === "KR").length, US: allRows.filter((r) => r.market === "US").length };
   // 고른 시장에 종목이 없고 다른 시장엔 있으면 그쪽을 보여줌 (처음 들어왔을 때 빈 화면 방지)
   const shownMarket: Market = counts[market] === 0 && counts[market === "KR" ? "US" : "KR"] > 0 ? (market === "KR" ? "US" : "KR") : market;
@@ -456,6 +463,7 @@ function WatchCard({ item, analyzing, editing, onEdit, editor, onRemove }: {
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <strong style={{ fontSize: 17, fontVariantNumeric: "tabular-nums" }}>{fmtPrice(item.current_price, item.market)}</strong>
             <ChangeTag value={item.change_rate} />
+            <LiveBadge t={item.live_time} />
             <DaytimePrice d={item.daytime} size={11.5} />
           </div>
           <div style={{ display: "flex", gap: 10, fontSize: 11.5, color: "var(--text-secondary)", flexWrap: "wrap" }}>
@@ -535,7 +543,7 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                 ) : (
                   <>
                     <td className="num">
-                      <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)}</div>
+                      <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /></div>
                       {r.daytime && !r.daytime.error && (
                         <div style={{ fontSize: 10.5, color: "var(--accent)" }} title={`주간거래 ${r.daytime.time} 조회`}>
                           주간 {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)

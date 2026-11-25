@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import * as F from "./fixtures.mjs";
 import * as PF from "./paper_fixtures.mjs";
 import * as KF from "./kis_fixtures.mjs";
+import * as RF from "./pred_fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -449,6 +450,42 @@ async function run() {
     await page.getByRole("button", { name: "가입하기" }).click();
     await page.waitForURL(/\/setup-2fa$/);
     expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/register").body).invite_code === "K7QM-2XRA-9PWD", "가입 요청에 초대 코드 없음");
+  });
+
+  await test("관심종목: 국내 장중이면 KIS 실시간 현재가(2초)로 가격만 바꿈 · 장 마감이면 실시간 요청 안 함", { api: makeApi({
+    "GET /api/market/status": { ...F.MARKET_STATUS, KR: { ...F.MARKET_STATUS.KR, state: "장중", open: true } },
+    "GET /api/stocks/live": { items: { "005930": { price: 178500, change: -4600, change_rate: -2.51, volume: 1, time: "101530", age: 0.4 } },
+                              connected: true, session: true, source: "KIS 실시간 체결가 (웹소켓)" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/watchlist`);
+    const card = page.getByTestId("watch-card").filter({ hasText: "삼성전자" }).first();
+    await card.getByTestId("live-badge").waitFor();
+    const t = await card.innerText();
+    expect(t.includes("₩178,500") && t.includes("실시간 10:15:30") && !t.includes("₩177,800"), `실시간 가격 안 바뀜: ${t.slice(0, 120)}`);
+    const q = api.calls.find((c) => c.key === "GET /api/stocks/live");
+    expect(q, "실시간 요청 없음");
+    await page.waitForTimeout(2300);
+    expect(api.calls.filter((c) => c.key === "GET /api/stocks/live").length >= 2, "2초마다 다시 묻지 않음");
+    const other = await page.getByTestId("watch-card").nth(1).innerText();
+    expect(!other.includes("실시간"), "실시간 값이 없는 종목에도 실시간 표시");
+  });
+
+  await test("예측 검증: 지표 비중 자동 조정 — 덜 맞은 지표 비중·날짜별 검증 비교·사용 여부", { api: makeApi({
+    "GET /api/predictions/review": RF.REVIEW, "GET /api/predictions/backtest/status": RF.BACKTEST_STATUS }) }, async (page) => {
+    await page.goto(`${BASE}/predictions`);
+    const kr = page.getByTestId("fw-KR");
+    await kr.waitFor();
+    const t = await kr.innerText();
+    expect(t.includes("실시간 예측에 사용 중") && t.includes("×0.3") && t.includes("RSI") && /원래 \d+(\.\d)?% → 조정 \d+(\.\d)?%/.test(t), `국내 비중: ${t}`);
+    const us = await page.getByTestId("fw-US").innerText();
+    expect(us.includes("원래 비중 사용") && us.includes("줄일 지표 없음") && !us.includes("×0.3"), `미국 비중: ${us}`);
+  });
+
+  await test("관심종목: 장 마감이면 실시간 요청 안 함", {}, async (page, api) => {
+    await page.goto(`${BASE}/watchlist`);
+    await page.getByTestId("watch-card").first().waitFor();
+    await page.waitForTimeout(500);
+    expect(!api.calls.some((c) => c.key === "GET /api/stocks/live"), "장 마감인데 실시간 요청");
+    expect(await page.getByTestId("live-badge").count() === 0, "장 마감인데 실시간 표시");
   });
 
   const adminApi = (extra = {}) => makeApi({

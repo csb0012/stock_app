@@ -111,10 +111,12 @@ def _apply_model(model: dict, factors: list, rule_prob: int) -> tuple:
 
 
 def predict_next_day(candles: list, indicators: dict, news: dict | None = None, extra: dict | None = None,
-                     model: dict | None = None) -> dict:
+                     model: dict | None = None, weights: dict | None = None) -> dict:
     """
     내일 상승 확률 예측 (규칙 기반 + 기술적 분석 종합)
     - 완벽한 예측은 없으며, 참고용 확률입니다
+    - weights: 지표별 배율 (factor_weights.live — 예측 검증에서 덜 맞은 지표 비중 축소). 실시간 예측에서만 넘김.
+      학습 모델을 쓸 땐 모델이 원래 비중 확률로 학습됐으므로 모델 입력은 원래 비중 그대로
     """
     if not indicators or not candles:
         return {"probability": 50, "signal": "중립", "confidence": "낮음", "reasons": [], "factors": [],
@@ -267,6 +269,19 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     exact = (score / max_score * 60) + 20 if max_score > 0 else 50.0   # 정렬용 (15~85 로 자르기 전 값)
     probability = max(15, min(85, int(exact)))  # 15~85% 범위
     rule_probability = probability
+    weighted_probability, exact_w = None, None
+    if weights:
+        wscore = wfull = 0.0
+        for f in factors:
+            w = weights.get(f["name"], 1.0)
+            if w != 1.0:
+                f["weight"] = w
+                f["detail"] += f" · 비중 ×{w:g} (예측 검증에서 덜 맞은 지표)"
+            wscore += f["score"] * w
+            wfull += f["max"] * w
+        if wfull > 0:
+            exact_w = wscore / wfull * 60 + 20
+            weighted_probability = max(15, min(85, int(exact_w)))
 
     # 학습 모델 (백테스트에서 규칙보다 잘 맞았을 때만 채택됨 — ml_model.py)
     model_summary = None
@@ -276,6 +291,10 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
     if model and "prob" in model and model.get("use"):
         probability, model_summary, combo_probability, exact = _apply_model(model, factors, rule_probability)
         method = f"{'combo' if model.get('use') == 'stack' else 'model'}:{model.get('variant')}"
+    elif weighted_probability is not None:   # 규칙 점수를 쓸 때만 조정한 비중 (모델 입력은 원래 비중)
+        probability, exact, method = weighted_probability, exact_w, "rules:weighted"
+    if model and "prob" in model and model.get("use"):
+        model_status = None
     elif model and "prob" in model:
         model_status = (f"학습 모델 미사용 ({model.get('reason')} / {model.get('stack_reason')}) → 규칙 점수 사용 "
                         f"(참고: 모델 확률 {model['prob'] * 100:.0f}%)")
@@ -339,6 +358,7 @@ def predict_next_day(candles: list, indicators: dict, news: dict | None = None, 
         "probability": probability,
         "probability_exact": round(float(exact), 3),
         "rule_probability": rule_probability,
+        "weighted_probability": weighted_probability,
         "model_probability": round(model["prob"] * 100) if model and "prob" in model else None,
         "combo_probability": combo_probability,
         "method": method,

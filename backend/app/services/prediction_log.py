@@ -375,6 +375,7 @@ async def review(days: int = 30, market: str = "ALL", kind: str = "all", outcome
         "pending_count": counts["pending"],
         "calibration": buckets,
         "factor_accuracy": factor_accuracy,
+        "factor_weights": __import__("app.services.factor_weights", fromlist=["report"]).report(),
         "by_symbol": by_symbol,
         "method_accuracy": method_accuracy,
         "daily": daily,

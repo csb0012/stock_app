@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import { useLivePrices } from "./useLivePrices";
+import LiveBadge from "./LiveBadge";
 import { X, Newspaper } from "lucide-react";
 import { stockApi, errMsg } from "../../api/client";
 import ChangeTag from "./ChangeTag";
@@ -26,6 +28,7 @@ export default function StockQuoteCard({
     refetchInterval: 15_000,  // 현재가·상승 확률 15초마다 갱신
     refetchIntervalInBackground: false,
   });
+  const live = useLivePrices(item.market === "KR" ? [item.symbol] : [])[item.symbol];   // 국내: KIS 실시간 현재가 (2초)
   const pred = data?.prediction;
   const ind = data?.indicators || {};
   const m = item.market;
@@ -59,8 +62,9 @@ export default function StockQuoteCard({
           {/* 시세 + 지표 */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 22, fontWeight: 700 }}>{fmtPrice(data.price, m)}</span>
-              <ChangeTag value={data.change_rate} />
+              <span style={{ fontSize: 22, fontWeight: 700 }}>{fmtPrice(live?.price ?? data.price, m)}</span>
+              <ChangeTag value={live?.change_rate ?? data.change_rate} />
+              <LiveBadge t={live?.time} />
             </div>
             {data.daytime && <div style={{ marginTop: 4 }}><DaytimePrice d={data.daytime} /></div>}
             {(data.quant || data.track) && (

@@ -78,8 +78,8 @@ async def get_extras_status(current_user: User = Depends(get_current_user)):
 @router.get("/scheduler-status")
 async def get_scheduler_status(current_user: User = Depends(get_current_user)):
     """점검용: 자동 예측 기록(장 시작 전·장 마감 후) 마지막 실행 결과"""
-    from app.services import scheduler
-    return scheduler.status()
+    from app.services import scheduler, kis_ws
+    return {**scheduler.status(), "kis_ws": kis_ws.status()}
 
 
 # 시장 상태: 하루에 몇 번만 바뀌므로 1시간 신선, 하루 동안은 기존 값을 먼저

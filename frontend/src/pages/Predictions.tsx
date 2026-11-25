@@ -237,6 +237,9 @@ export default function Predictions() {
             </div>
           )}
 
+          {/* 지표 비중 자동 조정 (factor_weights) */}
+          <WeightCard fw={data.factor_weights} />
+
           {/* 종목별 적중률 */}
           {data.by_symbol?.length > 0 && (
             <div className="card" style={{ marginBottom: 20 }}>
@@ -438,5 +441,55 @@ function FactorRow({ f }: { f: any }) {
       <RateBar rate={f.up_rate} n={f.up_n} />
       <RateBar rate={f.down_rate} n={f.down_n} />
     </>
+  );
+}
+
+const MKT: Record<string, string> = { KR: "국내", US: "미국" };
+
+/** 예측 검증 결과로 지표 비중 조정 — 덜 맞은 지표 비중 축소, 날짜별 검증(walk-forward)에서 나아질 때만 실시간에 씀 */
+function WeightCard({ fw }: { fw: any }) {
+  const markets = Object.entries(fw?.markets || {}) as [string, any][];
+  return (
+    <div className="card" data-testid="factor-weights" style={{ marginBottom: 20 }}>
+      <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>지표 비중 자동 조정</p>
+      <p style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 12, lineHeight: 1.6 }}>
+        과거 1년 백테스트에서 덜 맞은 지표(상승·하락 신호 적중률 평균 51% 미만)의 비중을 줄입니다 (최저 0.3배, 늘리지는 않음).
+        날짜마다 그 전날까지의 결과로만 비중을 정해 다시 맞혀 본 결과가 원래보다 나을 때만 실시간 예측에 씁니다. 학습 모델을 쓰는 종목은 모델 확률이 먼저입니다.
+      </p>
+      {!markets.length && <p style={{ fontSize: 12, color: "var(--text-muted)" }}>아직 계산 전 — 과거 1년 백테스트가 끝나면 (하루 1번) 계산합니다</p>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 16 }}>
+        {markets.map(([m, d]) => (
+          <div key={m} data-testid={`fw-${m}`} style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13 }}>{MKT[m] || m}</strong>
+              <span className={`badge ${d.adopted ? "badge-up" : "badge-neutral"}`} style={{ fontSize: 10.5 }}>{d.adopted ? "실시간 예측에 사용 중" : "원래 비중 사용"}</span>
+            </div>
+            <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{d.reason}</span>
+            <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+              <thead><tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>지표</th><th style={{ padding: "4px 6px", fontWeight: 500 }}>적중률</th>
+                <th style={{ padding: "4px 6px", fontWeight: 500 }}>신호</th><th style={{ padding: "4px 6px", fontWeight: 500 }}>비중</th>
+              </tr></thead>
+              <tbody>
+                {d.factors.map((f: any) => (
+                  <tr key={f.name} style={{ borderTop: "1px solid var(--border)" }}>
+                    <td style={{ padding: "4px 6px" }}>{f.name}</td>
+                    <td style={{ padding: "4px 6px", color: f.accuracy != null && f.accuracy < 50 ? "var(--red)" : undefined }}>{f.accuracy != null ? `${f.accuracy}%` : "-"}</td>
+                    <td style={{ padding: "4px 6px", color: "var(--text-muted)" }}>{f.n.toLocaleString()}건</td>
+                    <td style={{ padding: "4px 6px", fontWeight: f.weight < 1 ? 700 : undefined, color: f.weight < 1 ? "var(--yellow)" : undefined }}>×{f.weight}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {d.walk_forward?.n > 0 && (
+              <span style={{ fontSize: 11.5 }}>
+                날짜별 검증 {d.walk_forward.n.toLocaleString()}건: 방향 적중률 원래 <strong>{d.walk_forward.base_accuracy}%</strong> → 조정 <strong>{d.walk_forward.weighted_accuracy}%</strong>
+                {d.walk_forward.base_conf_accuracy != null && <> · 확신 예측(55%↑·45%↓) {d.walk_forward.base_conf_accuracy}% → {d.walk_forward.weighted_conf_accuracy}%</>}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
