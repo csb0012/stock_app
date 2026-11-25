@@ -684,7 +684,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   빌드된 화면으로 로그인 → AI 모의투자 두 탭, 밝은·어두운 모드·폭 390px 가로 스크롤 없음·콘솔 오류 없음.
   **실서버 미검증**: 실제 KIS·Yahoo·FRED 데이터로 시뮬레이션·실시간 계좌 (아래 알려진 이슈)
 
-### 2026-11-25 — Oracle VM 자동 재시도를 집 PC Docker 에서 (Cloud Shell 이 몇 시간이면 끊김) (commit `TBD`)
+### 2026-11-25 — Oracle VM 자동 재시도를 집 PC Docker 에서 (Cloud Shell 이 몇 시간이면 끊김) (commit `f18cc51`)
 - 문제: `deploy/oci-launch-retry.sh` 를 Oracle Cloud Shell 에서 돌리면 몇 시간 뒤 세션이 끊기고 브라우저에 '사이트에서 나가시겠습니까?' → 재시도가 멈춤
 - 스크립트를 PC 의 Docker(`python:3.12-slim` + `pip install oci-cli`)에서도 돌게 고침: 테넌시를 `~/.oci/config` 에서 읽음, `jq`·`ssh-keygen` 이 없으면
   python(oci-cli 와 같이 설치되는 cryptography)으로 대신, `oci` 가 없거나 API 키 로그인이 안 되면 실제 오류를 보여 주고 멈춤,
