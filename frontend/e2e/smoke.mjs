@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import * as F from "./fixtures.mjs";
+import * as PF from "./paper_fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -40,6 +41,11 @@ function makeApi(overrides = {}) {
     "GET /api/chat/status": { model: "규칙 기반", ready: true },
     "GET /api/market/regime": F.REGIME,
     "GET /api/quant": F.QUANT,
+    "GET /api/paper/config": PF.PAPER_CONFIG,
+    "GET /api/paper/accounts": PF.PAPER_ACCOUNTS,
+    "GET /api/paper/accounts/1": PF.PAPER_ACCOUNT,
+    "GET /api/paper/simulations": PF.PAPER_SIMS,
+    "GET /api/paper/simulations/1": PF.PAPER_SIM,
     ...overrides,
   };
   async function handle(route) {
@@ -683,8 +689,76 @@ async function run() {
     expect(api.calls.some((c) => c.key === "GET /api/market/calendar"), "캘린더를 새로 요청하지 않음");
   });
 
+  await test("AI 모의투자: 실시간 계좌 — 자산·보유 종목·거래 이유·판단 기록·그래프", {}, async (page) => {
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("account-detail").waitFor();
+    expect((await page.locator(".sidebar").innerText()).includes("AI 모의투자"), "사이드바에 AI 모의투자 메뉴 없음");
+    const pos = await page.getByTestId("account-positions").innerText();
+    for (const s of ["SK하이닉스", "손절가", "목표가"]) expect(pos.includes(s), `보유 종목 표에 '${s}' 없음`);
+    const tr = await page.getByTestId("account-trades").innerText();
+    expect(tr.includes("매수") && tr.includes("AI 점수"), "거래 내역에 매수·AI 점수 이유 없음");
+    const log = await page.getByTestId("account-log").innerText();
+    for (const s of ["종가 기준 판단", "시장 상승 추세", "점수 상위"]) expect(log.includes(s), `판단 기록에 '${s}' 없음`);
+    await page.getByText("자산 그래프는 거래일이 2일 이상 쌓이면 표시됩니다").waitFor();   // 새 계좌 = 종가 기록 1일
+    await page.getByTestId("how-toggle").click();
+    expect((await page.getByTestId("how-body").innerText()).includes("다음 날 데이터를 모르는 상태"), "설명에 미래 데이터 미사용 문구 없음");
+    await shot(page, "paper-live");
+  });
+
+  await test("AI 모의투자: 계좌 만들기 요청 · 실패 문구", { api: makeApi({
+    "GET /api/paper/accounts": { items: [], status: {} },
+    "POST /api/paper/accounts": { __status: 422, detail: "시작 자금은 1,000,000~10,000,000,000원 사이여야 함" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("account-form").waitFor();
+    await page.getByTestId("account-capital").fill("100");
+    await page.getByTestId("account-create").click();
+    await page.getByTestId("account-create-error").getByText("시작 자금은").waitFor();
+    const body = JSON.parse(api.calls.find((c) => c.key === "POST /api/paper/accounts").body);
+    expect(body.market === "KR" && body.capital === 100, `요청 본문: ${JSON.stringify(body)}`);
+  });
+
+  await test("AI 모의투자: 과거 시뮬레이션 결과 · 시작 요청(기간·설정)", {}, async (page, api) => {
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("tab-sim").click();
+    await page.getByTestId("sim-detail").waitFor();
+    const t = await page.locator("body").innerText();
+    for (const s of ["최종 자산", "AI 수익률", "-7.06%", "최대 낙폭", "승률", "지수 대비"]) expect(t.includes(s), `결과에 '${s}' 없음`);
+    expect((await page.getByTestId("sim-trades").innerText()).includes("매도"), "거래 내역 없음");
+    expect((await page.getByTestId("sim-log").innerText()).length > 20, "판단 기록 없음");
+    expect((await page.getByTestId("sim-notes").innerText()).includes("FRED"), "데이터 경고 없음");
+    const chart = await page.getByTestId("equity-chart").innerText();
+    expect(chart.includes("AI") && chart.includes("코스피 같은 금액"), `그래프 범례: ${chart}`);
+    expect(await page.getByTestId("equity-chart").locator("path").count() === 2, "AI·지수 선 2개가 아님");
+    await shot(page, "paper-sim");
+    await page.getByRole("button", { name: "6개월" }).click();
+    await page.getByRole("button", { name: /매매 규칙/ }).click();
+    await page.getByTestId("param-max_positions").fill("3");
+    await page.getByTestId("sim-start").click();
+    await page.waitForTimeout(300);
+    const call = api.calls.find((c) => c.key === "POST /api/paper/simulations");
+    const body = JSON.parse(call.body);
+    expect(body.months === 6 && body.params.max_positions === 3 && body.capital === 10000000, `요청 본문: ${call.body}`);
+    // 탭 기억
+    await page.reload();
+    await page.getByTestId("sim-detail").waitFor();
+  });
+
+  await test("AI 모의투자: 시뮬레이션 계산 중 진행 표시 / 실패 사유", { api: makeApi({
+    "GET /api/paper/simulations": { busy: true, items: [
+      { id: 1, market: "KR", capital: 1e7, months: 12, params: {}, status: "running", summary: null, progress: { phase: "매매 시뮬레이션 중", done: 40, total: 250 } },
+      { id: 2, market: "US", capital: 1e4, months: 3, params: {}, status: "failed", error: "일봉을 받은 종목이 0/40개뿐", summary: null }] },
+    "GET /api/paper/simulations/1": { id: 1, market: "KR", status: "running", progress: { phase: "매매 시뮬레이션 중", done: 40, total: 250 } },
+    "GET /api/paper/simulations/2": { id: 2, market: "US", status: "failed", error: "일봉을 받은 종목이 0/40개뿐" } }),
+    init: { "paper-tab": "sim" } }, async (page) => {
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("sim-progress").getByText("40/250").waitFor();
+    expect(await page.getByTestId("sim-start").isDisabled(), "계산 중인데 시작 버튼이 눌림");
+    await page.getByTestId("sim-list").getByText("실패").click();
+    await page.getByTestId("sim-error").getByText("0/40개뿐").waitFor();
+  });
+
   // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)
-  const pages = ["/", "/mypage", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
+  const pages = ["/", "/mypage", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/paper", "/predictions", "/calendar"];
   for (const theme of ["light", "dark"]) {
     await test(`모든 화면 열기 — 오류로 멈추지 않음 (${theme})`, { theme }, async (page) => {
       for (const p of pages) {
@@ -696,7 +770,7 @@ async function run() {
     });
   }
   await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
-    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant", "/mypage"]) {
+    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant", "/paper", "/mypage"]) {
       await page.goto(`${BASE}${p}`);
       await page.waitForLoadState("networkidle");
       await noHScroll(page);

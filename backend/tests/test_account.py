@@ -551,6 +551,19 @@ def test_delete_account_removes_activity(env):
     c, sent, Session = env
     tok = phone_signup(c, sent, "gone1", "010-3333-4444").json()["access_token"]
     c.post("/api/auth/login", json={"username": "gone1", "password": "abcd1234"})
+    uid = c.get("/api/auth/me", headers=h(tok)).json()["id"]
+
+    async def add_paper():   # AI 모의투자 계좌·거래·자산·시뮬레이션도 탈퇴 때 같이 지워져야 함
+        from app.models.paper import PaperAccount, PaperTrade, PaperEquity, PaperSim
+        async with Session() as s:
+            a = PaperAccount(user_id=uid, market="KR", capital=1e7, params="{}", state="{}")
+            s.add(a)
+            await s.flush()
+            s.add(PaperTrade(account_id=a.id, ts="t", symbol="005930", side="buy", qty=1, price=1, amount=1))
+            s.add(PaperEquity(account_id=a.id, date="2026-11-20", equity=1, cash=1))
+            s.add(PaperSim(user_id=uid, market="KR", capital=1e7, months=1, params="{}"))
+            await s.commit()
+    run(add_paper())
     assert c.post("/api/auth/delete-account", json={"password": "abcd1234"}, headers=h(tok)).status_code == 200
 
     async def count():
@@ -559,6 +572,14 @@ def test_delete_account_removes_activity(env):
         async with Session() as s:
             return (await s.execute(select(func.count()).select_from(AccountEvent))).scalar()
     assert run(count()) == 0
+
+    async def paper_left():
+        from sqlalchemy import select, func
+        from app.models.paper import PaperAccount, PaperTrade, PaperEquity, PaperSim
+        async with Session() as s:
+            return [(await s.execute(select(func.count()).select_from(m))).scalar()
+                    for m in (PaperAccount, PaperTrade, PaperEquity, PaperSim)]
+    assert run(paper_left()) == [0, 0, 0, 0]
     assert phone_signup(c, sent, "gone2", "010-3333-4444").status_code == 200    # 같은 번호로 다시 가입 가능
 
 

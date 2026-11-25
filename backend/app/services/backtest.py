@@ -1,4 +1,4 @@
-"""과거 예측 백테스트 — 최근 90일 동안 매 거래일마다 "그날까지의 일봉만 보고" 다음 거래일을 예측해 채점
+"""과거 예측 백테스트 — 최근 1년(365일) 동안 매 거래일마다 "그날까지의 일봉만 보고" 다음 거래일을 예측해 채점
 
 예) 대상일 11/19 → 11/18 종가까지의 일봉(최근 130개)으로 지표·확률 계산 → 11/19 실제 등락과 비교.
 대상일 이후 데이터는 절대 쓰지 않는다 (미래 정보 누설 방지).
@@ -30,15 +30,16 @@ from app.services.analysis import calc_technical_indicators, predict_next_day
 from app.services.market_calendar import market_today, is_market_open, _after_close
 
 RETRY_WAITS = (10, 30, 60)  # 초당 호출 제한으로 실패한 종목만 이만큼 기다렸다가 다시 계산 (초)
-DAYS = 90        # 대상일 기준 최근 90일 (달력 기준)
+DAYS = 365       # 대상일 기준 최근 1년 (달력 기준). 예전 90일 → 표본을 늘려 채택 판정·적중률을 더 믿을 수 있게
 WINDOW = 130     # 예측에 쓰는 일봉 개수 (실시간 AI 추천과 같음)
-KR_COUNT = 500   # 학습용 약 2년치 일봉 (KIS 100개씩 5~6회 호출)
+KR_COUNT = 800   # 백테스트 1년 + 그 앞 학습용 약 2년 (KIS 100개씩 8~10회 호출)
+US_PERIOD = "5y"  # yfinance 는 3y 가 없어 5y (학습은 대상일 전 2년만 씀 — ml_model.TRAIN_DAYS)
 
 _lock = asyncio.Lock()
 _status = {
     "running": False, "done": 0, "total": 0, "current": None, "added": 0,
     "started_at": None, "finished_at": None, "last_run_date": None, "errors": [], "retry_wait": None,
-    "phase": None, "model_report": None,
+    "phase": None, "model_report": None, "days": DAYS,
 }
 
 
@@ -74,12 +75,18 @@ async def _universe() -> list:
     return out
 
 
-def _rule_preds(stock: dict, candles: list, cutoff: str) -> dict:
-    """CPU 작업 (스레드): 대상일마다 전날까지의 일봉 130개로 규칙 점수 예측 → {대상일: (ti, 예측)}"""
+def _rule_preds(stock: dict, candles: list, cutoff: str, saved: dict | None = None) -> dict:
+    """CPU 작업 (스레드): 대상일마다 전날까지의 일봉 130개로 규칙 점수 예측 → {대상일: (ti, 예측)}
+    saved: 이미 DB 에 저장된 대상일 → 규칙 확률. 다시 계산하지 않고 그 값을 씀 (1년치 매일 재계산 방지 —
+    규칙 점수는 그 전날까지의 일봉만으로 정해지므로 저장값과 같음)"""
     out = {}
+    saved = saved or {}
     for ti in range(1, len(candles)):
         t = candles[ti]["date"][:10]
         if t < cutoff or not _closed(stock["market"], t):
+            continue
+        if t in saved:
+            out[t] = (ti, {"probability": saved[t], "saved": True})
             continue
         hist = candles[max(0, ti - WINDOW):ti]  # 대상일 전날까지만
         if len(hist) < 30:
@@ -232,18 +239,23 @@ async def _run(force: bool):
             BacktestLog.method.is_(None) | (BacktestLog.combo_probability.is_(None) & BacktestLog.model_probability.isnot(None)))
         await db.execute(q)
         await db.commit()
-        existing = {(m, s, t) for m, s, t in (await db.execute(
-            select(BacktestLog.market, BacktestLog.symbol, BacktestLog.target_date))).all()}
+        saved_rules: dict = {}
+        existing = set()
+        for m, s, t, rp in (await db.execute(select(BacktestLog.market, BacktestLog.symbol, BacktestLog.target_date,
+                                                     BacktestLog.rule_probability))).all():
+            existing.add((m, s, t))
+            if rp is not None:
+                saved_rules.setdefault((m, s), {})[t] = rp
 
     _status["phase"] = "일봉 받는 중"
-    idx_hist = await batch_yf_history(list(ml_model.IDX_TICKERS.values()), "2y")
+    idx_hist = await batch_yf_history(list(ml_model.IDX_TICKERS.values()), US_PERIOD)
     for t, cs in idx_hist.items():
         if len(cs) < 100:
             raise RuntimeError(f"지수 {t} 일봉 {len(cs)}개 — yfinance 조회 실패 (학습 모델에 필요)")
     idx = {t: ml_model.index_returns(cs) for t, cs in idx_hist.items()}
     idx_change = index_change_fn(idx_hist)
     us_syms = [s["symbol"] for s in stocks if s["market"] == "US"]
-    us_hist = await batch_yf_history(us_syms, "2y") if us_syms else {}
+    us_hist = await batch_yf_history(us_syms, US_PERIOD) if us_syms else {}
     data = await _fetch_all(stocks, us_hist)
 
     # 국내 수급(외국인·기관): KIS 는 최근 30일만 줘서 매번 받아 DB 에 쌓음 (실패해도 수급 없는 모델로 진행)
@@ -256,7 +268,8 @@ async def _run(force: bool):
         d = data.get((st["market"], st["symbol"]))
         if d:
             _status["current"] = st["name"] or st["symbol"]
-            d["rules"] = await asyncio.to_thread(_rule_preds, st, d["candles"], cutoff)
+            d["rules"] = await asyncio.to_thread(_rule_preds, st, d["candles"], cutoff,
+                                                 saved_rules.get((st["market"], st["symbol"])))
 
     _status["phase"] = "학습 모델 walk-forward 검증 중"
     _status["current"] = "학습·검증"

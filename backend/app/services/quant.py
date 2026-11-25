@@ -67,12 +67,12 @@ def _pct_rank(g: pd.DataFrame, cols: list) -> pd.DataFrame:
     return g.groupby("date")[cols].rank(pct=True).mul(98).add(1)
 
 
-def _ic(df: pd.DataFrame, col: str) -> float:
-    """날짜별 순위 상관(점수 백분위 vs 시장 대비 초과수익)의 평균"""
+def _ic(df: pd.DataFrame, col: str, min_n: int = 20) -> float:
+    """날짜별 순위 상관(점수 백분위 vs 시장 대비 초과수익)의 평균. min_n: 그날 종목 수가 이보다 적으면 건너뜀"""
     vals = []
     for _, g in df.groupby("date"):
         g = g[[col, "excess"]].dropna()
-        if len(g) >= 20:
+        if len(g) >= min_n:
             x = g[col].rank()
             y = g["excess"].rank()
             if x.std() == 0 or y.std() == 0:
@@ -83,9 +83,9 @@ def _ic(df: pd.DataFrame, col: str) -> float:
     return float(np.mean(vals)) if vals else 0.0
 
 
-def _weights(df: pd.DataFrame) -> tuple:
+def _weights(df: pd.DataFrame, min_n: int = 20) -> tuple:
     """요인별 IC → 가중치 (IC 가 0 이하면 0). 전부 0 이면 같은 가중치"""
-    ic = {k: _ic(df, f"p_{k}") for k in KEYS}
+    ic = {k: _ic(df, f"p_{k}", min_n) for k in KEYS}
     pos = {k: max(v, 0.0) for k, v in ic.items()}
     s = sum(pos.values())
     w = {k: (pos[k] / s if s > 0 else 1 / len(KEYS)) for k in KEYS}

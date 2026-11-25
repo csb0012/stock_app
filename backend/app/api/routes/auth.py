@@ -15,6 +15,7 @@ from app.core.security import (
 from app.models.user import User, AccountEvent
 from app.models.watchlist import WatchlistItem
 from app.models.portfolio import PortfolioItem
+from app.models import paper as _paper  # noqa: F401 — 탈퇴 시 모의투자 기록 삭제 (테이블 등록)
 from app.services import mailer, email_codes, sms
 from app.services.email_codes import CodeError, normalize_email, normalize_phone, format_phone
 from app.core.config import settings
@@ -526,9 +527,11 @@ async def delete_account(req: DeleteAccountRequest, current_user: User = Depends
     await db.execute(delete(WatchlistItem).where(WatchlistItem.user_id == uid))
     await db.execute(delete(PortfolioItem).where(PortfolioItem.user_id == uid))
     await db.execute(delete(AccountEvent).where(AccountEvent.user_id == uid))
+    from app.services.papertrade import delete_user_data
+    await delete_user_data(db, uid)   # AI 모의투자 계좌·시뮬레이션
     await db.execute(delete(User).where(User.id == uid))
     await db.commit()
-    return {"message": "탈퇴했습니다 — 관심종목·투자종목도 지웠습니다"}
+    return {"message": "탈퇴했습니다 — 관심종목·투자종목·모의투자 기록도 지웠습니다"}
 
 
 # ---------------- 휴대폰 번호 등록 · 닉네임 · 연락처 삭제 · 모든 기기 로그아웃 · 활동 기록 ----------------

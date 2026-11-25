@@ -11,6 +11,7 @@ import asyncio
 import re
 import time
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -245,6 +246,18 @@ async def _fomc_calendar(start: str, end: str) -> list:
 # ---------------- 발표값 ----------------
 
 _value_cache: dict = {}   # (key, 날짜) → 발표값. 발표된 값은 바뀌지 않으므로(그날 기준) 계속 씀
+_FRED_TZ = ZoneInfo("America/Chicago")   # FRED(세인트루이스 연은) 서버 날짜 기준
+
+
+def fred_today() -> date:
+    """FRED 가 보는 '오늘' (미국 중부 시간). 한국은 하루 앞서 있어서(한국 오전 = 미국 전날 밤)
+    한국 날짜로 realtime_start 를 보내면 FRED 가 '미래 날짜'라며 HTTP 400 을 돌려줌."""
+    return datetime.now(_FRED_TZ).date()
+
+
+def _future_vintage_error(e: BaseException) -> bool:
+    """FRED 400: 'Variable realtime_start can not be after today's date' (시계 차이 등으로 미국 날짜가 아직 전날)"""
+    return "realtime_start" in str(e) and "400" in str(e)
 
 
 def _obs(data: dict) -> list:
@@ -362,14 +375,17 @@ def _explain(e: dict) -> dict:
 
 
 async def _attach_values(events: list) -> list:
-    """오늘까지의 일정에 발표값을 붙임. 실패한 건은 note 에 사유, 오류 문구 목록 반환"""
-    today = date.today().isoformat()
+    """오늘까지의 일정에 발표값을 붙임. 실패한 건은 note 에 사유, 오류 문구 목록 반환.
+    '오늘' 은 미국(FRED) 날짜 — 한국 날짜로는 오늘이어도 미국은 아직 전날 밤이면 발표 전"""
+    today = fred_today().isoformat()
     sem = asyncio.Semaphore(4)
     errors = []
 
     async def one(client, e):
         if e["date"] > today:
             e.update(released=False)
+            if e["date"] <= date.today().isoformat():
+                e["note"] = "미국 현지 날짜로 아직 발표일 전 (한국 시간으로 보통 밤 10시 30분 이후 발표)"
             return
         ck = (e["key"], e["date"])
         if ck in _value_cache:
@@ -383,6 +399,9 @@ async def _attach_values(events: list) -> list:
                 v = await (_fomc_value(client, e["date"]) if e["key"] == "fomc"
                            else _indicator_value(client, e["key"], e["date"]))
             except Exception as ex:
+                if _future_vintage_error(ex):   # 미국 날짜가 아직 발표일 전 — 오류가 아니라 '발표 전'
+                    e.update(released=False, note="미국 현지 날짜로 아직 발표일 전 — FRED 에 그날 기준 값이 없음")
+                    return
                 errors.append(f"{e['event']} {e['date']}: {err_text(ex)}")
                 e.update(released=False, note=f"발표값 조회 실패 — {err_text(ex)}")
                 return

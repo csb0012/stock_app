@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route
+from app.api.routes import auth, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
     # FRED·Finnhub·DART 추가 데이터는 호출 제한 때문에 백그라운드 큐로 수집 (.env 에 키가 있을 때만)
     extras_task = asyncio.create_task(extras.worker())
     asyncio.get_event_loop().call_later(1.0, _warm_extras)
-    # 최근 90일 과거 예측 백테스트 — 하루 한 번 (이미 계산한 날짜는 건너뜀)
+    # 최근 1년 과거 예측 백테스트 — 하루 한 번 (이미 계산한 날짜는 건너뜀)
     bt_task = asyncio.create_task(_backtest_loop())
     # 학습 모델의 실시간 예측에 쓰는 지수 일봉 (10분마다)
     ctx_task = asyncio.create_task(_model_ctx_loop())
@@ -36,9 +36,13 @@ async def lifespan(app: FastAPI):
     from app.services import themes as themes_svc, accumulation
     theme_task = asyncio.create_task(themes_svc.loop())
     accum_task = asyncio.create_task(accumulation.startup())
+    # AI 모의투자 자동 운영 (개장 직후 대기 주문 체결 · 장중 손절/목표 · 장 마감 후 판단) — papertrade.py
+    from app.services import papertrade
+    paper_task = asyncio.create_task(papertrade.loop())
     # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
     asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
+    paper_task.cancel()
     ctx_task.cancel()
     preopen_task.cancel()
     warm_task.cancel()
@@ -101,6 +105,7 @@ app.include_router(chat.router, prefix="/api")
 app.include_router(themes_route.router, prefix="/api")
 app.include_router(accumulation_route.router, prefix="/api")
 app.include_router(accumulation_route.quant_router, prefix="/api")
+app.include_router(papertrade_route.router, prefix="/api")
 
 
 @app.get("/api/health")

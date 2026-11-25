@@ -20,6 +20,7 @@ function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
     refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
   });
   const s = live || bt || {};
+  const btDays: number = s.days || 365;
   const [wasRunning, setWasRunning] = useState(false);
   useEffect(() => {
     if (s.running) setWasRunning(true);
@@ -38,10 +39,10 @@ function BacktestPanel({ bt, onDone }: { bt: any; onDone: () => void }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div style={{ flex: 1, minWidth: 260 }}>
           <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-            <History size={15} /> 과거 90일 백테스트
+            <History size={15} /> 과거 {btDays === 365 ? "1년" : `${btDays}일`} 백테스트
           </p>
           <p style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-            최근 90일의 거래일마다 <strong>그 전날 종가까지의 일봉만</strong> 보고 다음 날을 예측한 뒤 실제 등락과 비교합니다
+            최근 {btDays === 365 ? "1년(365일)" : `${btDays}일`}의 거래일마다 <strong>그 전날 종가까지의 일봉만</strong> 보고 다음 날을 예측한 뒤 실제 등락과 비교합니다
             (예: 11/18까지 데이터로 11/19 예측 → 11/19 종가로 채점). 결과는 DB(prediction_backtest)에 저장되고 하루 한 번 새 날짜만 추가됩니다.
             대상: AI 추천 후보 + 관심종목 + 투자종목 · 규칙 점수와 학습 모델(과거 2년 일봉으로 학습, 10거래일마다 그 이전 데이터로만 다시 학습)을 같이 계산해 아래 "예측 방식별 적중률"에서 비교합니다.
             뉴스·거시·애널리스트·공시는 과거 시점 기록이 없어 <strong>가격·거래량·지수 데이터만</strong> 사용.
@@ -138,13 +139,13 @@ export default function Predictions() {
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>예측 검증</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측(실제)과 과거 90일 백테스트를 실제 등락과 비교해 채점합니다 ·
+          AI 추천·투자종목·관심종목에서 낸 다음 거래일 예측(실제)과 과거 1년 백테스트를 실제 등락과 비교해 채점합니다 ·
           모든 예측을 상승(확률 50% 초과)·하락(50% 미만) 둘 중 하나로 채점 (정확히 50% 만 제외)
         </p>
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-        {[7, 30, 90].map((d) => (
+        {[7, 30, 90, 180, 365].map((d) => (
           <button key={d} className={`btn ${days === d ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "6px 10px" }} onClick={() => setDays(d)}>
             최근 {d}일
           </button>

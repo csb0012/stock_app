@@ -6,7 +6,7 @@ import { marketApi, authApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge,
+  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge, Bot,
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
 import Toaster from "./Toast";
@@ -20,6 +20,7 @@ const navItems = [
   { to: "/accumulation", icon: Radar, label: "매집 탐지" },
   { to: "/watchlist", icon: Star, label: "관심종목" },
   { to: "/portfolio", icon: Briefcase, label: "투자종목" },
+  { to: "/paper", icon: Bot, label: "AI 모의투자" },
   { to: "/predictions", icon: ClipboardCheck, label: "예측 검증" },
   { to: "/calendar", icon: Calendar, label: "경제캘린더" },
 ];

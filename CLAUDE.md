@@ -81,6 +81,8 @@ models/
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
   flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
+  paper.py       — AI 모의투자: PaperSim (paper_sim: 과거 시뮬레이션 결과 JSON) / PaperAccount (paper_account: 실시간 계좌, 보유·대기 주문·판단 기록은 state JSON) /
+                   PaperTrade (체결) / PaperEquity (거래일 종가 기준 자산 + 지수 종가)
 services/
   kis_api.py     — KISClient: 토큰 캐시, 초당 호출 제한, rt_cd 오류 → KISError
                    국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
@@ -105,8 +107,9 @@ services/
   prediction_log.py  — 예측 기록(upsert) · 장 마감 후 채점(grade) · 적중률/틀린 이유 집계 (review: 실제+백테스트 합산, 실제 우선)
                    tracks()/attach_tracks(): 종목별 최근 90일 예측 적중 기록(30분 캐시) → 관심종목·AI 추천·종목 조회 행의 track
                    채점 기준: 50% 초과 상승 / 50% 미만 하락 (정확히 50 만 제외), 55/45 는 '확신 예측' 비교용
-  backtest.py    — 최근 90일 백테스트: 대상일 전날까지의 데이터만으로 규칙 점수·학습 모델(walk-forward) 예측 → 채점 →
-                   prediction_backtest 저장 (증분, 하루 1회) + 학습 모델 최종 학습·채택 판정. 미래 데이터를 쓰지 않는 것이 핵심 규칙
+  backtest.py    — 최근 1년(DAYS=365) 백테스트: 대상일 전날까지의 데이터만으로 규칙 점수·학습 모델(walk-forward) 예측 → 채점 →
+                   prediction_backtest 저장 (증분, 하루 1회 — 저장된 날짜는 규칙 점수를 DB 값으로 재사용) + 학습 모델 최종 학습·채택 판정.
+                   국내 일봉 800개·미국/지수 yfinance 5y. 미래 데이터를 쓰지 않는 것이 핵심 규칙
   ml_model.py    — 학습 모델(numpy 로지스틱 회귀): feature_frame(특징값), walk_forward, adoption(채택 조건), live_predict(실시간),
                    stack_fit/stack_usable(모델+규칙 결합·보정, 시간순 구간 검증). 실시간 우선순위: 결합 → 모델 단독 → 규칙
                    변형 US / KR(간밤 미국장 반영, 미국장 마감 후에만) / KR_base / KRF·KRF_base(+외국인·기관 수급).
@@ -142,6 +145,15 @@ services/
                    실제·이전 값 = FRED 시리즈를 발표 당일 기준(vintage, realtime_start=그날)으로 조회해 전날 기준과 비교(수정 발표도 구분),
                    FOMC = DFEDTARL·DFEDTARU 결정 전날 vs 다음 날. 발표된 값은 메모리 캐시. 예상치(컨센서스)는 무료 공식 출처가 없어 안 다룸.
                    INDICATORS(지표별 시리즈·계산·해설: about + 오름/내림/같음 시장 영향). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음 (err_text)
+                   '오늘'·발표 여부는 미국 중부 날짜(fred_today) 기준 — 한국 날짜로 FRED 에 realtime_start 를 보내면 미래 날짜라 HTTP 400
+  paper_engine.py— AI 모의투자 계산만 (DB·외부 호출 없음): AI 점수 = 상승확률 45%(규칙 점수, 실시간은 학습 모델 포함 AI 추천 확률) + 퀀트 종합 백분위 35%
+                   (요인 비중은 그날 결과가 확정된 과거로만, 20거래일마다) + 매집 20%(40점 초과분). 시장 상태(market_regime)로 주식 비중 상한 100/60/30%,
+                   다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
+                   intraday_exit(손절 먼저), after_close(보유일·추격 손절), simulate() = 하루씩 그날 종가까지로 판단 → 다음 날 시가 체결 → 장중 손절/목표 → 종가 평가
+  papertrade.py  — AI 모의투자 실행: 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim) /
+                   실시간 계좌(사용자당 5개): 만들면 바로 판단(장중이면 바로 현재가 체결), loop() 1분마다 — 개장 1분 뒤 대기 주문 체결, 장중 5분마다 손절·목표,
+                   장 마감 15분 뒤 판단(실패 시 30분 뒤 재시도, 같은 날 자동 판단 중복 안 함). 실시간 대상 = 후보 + 내 관심·투자종목 + (국내) 전 종목 퀀트·매집 상위 + 보유.
+                   계좌별 asyncio 잠금으로 state 를 순서대로 고침. 오늘 미완성 봉은 판단에서 뺌(_closed_only)
   longterm.py    — 장기 보유 분석: 월봉(국내 KIS 수정주가·배당 제외 / 미국·지수 yfinance 배당 포함)으로 모든 달을 '산 달'로 놓고
                    1·3·5·10년(계산은 1~20년) 보유 수익률 → 이익 확률·하위10%/중간/상위10%·최악·최고·지수보다 나은 비율,
                    보유 기간 제안(그 기간 '이상' 모두 90%↑ / 손실 0 인 가장 짧은 기간), 최대 낙폭·회복 기간, 장기 점수
@@ -168,9 +180,11 @@ api/routes/
   accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산),
                    GET /quant (?limit, 퀀트 점수 상위·요인 비중·검증 — 전 종목 점수표는 응답에 안 실음)
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
+  papertrade.py  — /paper/config (기본값·설정 범위·자동 운영 상태), /paper/simulations (POST 시작 {market, capital, months, params} — 범위 밖 422·계산 중 409 / GET 목록 / GET·DELETE /{id}),
+                   /paper/accounts (POST 생성 / GET 목록(현재가 평가) / GET /{id} 거래·자산 곡선·판단 기록 / POST /{id}/run / PUT /{id}/active / DELETE /{id}). 남의 것 404
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과나 퀀트 점수가 없으면 전 종목 스캔 — 매집·퀀트 같이), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과나 퀀트 점수가 없으면 전 종목 스캔 — 매집·퀀트 같이), papertrade.loop (AI 모의투자 자동 운영), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -195,7 +209,9 @@ api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → 
 api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
-                     Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio, Predictions(예측 검증), Calendar,
+                     Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio,
+                     PaperTrading(/paper, AI 모의투자: 실시간 계좌 / 과거 시뮬레이션 탭(localStorage paper-tab) · 자산 곡선 SVG(AI vs 지수) · 거래 이유 · 판단 기록),
+                     Predictions(예측 검증), Calendar,
                      Login(회원가입·비밀번호 찾기 링크, 아이디·이메일·휴대폰 번호), Signup·ForgotPassword(이메일/휴대폰 탭 → 코드),
                      MyPage(프로필 카드·닉네임·본인인증(이메일/휴대폰)·비밀번호·2단계 인증·로그인 기기/최근 활동·모든 기기 로그아웃·CSV 내려받기·탈퇴)
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)

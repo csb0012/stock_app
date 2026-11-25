@@ -56,7 +56,7 @@ async def _bg_backtest(force: bool):
 
 @router.post("/backtest")
 async def run_backtest(force: bool = Query(False), current_user: User = Depends(get_current_user)):
-    """최근 90일 백테스트 시작 (백그라운드). force=true 면 기존 백테스트 기록을 지우고 다시 계산"""
+    """최근 1년 백테스트 시작 (백그라운드). force=true 면 기존 백테스트 기록을 지우고 다시 계산"""
     if not backtest.status()["running"]:
         asyncio.create_task(_bg_backtest(force))
         await asyncio.sleep(0)

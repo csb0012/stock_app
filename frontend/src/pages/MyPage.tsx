@@ -346,7 +346,7 @@ function DeleteSection({ totp, username }: { totp: boolean; username: string }) 
   const [typed, setTyped] = useState("");
   const del = useMutation({ mutationFn: () => authApi.deleteAccount(pw, totp ? code : undefined), meta: { inlineError: true },
     // 먼저 로그인 화면으로 옮긴 뒤 로그아웃 (먼저 로그아웃하면 보호된 화면이 안내 문구 없이 /login 으로 보내 버림)
-    onSuccess: () => { navigate("/login", { replace: true, state: { notice: "탈퇴했습니다 — 관심종목·투자종목도 지웠습니다" } }); setTimeout(logout, 0); } });
+    onSuccess: () => { navigate("/login", { replace: true, state: { notice: "탈퇴했습니다 — 관심종목·투자종목·모의투자 기록도 지웠습니다" } }); setTimeout(logout, 0); } });
   const ok = pw && typed === username && (!totp || /^\d{6}$/.test(code));
   return (
     <Section id="leave" icon={UserX} title="회원 탈퇴" testid="delete-section">

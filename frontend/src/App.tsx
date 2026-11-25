@@ -17,6 +17,7 @@ import Predictions from "./pages/Predictions";
 import Themes from "./pages/Themes";
 import Accumulation from "./pages/Accumulation";
 import Quant from "./pages/Quant";
+import PaperTrading from "./pages/PaperTrading";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/themes" element={<ProtectedRoute><Themes /></ProtectedRoute>} />
           <Route path="/quant" element={<ProtectedRoute><Quant /></ProtectedRoute>} />
           <Route path="/accumulation" element={<ProtectedRoute><Accumulation /></ProtectedRoute>} />
+          <Route path="/paper" element={<ProtectedRoute><PaperTrading /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

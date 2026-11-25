@@ -141,3 +141,22 @@ export const portfolioApi = {
   remove: (id: number) => api.delete(`/portfolio/${id}`),
   analysis: () => api.get("/portfolio/analysis"),
 };
+
+// AI 모의투자 — 과거 시뮬레이션 / 실시간 모의투자 계좌
+export type PaperParams = Partial<{ max_positions: number; buy_score: number; sell_score: number; stop_pct: number;
+  take_pct: number; max_hold: number; trailing: boolean }>;
+export const paperApi = {
+  config: () => api.get("/paper/config"),
+  sims: () => api.get("/paper/simulations"),
+  sim: (id: number) => api.get(`/paper/simulations/${id}`),
+  startSim: (market: string, capital: number, months: number, params: PaperParams) =>
+    api.post("/paper/simulations", { market, capital, months, params }),
+  removeSim: (id: number) => api.delete(`/paper/simulations/${id}`),
+  accounts: () => api.get("/paper/accounts"),
+  account: (id: number) => api.get(`/paper/accounts/${id}`),
+  createAccount: (market: string, capital: number, name: string, params: PaperParams) =>
+    api.post("/paper/accounts", { market, capital, name, params }),
+  run: (id: number) => api.post(`/paper/accounts/${id}/run`),
+  setActive: (id: number, active: boolean) => api.put(`/paper/accounts/${id}/active`, null, { params: { active } }),
+  removeAccount: (id: number) => api.delete(`/paper/accounts/${id}`),
+};

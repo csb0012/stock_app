@@ -145,3 +145,53 @@ def test_calendar_no_sources_raises(monkeypatch):
     monkeypatch.setattr(ec, "_fomc_calendar", boom)
     with pytest.raises(RuntimeError, match="FRED_API_KEY 없음"):
         run(ec.get_economic_calendar())
+
+
+def _one_release(name, day):
+    return {"releases": {"release_dates": [{"release_name": name, "date": day}]}}
+
+
+def test_kst_today_is_us_yesterday_no_fred_query(monkeypatch):
+    """한국 11/25 오전 = 미국 11/24 밤 → 11/25 발표(GDP·PCE)는 '발표 전'. FRED 에 realtime_start=11/25 를 보내면
+    HTTP 400 ('realtime_start can not be after today') 이 나서 화면에 오류가 떴음 (2026-11-25 버그)"""
+    today = date.today()
+    fake = FakeFred(_one_release("Gross Domestic Product", today.isoformat()))
+    monkeypatch.setattr(ec, "_fred", fake)
+    monkeypatch.setattr(ec.settings, "fred_api_key", "dummy")
+    monkeypatch.setattr(ec, "fred_today", lambda: today - timedelta(days=1))
+    ec._value_cache.clear()
+
+    async def no_fomc(start, end):
+        return []
+    monkeypatch.setattr(ec, "_fomc_calendar", no_fomc)
+    data = run(ec.get_economic_calendar())
+    e = data["events"][0]
+    assert e["released"] is False and "아직 발표일 전" in e["note"]
+    assert not [c for c in fake.calls if c[0] == "series/observations"]   # 미래 날짜로 조회 안 함
+    assert data["errors"] == [] and data["retry"] is False
+
+
+def test_fred_future_vintage_400_is_not_error(monkeypatch):
+    """시계 차이로 그래도 400 이 오면 오류가 아니라 '발표 전' 으로 (재시도 표시도 안 함)"""
+    today = date.today()
+    err = RuntimeError('HTTP 400 ({"error_code":400,"error_message":"Bad Request. Variable realtime_start can not be after today\'s date'
+                       '"})')
+    fake = FakeFred({**_one_release("Personal Income and Outlays", today.isoformat()), ("PCEPILFE", None): err})
+    monkeypatch.setattr(ec, "_fred", fake)
+    monkeypatch.setattr(ec.settings, "fred_api_key", "dummy")
+    monkeypatch.setattr(ec, "fred_today", lambda: today)
+    ec._value_cache.clear()
+
+    async def no_fomc(start, end):
+        return []
+    monkeypatch.setattr(ec, "_fomc_calendar", no_fomc)
+    data = run(ec.get_economic_calendar())
+    e = data["events"][0]
+    assert e["released"] is False and "발표일 전" in e["note"]
+    assert data["errors"] == [] and data["retry"] is False
+
+
+def test_fred_today_is_us_central():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    assert ec.fred_today() == datetime.now(ZoneInfo("America/Chicago")).date()
