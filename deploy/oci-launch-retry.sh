@@ -4,6 +4,7 @@
 # 어디서 돌리나
 #   - Oracle Cloud Shell: 바로 실행 가능하지만 세션이 몇 시간이면 끊겨서(브라우저 '사이트에서 나가시겠습니까?') 며칠 재시도엔 부적합
 #   - 집 PC Docker (권장, PC 가 켜져 있는 동안 계속): docs/setup-cloud.md "PC 에서 자동 재시도" 의 docker run 명령
+#     (Windows 로 받은 이 파일은 줄 끝이 \r\n 이라 bash 가 못 읽음 → 그 명령이 tr -d '\r' 로 정리한 복사본을 실행)
 #     (~/.oci/config 의 API 키로 로그인, SSH 키는 KEY 위치 — 그 명령은 PC 의 %USERPROFILE%\.oci 폴더에 저장)
 #
 # 하는 일 (이미 있으면 건너뜀):
@@ -36,7 +37,8 @@ command -v oci >/dev/null 2>&1 || { say "oci 명령이 없음 — Cloud Shell �
 T=${OCI_TENANCY:-}
 # PC 에서 돌릴 때: ~/.oci/config 의 [DEFAULT] tenancy= 값
 if [ -z "$T" ] && [ -f "$HOME/.oci/config" ]; then
-  T=$(awk -F= '/^\[/{sec=$0} sec=="[DEFAULT]" && $1~/^ *tenancy *$/ {gsub(/ /,"",$2); print $2; exit}' "$HOME/.oci/config")
+  # Windows 메모장으로 저장한 config 는 줄 끝이 \r\n — \r 을 지우고 읽음
+  T=$(awk -F= '{sub(/\r$/,"")} /^\[/{sec=$0} sec=="[DEFAULT]" && $1~/^ *tenancy *$/ {gsub(/ /,"",$2); print $2; exit}' "$HOME/.oci/config")
 fi
 [ -z "$T" ] && T=$(q iam availability-domain list --query 'data[0]."compartment-id"')
 [ -z "$T" ] && { say "테넌시 OCID 를 못 찾음 — Cloud Shell 이 아니면 ~/.oci/config 가 있는지 확인"; exit 1; }

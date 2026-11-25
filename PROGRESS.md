@@ -697,6 +697,14 @@ pull 후 패키지 목록이 바뀌었을 때:
   A1 은 1 OCPU/2GB shape-config 전달·Micro 는 생략 확인, `oci` 없을 때 안내. `bash -n` 문법 확인. 앱 코드 변경 없음.
   **실제 Oracle 계정으로는 실서버 미검증** (알려진 이슈)
 
+### 2026-11-25 — PC Docker 재시도 명령이 Windows 에서 바로 실패하던 문제 (commit `TBD`)
+- 증상(사용자 PC): `set: pipefail: invalid option name` + `syntax error near unexpected token 'else'`. 원인: Windows git 이 받을 때 `.sh` 줄 끝을 `\r\n` 으로 바꿔 저장 → 리눅스 bash 가 못 읽음
+- 수정: 문서의 `docker run` 명령이 `tr -d '\r'` 로 정리한 복사본을 실행 (저장소 파일·git 설정은 안 바꿈 — `.gitattributes` 를 추가하면 이미 받은 PC 에서 파일이 '수정됨'으로 보여 pull 이 막힐 수 있음).
+  메모장으로 저장한 `.oci\config`(줄 끝 `\r\n`)에서 테넌시를 못 읽던 것도 수정(awk 에서 `\r` 제거). pip 경고 문구도 끔
+- 검증: 이 환경 Docker 에서 스크립트를 `\r\n` 으로 바꿔 **예전 명령으로 사용자와 같은 오류 재현** → 새 명령으로 가짜 `oci` 전체 흐름(재시도 2번 → 성공 → IP) 통과,
+  `\r\n` config 에서 테넌시 값이 `\r` 없이 넘어가는지(가짜 oci 호출 기록) 확인, 실제 oci-cli 3.96.3 이 `\r\n` config 를 정상으로 읽는지(`validate_config`) 확인.
+  실제 Oracle 계정으로는 실서버 미검증
+
 ## 알려진 이슈 / 확인 필요
 - [ ] KIS 순위 API(거래량순위 `FHPST01710000`, 등락률순위 `FHPST01700000`) 파라미터 실서버 검증 필요 — 이제 실패하면 KIS 오류 메시지가 종목탐색 화면에 그대로 뜸
 - [ ] KIS 종목마스터 파일 형식(국내 고정폭 227/221자, 미국 탭 구분) 실서버 파일로 검증 필요 — 형식이 다르면 시작 시 "종목마스터 형식이 예상과 다릅니다" 오류

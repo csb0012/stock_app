@@ -236,8 +236,9 @@ PC 가 켜져 있는 동안 계속 재시도한다. Docker Desktop 만 있으면
    cd C:\claude\stock_app
    ```
    ```powershell
-   docker run -d --name oci-retry -v "$env:USERPROFILE\.oci:/root/.oci" -v "${PWD}\deploy:/w" -w /w -e KEY=/root/.oci/stock_ssh_key -e OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True python:3.12-slim bash -c "pip install -q oci-cli && bash oci-launch-retry.sh"
+   docker run -d --name oci-retry -v "$env:USERPROFILE\.oci:/root/.oci" -v "${PWD}\deploy:/w" -w /w -e KEY=/root/.oci/stock_ssh_key -e OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True python:3.12-slim bash -c "pip install -q --root-user-action=ignore --disable-pip-version-check oci-cli && tr -d '\r' < oci-launch-retry.sh > /tmp/retry.sh && bash /tmp/retry.sh"
    ```
+   - `tr -d '\r'` = Windows 로 받은 스크립트의 줄 끝(`\r\n`)을 리눅스 형식으로 정리. 빼면 `set: pipefail: invalid option name`·`syntax error near unexpected token 'else'` 오류.
    - AMD 1GB(E2.1.Micro)로 만들려면 `-e KEY=...` 앞에 `-e MICRO=1` 을 넣는다.
    - 진행 보기: `docker logs -f oci-retry` (Ctrl+C 는 보기만 멈춤, 재시도는 계속). 처음 1~2분은 OCI CLI 설치.
    - "Oracle 로그인(API 키) 실패" 가 나오면 2번의 config 내용(특히 `key_file`·`region`)과 `.pem` 파일 위치를 확인하고, `docker rm oci-retry` 후 다시 실행.
