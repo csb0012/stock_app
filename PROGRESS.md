@@ -43,6 +43,7 @@ pull 후 패키지 목록이 바뀌었을 때:
 | 비밀번호 초기화 (메일 못 쓸 때) | `backend` 에서 `python create_admin.py --reset-password <아이디> <새 비밀번호>` | `docker compose exec backend python create_admin.py --reset-password <아이디> <새 비밀번호>` |
 | 2단계 인증 해제 (휴대폰 분실) | `backend` 에서 `python create_admin.py --reset-totp <아이디>` | `docker compose exec backend python create_admin.py --reset-totp <아이디>` |
 | 초대 코드 (화면에 못 들어갈 때) | `backend` 에서 `python create_admin.py --invite 메모` | `docker compose exec backend python create_admin.py --invite 메모` |
+| 누가 관리자인지 보기 | `backend` 에서 `python create_admin.py --list` | `docker compose exec backend python create_admin.py --list` |
 | 관리자 바꾸기 | `backend` 에서 `python create_admin.py --admin <아이디>` | `docker compose exec backend python create_admin.py --admin <아이디>` |
 
 수동 실행·처음 설치·문제 해결(winget 없음, WSL, 실행 정책 등)은 각 `docs/setup-*.md` 참고.
@@ -807,6 +808,13 @@ pull 후 패키지 목록이 바뀌었을 때:
   긴급 정지 → 코드로 다시 시작, 감사 로그 순서 확인, API 401·5xx 0건·콘솔 오류 0. 이 과정에서 찾아 고친 것: 주문 직후 화면이 20초 캐시된 잔고로 '대조 다름'을 띄움 → 주문·체결 때 캐시 비움,
   제안 뒤 급락한 종목도 매수됨 → −6% 넘게 떨어지면 막음. 전체 테스트를 돌리다 `test_api_live_account_flow` 가 한 번 실패(계좌 상태를 체결 저장 직전에 읽어 보유 종목 없음) → 테스트가 보유 종목까지 기다리게.
   **실서버 미검증**: 실제 KIS 모의투자 서버(TR 번호·잔고/체결 필드·주문 응답), 제안 알림 메일 실제 발송
+
+### 2026-11-25 — 관리자가 누군지 확인하기 (사용자: "관리자 페이지가 안 보인다")
+- 관리자 = `users.is_admin` 이 켜진 계정 (처음 만든 계정, 관리자가 없으면 서버 시작 때 가장 먼저 만든 계정). 관리자 메뉴는 그 계정으로 로그인해야 보임
+- 서버 명령 `create_admin.py --list` (계정·관리자·2단계·차단·가입일 목록 + 누가 관리자인지), `--admin` 성공 문구에 '새로고침' 안내
+- 마이페이지 프로필 카드에 '관리자' / '일반 회원' 표시, 일반 회원이면 관리자 확인·변경 명령 안내. setup-local·docker·cloud 에 '관리자 메뉴가 안 보이면' (다시 켜기·새로고침·--list·--admin)
+- 검증: pytest 204개 (+1 `test_create_admin_list_and_switch`: 계정 없음 → 1, 첫 계정 관리자 표시, --admin 으로 바꾸면 목록·DB 가 바뀜), 화면 테스트 63개 (관리자/일반 회원 표시·안내 문구 확인 추가),
+  `bash scripts/check.sh` 통과, 실제 `create_admin.py` 를 파일 DB 로 실행해 --list → 계정 2개·관리자 first → --admin me → --list 에서 me 로 바뀜 확인
 
 ## 알려진 이슈 / 확인 필요
 - [ ] **KIS 모의투자 주문 실서버 미검증** — 가짜 KIS 서버로만 확인. 처음 연결 후 화면 잔고가 KIS 앱과 같은지, 1주 주문 하나로 승인 → 접수 → 체결 확인 (TR: 주문 VTTC0012U/0011U(예전 0802U/0801U)·잔고 VTTC8434R·체결 VTTC0081R(8001R)·취소 VTTC0013U). 보유 20종목 이상이면 잔고 대조를 멈춤 · 국내만 (미국 모의 주문은 아직)

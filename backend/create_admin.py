@@ -2,6 +2,7 @@
 
   python create_admin.py <아이디> <비밀번호>          계정 만들기 (관리자가 아직 없으면 이 계정이 관리자)
   python create_admin.py --invite [메모]              초대 코드 만들기 (3일 유효, 1회용) — 화면에 들어갈 수 없을 때
+  python create_admin.py --list                      계정 목록 (누가 관리자인지 · 2단계 등록 · 차단 여부)
   python create_admin.py --admin <아이디>             관리자를 이 계정으로 바꾸기 (다른 관리자는 해제)
   python create_admin.py --reset-totp <아이디>        2단계 인증 끄기 (휴대폰 분실 등 — 관심종목·투자종목은 그대로)
   python create_admin.py --reset-password <아이디> <새 비밀번호>
@@ -50,6 +51,23 @@ async def make_invite(memo: str | None):
         return 0
 
 
+async def list_users():
+    await init_db()   # 관리자가 없으면 여기서 가장 먼저 만든 계정이 관리자가 됨 (서버 시작 때와 같음)
+    async with AsyncSessionLocal() as db:
+        users = (await db.execute(select(User).order_by(User.id))).scalars().all()
+    if not users:
+        print("계정이 없습니다 — python create_admin.py <아이디> <비밀번호>")
+        return 1
+    print(f"{'번호':>4}  {'아이디':<20} {'관리자':<6} {'2단계':<6} {'상태':<6} 가입일")
+    for u in users:
+        print(f"{u.id:>4}  {u.username:<20} {'관리자' if u.is_admin else '-':<6} {'등록' if u.totp_enabled else '미등록':<6} "
+              f"{'차단' if u.is_active is False else '정상':<6} {u.created_at.strftime('%Y-%m-%d') if u.created_at else '-'}")
+    admins = [u.username for u in users if u.is_admin]
+    print(f"\n관리자: {', '.join(admins)}  — 관리자 페이지는 이 계정으로 로그인해야 보입니다."
+          f" 바꾸려면 python create_admin.py --admin <아이디>")
+    return 0
+
+
 async def set_admin(username: str):
     await init_db()
     async with AsyncSessionLocal() as db:
@@ -61,7 +79,7 @@ async def set_admin(username: str):
             u.is_admin = False
         user.is_admin = True
         await db.commit()
-        print(f"{username} 을(를) 관리자로 정했습니다 (다른 계정의 관리자 권한은 해제)")
+        print(f"{username} 을(를) 관리자로 정했습니다 (다른 계정의 관리자 권한은 해제) — 화면을 새로고침하면 왼쪽 메뉴 아래 '관리자 전용'이 보입니다")
         return 0
 
 
@@ -104,6 +122,8 @@ if __name__ == "__main__":
         sys.exit(asyncio.run(reset_password(sys.argv[2], sys.argv[3])))
     if len(sys.argv) in (2, 3) and sys.argv[1] == "--invite":
         sys.exit(asyncio.run(make_invite(sys.argv[2] if len(sys.argv) == 3 else None)))
+    if len(sys.argv) == 2 and sys.argv[1] == "--list":
+        sys.exit(asyncio.run(list_users()))
     if len(sys.argv) == 3 and sys.argv[1] == "--admin":
         sys.exit(asyncio.run(set_admin(sys.argv[2])))
     if len(sys.argv) == 3 and sys.argv[1] == "--reset-totp":

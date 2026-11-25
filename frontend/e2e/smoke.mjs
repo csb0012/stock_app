@@ -473,6 +473,7 @@ async function run() {
   await test("관리자 페이지: 사이드바 관리자 메뉴 · 요약 · 초대 코드(2단계) · 회원 상세 · 차단 · 보안 기록", { api: adminApi() }, async (page, api) => {
     page.on("dialog", (d) => d.accept());
     await page.goto(`${BASE}/mypage`);
+    expect((await page.getByTestId("my-role").innerText()) === "관리자" && await page.getByTestId("role-help").count() === 0, "관리자 표시 이상");
     await page.getByTestId("admin-link").click();                 // 마이페이지엔 관리 기능 대신 링크만
     await page.waitForURL(/\/admin$/);
     const nav = await page.getByTestId("admin-nav").innerText();
@@ -515,6 +516,9 @@ async function run() {
     await page.getByTestId("totp-section").waitFor();
     expect(await page.getByTestId("admin-link").count() === 0, "일반 회원에게 관리자 링크가 보임");
     expect(await page.getByTestId("admin-nav").count() === 0, "일반 회원에게 관리자 메뉴가 보임");
+    expect((await page.getByTestId("my-role").innerText()) === "일반 회원", "권한 표시 없음");
+    const help = await page.getByTestId("role-help").innerText();
+    expect(help.includes("create_admin.py --list") && help.includes("--admin tester"), `관리자 안내: ${help}`);
     for (const path of ["/admin", "/kis"]) {
       await page.goto(`${BASE}${path}`);
       await page.waitForURL((u) => u.pathname === "/");

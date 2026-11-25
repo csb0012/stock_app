@@ -137,6 +137,8 @@ bash deploy/setup-server.sh
   나온 코드(`XXXX-XXXX-XXXX`, 지금만 보임)를 믿는 사람에게 직접 전달 → 그 사람이 회원가입 화면에 코드 + 이메일/휴대폰 인증으로 가입 → 2단계 등록.
   코드는 1회용·기본 3일. 같은 페이지의 회원 목록에서 **차단**하면 그 사람은 바로 모든 기기에서 끊긴다 ('상세'로 그 회원의 로그인 기록, 아래 '보안 기록'으로 전체 회원의 로그인 실패·잠금을 본다).
   화면에 못 들어갈 때는 서버에서 `... exec backend python create_admin.py --invite 메모`.
+- **관리자 메뉴가 안 보이면**: `bash deploy/update.sh` 로 업데이트했는지 → 브라우저 새로고침(Ctrl+F5) → 서버에서 `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --list` 로
+  '관리자' 계정 확인 → 내 계정이 아니면 `... exec backend python create_admin.py --admin <내 아이디>`. 마이페이지 맨 위 카드에 '관리자' / '일반 회원' 표시.
 - **마이페이지에서 이메일 또는 휴대폰을 인증해 둔다** — 비밀번호를 잊었을 때 로그인 화면 '비밀번호 찾기'로 코드를 받아 바꿀 수 있다 (아래 7-1 메일 · 7-2 문자 설정 필요).
   메일을 못 쓰면 서버에서 `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-password <아이디> <새 비밀번호>`.
 

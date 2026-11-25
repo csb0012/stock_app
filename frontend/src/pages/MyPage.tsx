@@ -96,9 +96,17 @@ function ProfileCard({ me }: { me: any }) {
         </div>
         <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
           {chip(!!me.email, "이메일")}{chip(!!me.phone, "휴대폰")}{chip(!!me.totp_enabled, "2단계 인증")}
+          <span data-testid="my-role" className={`badge ${me.is_admin ? "badge-accent" : "badge-neutral"}`} style={{ fontSize: 11 }}>
+            {me.is_admin ? "관리자" : "일반 회원"}</span>
         </div>
         <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>가입일 {fmtDate(me.created_at, false)}</span>
       </div>
+      {!me.is_admin && (
+        <p data-testid="role-help" style={{ width: "100%", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          관리자 메뉴(회원·초대 코드·KIS 모의투자 주문)는 <strong>관리자 계정</strong>에만 보입니다. 이 앱 주인인데 안 보이면 서버(또는 PC)의 <code>backend</code> 폴더에서{" "}
+          <code>python create_admin.py --list</code> 로 누가 관리자인지 확인하고, <code>python create_admin.py --admin {me.username}</code> 로 바꾼 뒤 새로고침하세요.
+        </p>
+      )}
       {!verified && (
         <p data-testid="verify-warning" style={{ width: "100%", fontSize: 12, color: "var(--yellow)", display: "flex", gap: 6, alignItems: "center" }}>
           <AlertTriangle size={14} /> 본인인증(이메일 또는 휴대폰)을 하지 않았습니다 — 비밀번호를 잊으면 '비밀번호 찾기'를 쓸 수 없습니다

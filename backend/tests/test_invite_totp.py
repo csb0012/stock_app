@@ -292,3 +292,34 @@ def test_invite_code_helpers():
     assert all(not set(c.replace("-", "")) & set("01OIL") for c in codes)
     assert invites.normalize(" abcd-efgh-jkmn ") == "ABCDEFGHJKMN"
     assert invites._hash("abcd-efgh-jkmn") == invites._hash("ABCDEFGHJKMN")
+
+
+def test_create_admin_list_and_switch(monkeypatch, capsys):
+    """서버 명령: --list 로 누가 관리자인지 보고, --admin 으로 바꿈 (관리자 페이지가 안 보일 때 확인용)"""
+    import create_admin
+    from app.core.database import Base
+    from app.models import user as user_model  # noqa: F401
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def init():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(create_admin, "init_db", init)
+    monkeypatch.setattr(create_admin, "AsyncSessionLocal", Session)
+    assert run(create_admin.list_users()) == 1
+    run(create_admin.create_admin("first", PW))
+    run(create_admin.create_admin("owner", PW))
+    capsys.readouterr()
+    assert run(create_admin.list_users()) == 0
+    out = capsys.readouterr().out
+    assert "관리자: first" in out and "owner" in out
+    run(create_admin.set_admin("owner"))
+    run(create_admin.list_users())
+    assert "관리자: owner" in capsys.readouterr().out
+
+    async def flags():
+        async with Session() as s:
+            return {u.username: bool(u.is_admin) for u in (await s.execute(select(user_model.User))).scalars()}
+    assert run(flags()) == {"first": False, "owner": True}
+    run(engine.dispose())

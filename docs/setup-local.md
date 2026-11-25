@@ -60,6 +60,10 @@ python create_admin.py <아이디> <비밀번호>
 처음 로그인하면 **2단계 인증(Google Authenticator) 등록 화면**이 먼저 나온다 (필수) — 휴대폰 앱으로 QR 을 스캔해 6자리를 입력해야 다른 화면을 쓸 수 있다. 처음 만든 계정이 관리자다 — 왼쪽 메뉴 맨 아래 **관리자 전용**(관리자 페이지: 회원·초대 코드·보안 기록 / KIS 모의투자 주문)이 관리자에게만 보인다.
 KIS 모의투자 주문(AI 제안 → 내가 승인)을 쓰려면 `backend/.env` 에 모의투자 키 세 줄을 넣는다 — [kis-mock-trading.md](kis-mock-trading.md).
 
+**관리자 메뉴(관리자 전용)가 안 보이면:** ① 최신 코드를 받고(`git pull`) `start.bat` 를 **껐다가 다시** 켰는지 (백엔드를 다시 켜야 새 기능이 생김) → 브라우저 새로고침(Ctrl+F5)
+② 가상환경 켜고 `backend` 폴더에서 `python create_admin.py --list` → '관리자' 표시가 있는 계정으로 로그인했는지 ③ 다른 계정이 관리자면 `python create_admin.py --admin <내 아이디>` → 새로고침.
+마이페이지 맨 위 카드에 '관리자' / '일반 회원' 이 표시된다.
+
 ### 5. 프론트엔드 패키지 (새 PowerShell 창)
 ```powershell
 cd C:\claude\stock_app\frontend
