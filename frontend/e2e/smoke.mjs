@@ -590,9 +590,14 @@ async function run() {
 
   await test("KIS 모의투자: 운영 중 긴급 정지 버튼 → 확인 후 바로 정지 요청 · 설정 저장(2단계)", { api: adminApi({
     "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
+    "POST /api/kis/notify-test": { message: "시험 알림을 보냈습니다 — 휴대폰 ntfy 앱을 확인하세요" },
     "PUT /api/kis/config": { limits: KF.KIS_STATUS.limits, params: KF.KIS_STATUS.params, message: "설정을 저장했습니다" } }) }, async (page, api) => {
     page.on("dialog", (d) => d.accept());
     await page.goto(`${BASE}/kis`);
+    const nt = page.getByTestId("kis-notify");
+    expect((await nt.innerText()).includes("ntfy ntfy.sh) 켜짐"), `알림 표시: ${await nt.innerText()}`);
+    await nt.getByRole("button", { name: "알림 시험 보내기" }).click();
+    await page.getByText(/시험 알림을 보냈습니다/).waitFor();
     await page.getByTestId("kis-halt").click();
     await page.getByText("주문을 멈췄습니다").waitFor();
     expect(api.calls.some((c) => c.key === "POST /api/kis/halt"), "정지 요청 없음");
@@ -607,11 +612,13 @@ async function run() {
 
   await test("KIS 모의투자: 계좌번호 거부(INVALID_CHECK_ACNO) → 원인 안내 · 시세용 계좌를 빌려 쓰는 중 경고", { api: adminApi({
     "GET /api/kis/status": { ...KF.KIS_STATUS, account: "****5678-01", account_source: "KIS_ACCOUNT_NO", balance: null, mismatches: [], day_loss: null,
+      notify: { configured: false, server: "ntfy.sh", token: false, last: { ok: null, error: null, at: null } },
       balance_error: "모의투자 서버가 계좌번호 ****5678-01 를 거부했습니다 (INVALID_CHECK_ACNO). 지금은 backend/.env 의 KIS_MOCK_* 가 비어 있어 KIS_ACCOUNT_NO(시세용 계좌번호)를 쓰는 중입니다" } }) }, async (page) => {
     await page.goto(`${BASE}/kis`);
     const acc = await page.getByTestId("kis-account").innerText();
     expect(acc.includes("****5678-01") && acc.includes("KIS_ACCOUNT_NO"), `계좌 표시: ${acc}`);
     expect((await page.getByTestId("kis-status").innerText()).includes("시세용 계좌번호를 쓰는 중"), "시세용 계좌 경고 없음");
+    expect((await page.getByTestId("kis-notify").innerText()).includes("NTFY_TOPIC"), "알림 꺼짐 안내 없음");
     const err = await page.getByTestId("kis-balance-error").innerText();
     expect(err.includes("INVALID_CHECK_ACNO") && err.includes("KIS_MOCK_"), `잔고 오류 안내: ${err}`);
   });

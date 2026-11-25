@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     pwned_check: bool = True         # 가입·비밀번호 변경 때 유출 비밀번호 목록(HIBP, 앞 5글자만 전송) 확인. false 면 끔
     login_alert: bool = True         # 처음 보는 IP 로 로그인하면 인증된 이메일로 알림 (메일 설정이 있을 때)
 
+    # 휴대폰 푸시 알림 (ntfy — ntfy.sh 또는 직접 띄운 ntfy 서버). 주제(topic)를 비우면 끔.
+    # 주제 이름은 아는 사람 누구나 구독할 수 있으니 길고 무작위로 (다른 앱 알림과 따로)
+    ntfy_server: str = "https://ntfy.sh"   # 날씨 알림(weather-app)과 같은 이름·방식 (JSON 으로 보냄)
+    ntfy_topic: str = ""
+    ntfy_token: str = ""             # 선택 — 주제를 예약·비공개로 했으면 액세스 토큰 (tk_...)
+    ntfy_click_url: str = ""         # 선택 — 알림을 누르면 열 주소 (예: https://mystock.duckdns.org/kis)
+
     # 휴대폰 문자 발송 (이메일 대신 휴대폰으로 본인인증) — 솔라피(solapi.com) API 키
     sms_api_key: str = ""
     sms_api_secret: str = ""

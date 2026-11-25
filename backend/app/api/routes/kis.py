@@ -112,6 +112,19 @@ async def cancel(order_id: int, admin: User = Depends(get_admin)):
         _err(e)
 
 
+@router.post("/notify-test")
+async def notify_test(admin: User = Depends(get_admin)):
+    """휴대폰 푸시(ntfy) 시험 — 설정이 맞으면 바로 휴대폰에 알림"""
+    from app.services import notify
+    if not notify.configured():
+        raise HTTPException(status_code=503, detail="NTFY_TOPIC 이 없습니다 — backend/.env 에 넣고 서버를 다시 켜세요 (docs/kis-mock-trading.md)")
+    try:
+        await notify.send("StockApp 알림 시험", "이 알림이 보이면 KIS 모의투자 주문 제안·체결·정지 알림을 휴대폰으로 받을 수 있습니다.", 3, ["bell"])
+    except notify.NotifyError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return {"message": "시험 알림을 보냈습니다 — 휴대폰 ntfy 앱을 확인하세요"}
+
+
 @router.post("/halt")
 async def halt(req: HaltRequest, admin: User = Depends(get_admin)):
     """긴급 정지 — 2단계 코드 없이 바로"""

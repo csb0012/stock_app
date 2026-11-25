@@ -596,3 +596,36 @@ def test_account_error_cleared_when_balance_ok(kenv, monkeypatch):
     run(kis_trade.tick())                       # 다음 1분 → 바로 제안
     assert len(run(kis_trade.list_orders())) == 1
     assert any(l["action"] == "account_ok" for l in run(kis_trade.list_log()))
+
+
+def test_order_results_pushed_to_phone(kenv, monkeypatch):
+    """승인한 주문의 결과(체결·막힘)가 휴대폰 푸시로 감"""
+    pushed = []
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append((title, priority)))
+    approve(kenv, buy(kenv))
+    run(kis_trade.refresh_fills())
+    kenv.b.prices["000660"] = 230_000
+    approve(kenv, buy(kenv, sym="000660", ref=200_000))
+    assert pushed == [("체결 — 매수 종목005930", 3), ("주문 안 보냄 — 종목000660", 4)]
+
+
+def test_notify_test_endpoint(kenv, monkeypatch):
+    from app.services import notify
+    monkeypatch.setattr(settings, "ntfy_topic", "")
+    assert kenv.c.post("/api/kis/notify-test").status_code == 503
+    assert kenv.c.get("/api/kis/status").json()["notify"]["configured"] is False
+    monkeypatch.setattr(settings, "ntfy_topic", "stockapp-test-topic-123")
+    sent = []
+
+    async def fake(title, msg, priority=3, tags=None, click=None):
+        sent.append(title)
+    monkeypatch.setattr(notify, "send", fake)
+    r = kenv.c.post("/api/kis/notify-test")
+    assert r.status_code == 200 and sent == ["StockApp 알림 시험"]
+    st = kenv.c.get("/api/kis/status").json()
+    assert st["notify"]["configured"] is True and "stockapp-test-topic-123" not in json.dumps(st)
+
+    async def boom(*a, **k):
+        raise notify.NotifyError("ntfy 거부 (HTTP 403) forbidden")
+    monkeypatch.setattr(notify, "send", boom)
+    assert kenv.c.post("/api/kis/notify-test").status_code == 502

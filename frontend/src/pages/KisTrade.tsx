@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot } from "lucide-react";
+import { Bell, Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot } from "lucide-react";
 import { kisApi, errMsg } from "../api/client";
 import { th, td, when, codeInput } from "../components/common/AdminPanels";
 import { toast } from "../components/common/Toast";
@@ -85,6 +85,7 @@ export default function KisTrade() {
   const cancel = useMutation({ mutationFn: (id: number) => kisApi.cancel(id).then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
   const propose = useMutation({ mutationFn: () => kisApi.propose().then((r) => r.data),
     onSuccess: (d) => { toast(`제안 ${d.proposed}건 (기준일 ${d.base_date})`, "info"); refresh(); } });
+  const ntest = useMutation({ mutationFn: () => kisApi.notifyTest().then((r) => r.data), onSuccess: (d) => toast(d.message, "info") });
   const halt = useMutation({ mutationFn: () => kisApi.halt("").then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
   const resume = useMutation({ mutationFn: () => kisApi.resume(resumeCode).then((r) => r.data), meta: { inlineError: true },
     onSuccess: (d) => { toast(d.message, "info"); setResumeCode(""); refresh(); } });
@@ -151,6 +152,18 @@ export default function KisTrade() {
               <span style={{ display: "block", color: "var(--text-muted)" }}>30분마다 다시 시도합니다. 설정을 고쳤으면 아래 '지금 제안 만들기'로 바로 다시 해 보세요.</span>
             </p>
           )}
+          <div data-testid="kis-notify" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+            <Bell size={13} style={{ color: s.notify?.configured ? "var(--green)" : "var(--text-muted)" }} />
+            {s.notify?.configured ? (
+              <>
+                <span>휴대폰 알림(ntfy {s.notify.server}) 켜짐 — 제안·체결·막힘·정지를 보냅니다</span>
+                {s.notify.last?.ok === false && <span style={{ color: "var(--red)" }}>마지막 알림 실패: {s.notify.last.error}</span>}
+                <button className="btn btn-ghost" style={{ fontSize: 11.5, padding: "2px 8px" }} disabled={ntest.isPending} onClick={() => ntest.mutate()}>알림 시험 보내기</button>
+              </>
+            ) : (
+              <span style={{ color: "var(--text-muted)" }}>휴대폰 알림 꺼짐 — backend/.env 에 <code>NTFY_TOPIC</code> 을 넣으면 ntfy 앱으로 제안·체결 알림을 받습니다</span>
+            )}
+          </div>
           {s.loop?.last_error && <p style={{ color: "var(--text-muted)", fontSize: 11.5 }}>자동 운영 오류: {s.loop.last_error}</p>}
         </section>
       )}

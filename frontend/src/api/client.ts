@@ -94,6 +94,7 @@ export const kisApi = {
   reject: (ids: number[]) => api.post("/kis/orders/reject", { ids }),
   cancel: (id: number) => api.post(`/kis/orders/${id}/cancel`),
   halt: (reason: string) => api.post("/kis/halt", { reason }),
+  notifyTest: () => api.post("/kis/notify-test"),
   resume: (totp_code: string) => api.post("/kis/resume", { totp_code }),
   baseline: (totp_code: string) => api.post("/kis/baseline", { totp_code }),
   config: (limits: Record<string, number>, params: Record<string, any> | null, totp_code: string) =>

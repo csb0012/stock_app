@@ -53,6 +53,7 @@ npm run dev
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `KIS_MOCK_APP_KEY`·`KIS_MOCK_APP_SECRET`·`KIS_MOCK_ACCOUNT_NO` | 선택 | KIS 모의투자 주문(AI 제안 → 관리자 승인) 전용 키·계좌 — 비우면 주문 기능 꺼짐. `KIS_IS_REAL=false` 면 비워 둬도 시세용 키·계좌를 씀. 실거래 서버로는 주문 안 함 (`docs/kis-mock-trading.md`) |
+| `NTFY_TOPIC`·`NTFY_SERVER`·`NTFY_TOKEN`·`NTFY_CLICK_URL` | 선택 | 휴대폰 푸시(ntfy 앱, 날씨 알림과 같은 JSON 방식·다른 주제) — KIS 모의투자 제안·체결·막힘·정지. 주제를 비우면 끔. 주제 이름은 비밀처럼(로그·화면·오류에 안 냄) |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
 | `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
@@ -112,6 +113,8 @@ services/
   invites.py     — 초대 코드: 헷갈리는 글자 뺀 12글자(XXXX-XXXX-XXXX, 약 60비트), HMAC(SECRET_KEY) 해시만 저장, 1회용·기본 3일(1~14)·관리자당 사용 가능 10개,
                    consume = 조건부 UPDATE (같은 코드 동시 가입은 한 명만)
   pwned.py       — 유출 비밀번호 확인 (Have I Been Pwned range API, SHA-1 앞 5글자만 전송 + Add-Padding, 앞자리 캐시). 확인 못 하면 None(막지 않음)
+  notify.py      — 휴대폰 푸시 (ntfy): send(제목·내용·우선순위·태그, JSON 으로 POST — 한글 제목), send_bg(뒤에서, 실패해도 계속), status()(주제 이름 없이 켜짐·서버·마지막 결과).
+                   kis_trade 가 씀: 제안·정지 = 푸시+메일(_alert_admins), 체결·막힘·거부·결과 모름 = 푸시만(_push). 테스트는 conftest 가 NTFY_TOPIC 을 비움
   mailer.py      — SMTP 메일 발송 (465 = SSL, 그 외 STARTTLS). 설정 없으면 MailError(보낸 척 안 함), 오류 문구에 비밀번호 안 넣음
   sms.py         — 휴대폰 문자 발송 (솔라피 /messages/v4/send-many/detail, HMAC-SHA256 서명). 설정 없으면 SmsError, 하루 SMS_DAILY_LIMIT 건
   email_codes.py — 인증 코드 발급·확인 (이메일·문자 공통): 같은 받는 곳·용도 60초 재발송 제한, IP 당 1시간 10통, 용도 signup/reset/change/phone,
@@ -200,7 +203,7 @@ api/routes/
                    만들기·차단은 2단계 코드를 다시 받음(_step_up)
   kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
                    POST /kis/propose · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
-                   POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params}. 승인·다시 시작·기준·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403)
+                   POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·기준·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403)
   stocks.py      — /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),

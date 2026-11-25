@@ -24,6 +24,7 @@ def _no_external_security_calls(monkeypatch):
     from app.core.config import settings
     monkeypatch.setattr(settings, "pwned_check", False)
     monkeypatch.setattr(settings, "login_alert", False)
+    monkeypatch.setattr(settings, "ntfy_topic", "")      # PC 의 .env 에 NTFY_TOPIC 이 있어도 테스트가 진짜 휴대폰 알림을 보내지 않게
     monkeypatch.setattr(settings, "invite_only", False)
     monkeypatch.setattr(settings, "require_totp", False)
     from app.api.routes import auth   # 로그인 실패·잠금 기록은 모듈에 남으므로 테스트마다 비움

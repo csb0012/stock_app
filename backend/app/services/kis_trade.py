@@ -211,7 +211,8 @@ async def _halt(db, row: KisTrade, reason: str, user_id: int | None):
     n = (await db.execute(update(KisOrder).where(KisOrder.status.in_(("proposed", "approved")))
                           .values(status="cancelled", message=f"정지로 취소 — {reason}"))).rowcount
     await audit(db, "halt", f"{reason} (승인 대기·대기 주문 {n}건 취소)", user_id, ok=False)
-    _alert_admins("[StockApp] KIS 모의투자 주문 정지", f"주문을 멈췄습니다: {reason}\n다시 시작하려면 앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 다시 시작하세요.")
+    _alert_admins("[StockApp] KIS 모의투자 주문 정지", f"주문을 멈췄습니다: {reason}\n다시 시작하려면 앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 다시 시작하세요.",
+                  priority=5, tags=["rotating_light"])
 
 
 async def check_loss(db, row: KisTrade, s: dict, bal: dict, limits: dict) -> float:
@@ -299,8 +300,10 @@ async def propose(user_id: int | None = None) -> dict:
             await db.commit()
     if made:
         _alert_admins(f"[StockApp] AI 주문 제안 {len(made)}건 — 승인 대기",
-                      "\n".join(f"- {'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol})" for k in made)
-                      + "\n\n앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 승인하세요. 승인하지 않으면 주문하지 않습니다.")
+                      "\n".join(f"- {'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol})"
+                                + (f" {k.budget:,.0f}원어치" if k.side == "buy" and k.budget else f" {k.qty}주" if k.qty else "") for k in made)
+                      + "\n\n앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 승인하세요. 승인하지 않으면 주문하지 않습니다. (다음 거래일 15:30 까지)",
+                      priority=4, tags=["chart_with_upwards_trend"])
     return {"proposed": len(made), "base_date": last, "notes": notes}
 
 
@@ -338,7 +341,8 @@ async def check_exits() -> int:
             await db.commit()
     if made:
         _alert_admins(f"[StockApp] 손절·목표 매도 제안 {len(made)}건",
-                      "\n".join(f"- {k.name}: {k.reason}" for k in made) + "\n\n승인해야 매도합니다.")
+                      "\n".join(f"- {k.name}: {k.reason}" for k in made) + "\n\n승인해야 매도합니다.",
+                      priority=5 if any("손절" in (k.reason or "") for k in made) else 4, tags=["warning"])
     return len(made)
 
 
@@ -412,10 +416,17 @@ async def _price_now(symbol: str, bal: dict) -> float:
     return float((await kis_client.get_kr_stock_price(symbol))["price"])
 
 
+def _push(title: str, body: str, priority: int = 3, tags: list | None = None):
+    """주문 결과는 휴대폰 푸시만 (메일까지 보내면 너무 많음). NTFY_TOPIC 없으면 아무것도 안 함"""
+    from app.services import notify
+    notify.send_bg(title, body, priority, tags)
+
+
 async def _block(db, k: KisOrder, why: str) -> dict:
     k.status, k.message = "blocked", why
     await audit(db, "blocked", f"{k.name}: {why}", order_id=k.id, ok=False)
     await db.commit()
+    _push(f"주문 안 보냄 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) 안전장치로 막음: {why}", 4, ["no_entry"])
     return {"status": "blocked", "message": why}
 
 
@@ -495,6 +506,7 @@ async def submit(order_id: int) -> dict:
                 k.status, k.message = "failed", f"KIS 주문 거부: {str(e)[:250]}"
                 await audit(db, "submit_fail", k.message, order_id=k.id, ok=False)
                 await db.commit()
+                _push(f"KIS 주문 거부 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) {qty}주: {k.message}", 4, ["x"])
                 return {"status": "failed", "message": k.message}
             _balance_cache["data"] = None   # 잔고가 바뀜 — 화면이 예전 잔고로 '대조 다름'을 띄우지 않게
             k.status, k.odno, k.orgno = "submitted", r["odno"], r["orgno"]
@@ -557,6 +569,7 @@ async def refresh_fills(final: bool = False) -> int:
                     if final:
                         k.status, k.message = "unknown", "KIS 체결 내역에 이 주문번호가 없음 — KIS 앱에서 확인"
                         await audit(db, "fill_unknown", k.message, order_id=k.id, ok=False)
+                        _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"])
                         changed += 1
                     continue
                 delta = int(e["filled"]) - int(k.filled_qty or 0)
@@ -567,6 +580,8 @@ async def refresh_fills(final: bool = False) -> int:
                 if k.filled_qty >= (k.qty or 0) and k.filled_qty > 0:
                     k.status = "filled"
                     await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {k.filled_price or 0:,.0f}원", order_id=k.id)
+                    _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {k.filled_price or 0:,.0f}원 (모의투자)",
+                          3, ["white_check_mark"])
                 elif e["cancelled"] or (final and e["remain"] >= 0):
                     k.status = "partial" if k.filled_qty else "unfilled" if not e["cancelled"] else "cancelled"
                     await audit(db, k.status, f"{k.name} {k.filled_qty}/{k.qty}주", order_id=k.id, ok=bool(k.filled_qty))
@@ -659,6 +674,7 @@ async def overview(with_balance: bool = True) -> dict:
         out = {
             "configured": configured(), "server": "모의투자 (가상 자금)", "account": kis_order.masked_account(),
             "account_source": kis_order.account_source(),
+            "notify": __import__("app.services.notify", fromlist=["status"]).status(),
             "halted": bool(row.halted), "halted_reason": row.halted_reason, "halted_at": row.halted_at,
             "limits": limits, "limit_meta": {k: {"default": d, "min": lo, "max": hi, "label": LIMIT_LABELS[k]}
                                              for k, (d, lo, hi) in LIMITS.items()},
@@ -720,10 +736,11 @@ async def _owner_id(db) -> int:
     return uid or 0
 
 
-def _alert_admins(subject: str, body: str):
-    """관리자(인증된 이메일)에게 메일 — 뒤에서 보냄, 실패해도 주문 흐름은 그대로"""
-    from app.services import mailer
+def _alert_admins(subject: str, body: str, priority: int = 3, tags: list | None = None):
+    """관리자 알림 — 휴대폰 푸시(ntfy, NTFY_TOPIC 있을 때) + 인증된 이메일(메일 설정 있을 때). 뒤에서 보냄, 실패해도 주문 흐름은 그대로"""
+    from app.services import mailer, notify
     from app.models.user import User
+    notify.send_bg(subject.replace("[StockApp] ", ""), body, priority, tags)
     if not mailer.configured():
         return
 
