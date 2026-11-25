@@ -835,7 +835,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   화면 테스트 64개 (제안 실패 표시 문구 확인 추가), `bash scripts/check.sh` 통과.
   **실서버 확인**: 실제 `app.main` + 가짜 KIS 모의 서버로 17:49 에 틀린 계좌로 켜기 → 자동 제안 실패(propose_fail) → 맞는 계좌로 다시 켜고 상태 API 호출 → 오류 지움(account_ok) → 1분 안에 자동 제안 2건
 
-### 2026-11-25 — KIS 모의투자 알림을 휴대폰으로 (ntfy)
+### 2026-11-25 — KIS 모의투자 알림을 휴대폰으로 (ntfy) (commit `3831485`)
 - 사용자 요청: 제안을 날씨 알림처럼 ntfy 로. 판단: **같은 ntfy 앱 · 같은 방식(JSON POST, weather-app 의 send_ntfy 와 같음) · 주제는 stock_app 전용으로 따로**
   (날씨와 섞이지 않고 주식 알림만 끄거나 소리를 바꿀 수 있음, 주제 이름 하나가 새도 다른 쪽은 안전). 설정 이름도 날씨 앱과 같게 `NTFY_TOPIC`·`NTFY_SERVER` (+ 선택 `NTFY_TOKEN`·`NTFY_CLICK_URL`)
 - `services/notify.py`: send(한글 제목 그대로 — JSON), send_bg(실패해도 주문 흐름 계속), status()(주제 이름은 화면·오류·로그에 안 냄), 주제 형식 확인, 401/403 이면 토큰 안내
