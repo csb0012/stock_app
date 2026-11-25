@@ -20,7 +20,8 @@ if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 function makeApi(overrides = {}) {
   const calls = [];
   const table = {
-    "GET /api/auth/me": { id: 1, username: "tester", totp_enabled: false },
+    "GET /api/auth/me": { id: 1, username: "tester", totp_enabled: false, email: null, email_verified: false, created_at: "2026-11-01T00:00:00", password_changed_at: null },
+    "GET /api/auth/options": { signup_open: true, mail_configured: true },
     "GET /api/market/status": F.MARKET_STATUS,
     "GET /api/market/overview/bigtech": F.BIGTECH,
     "GET /api/market/overview/etfs": { items: [], updated_at: F.BIGTECH.updated_at },
@@ -349,14 +350,16 @@ async function run() {
     expect(!(await page.locator("body").innerText()).includes("[object Object]"), "[object Object] 가 보임");
   });
 
-  await test("보안: 2단계 인증 켜기(QR → 코드 확인) · 끄기", { api: makeApi({
-    "GET /api/auth/me": (() => { let n = 0; return () => ({ id: 1, username: "tester", totp_enabled: n++ > 0 }); })(),
+  let totpOn = false;
+  await test("마이페이지: 2단계 인증 켜기(QR → 코드 확인) · 끄기", { api: makeApi({
+    "GET /api/auth/me": () => ({ id: 1, username: "tester", totp_enabled: totpOn, email: null }),
     "POST /api/auth/setup-totp": { qr_code: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", secret: "ABCDEF234567", uri: "otpauth://x" },
-    "POST /api/auth/enable-totp": { message: "ok" },
-    "POST /api/auth/disable-totp": { message: "ok" } }) }, async (page, api) => {
+    "POST /api/auth/enable-totp": () => { totpOn = true; return { message: "ok" }; },
+    "POST /api/auth/disable-totp": () => { totpOn = false; return { message: "ok" }; } }) }, async (page, api) => {
     await page.goto(`${BASE}/`);
-    await page.getByRole("button", { name: "보안 설정" }).click();
-    const dlg = page.getByTestId("security-dialog");
+    await page.getByTestId("mypage-link").click();
+    await page.waitForURL(/\/mypage$/);
+    const dlg = page.getByTestId("totp-section");
     await dlg.getByRole("button", { name: /켜기/ }).click();
     await dlg.getByAltText("2단계 인증 QR 코드").waitFor();
     expect((await dlg.innerText()).includes("ABCDEF234567"), "직접 입력용 비밀값이 안 보임");
@@ -371,8 +374,127 @@ async function run() {
     await dlg.getByLabel("인증 코드").fill("654321");
     await dlg.getByRole("button", { name: "끄기" }).click();
     await page.getByText("2단계 인증을 껐습니다").waitFor();
-    await page.keyboard.press("Escape");
-    expect(await page.getByTestId("security-dialog").count() === 0, "Esc 로 보안 창이 안 닫힘");
+  });
+
+  await test("로그인 화면: 회원가입·비밀번호 찾기 링크 + 안내 문구", { token: false }, async (page) => {
+    await page.goto(`${BASE}/login`);
+    await page.getByRole("link", { name: "회원가입" }).click();
+    await page.waitForURL(/\/signup$/);
+    await page.goto(`${BASE}/login`);
+    await page.getByRole("link", { name: "비밀번호 찾기" }).click();
+    await page.waitForURL(/\/forgot$/);
+  });
+
+  await test("회원가입: 코드 받기 → 규칙 안내 → 가입하면 로그인", { token: false, api: makeApi({
+    "POST /api/auth/signup/send-code": { message: "me@naver.com 로 인증 코드를 보냈습니다 (10분 유효)" },
+    "POST /api/auth/register": { message: "가입 완료", username: "newbie", access_token: "new-token", token_type: "bearer" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/signup`);
+    const send = page.getByRole("button", { name: "인증 코드 받기" });
+    await page.getByPlaceholder("you@naver.com").fill("bad-email");
+    expect(await send.isDisabled(), "이메일 형식이 틀렸는데 코드 받기가 눌림");
+    await page.getByPlaceholder("you@naver.com").fill("Me@Naver.com");
+    await send.click();
+    await page.getByText(/인증 코드를 보냈습니다/).waitFor();
+    expect(await page.getByRole("button", { name: /초$/ }).isDisabled(), "다시 받기 대기(60초)가 없음");
+    const submit = page.getByRole("button", { name: "가입하기" });
+    await page.getByPlaceholder("000000").fill("12a3456");
+    await page.locator("input[autocomplete=username]").fill("newbie");
+    await page.locator("input[autocomplete=new-password]").first().fill("short");
+    await page.getByText("✗ 8자 이상").waitFor();
+    await page.locator("input[autocomplete=new-password]").first().fill("newbie1234");
+    await page.getByText("✗ 아이디를 넣을 수 없음").waitFor();
+    await page.locator("input[autocomplete=new-password]").first().fill("zxcv5678");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("zxcv5679");
+    await page.getByText("✗ 위와 다름").waitFor();
+    expect(await submit.isDisabled(), "비밀번호 확인이 다른데 가입 버튼이 눌림");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("zxcv5678");
+    await submit.click();
+    await page.waitForURL(`${BASE}/`);
+    const body = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/register").body);
+    expect(body.email === "me@naver.com" && body.code === "123456" && body.username === "newbie", `가입 요청 이상: ${JSON.stringify(body)}`);
+    expect((await page.evaluate(() => localStorage.getItem("token"))) === "new-token", "가입 후 토큰이 저장 안 됨");
+    await shot(page, "after-signup");
+  });
+
+  await test("회원가입: 메일 설정이 없으면 안내만", { token: false, api: makeApi({ "GET /api/auth/options": { signup_open: true, mail_configured: false } }) }, async (page) => {
+    await page.goto(`${BASE}/signup`);
+    await page.getByTestId("signup-closed").waitFor();
+    expect((await page.getByTestId("signup-closed").innerText()).includes("SMTP"), "안내 문구 이상");
+  });
+
+  await test("회원가입: 서버 오류 문구 그대로 (이미 가입된 이메일)", { token: false, api: makeApi({
+    "POST /api/auth/signup/send-code": { __status: 400, detail: "이미 가입된 이메일입니다 — 로그인하거나 비밀번호 찾기를 쓰세요" } }) }, async (page) => {
+    await page.goto(`${BASE}/signup`);
+    await page.getByPlaceholder("you@naver.com").fill("me@naver.com");
+    await page.getByRole("button", { name: "인증 코드 받기" }).click();
+    await page.getByText("이미 가입된 이메일입니다").waitFor();
+  });
+
+  await test("비밀번호 찾기: 코드 → 새 비밀번호 → 로그인 화면에 안내", { token: false, api: makeApi({
+    "POST /api/auth/password/forgot": { message: "me@naver.com 가 가입된 이메일이면 인증 코드를 보냈습니다" },
+    "POST /api/auth/password/reset": { message: "비밀번호를 바꿨습니다 — 새 비밀번호로 로그인하세요", username: "tester" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/forgot`);
+    await page.getByPlaceholder("you@naver.com").fill("me@naver.com");
+    await page.getByRole("button", { name: "코드 받기" }).click();
+    await page.getByText(/가입된 이메일이면/).waitFor();
+    await page.getByPlaceholder("000000").fill("654321");
+    await page.locator("input[autocomplete=new-password]").first().fill("newpass123");
+    await page.locator("input[autocomplete=new-password]").nth(1).fill("newpass123");
+    await page.getByRole("button", { name: "비밀번호 바꾸기" }).click();
+    await page.waitForURL(/\/login$/);
+    expect((await page.getByTestId("login-notice").innerText()).includes("아이디: tester"), "로그인 화면 안내 없음");
+    const b = JSON.parse(api.calls.find((c) => c.key === "POST /api/auth/password/reset").body);
+    expect(b.code === "654321" && b.new_password === "newpass123", "초기화 요청 이상");
+  });
+
+  await test("마이페이지: 내 정보 · 이메일 인증 · 비밀번호 변경(새 토큰) · 상단 이름", { api: makeApi({
+    "POST /api/auth/email/send-code": { message: "me@naver.com 로 인증 코드를 보냈습니다" },
+    "POST /api/auth/email/verify": { message: "이메일을 인증했습니다", email: "me@naver.com" },
+    "POST /api/auth/password/change": { message: "비밀번호를 바꿨습니다 (다른 기기는 다시 로그인해야 함)", access_token: "rotated", token_type: "bearer" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/`);
+    const link = page.getByTestId("mypage-link");
+    await link.getByText("tester").waitFor();
+    await link.click();
+    await page.getByTestId("my-info").getByText("tester").waitFor();
+    expect((await page.getByTestId("my-info").innerText()).includes("없음"), "이메일 없음 안내가 없음");
+    const em = page.getByTestId("email-section");
+    await em.getByLabel("이메일").fill("me@naver.com");
+    await em.getByRole("button", { name: "인증 코드 받기" }).click();
+    await em.getByLabel("이메일 인증 코드").fill("111222");
+    await em.getByRole("button", { name: "확인" }).click();
+    await page.getByText("이메일을 인증했습니다").first().waitFor();
+    const pw = page.getByTestId("password-section");
+    const btn = pw.getByRole("button", { name: "비밀번호 바꾸기" });
+    await pw.locator("input[autocomplete=current-password]").fill("oldpass123");
+    await pw.locator("input[autocomplete=new-password]").first().fill("oldpass123");
+    await pw.locator("input[autocomplete=new-password]").nth(1).fill("oldpass123");
+    expect(await btn.isDisabled(), "지금 비밀번호와 같은데 바꾸기가 눌림");
+    await pw.locator("input[autocomplete=new-password]").first().fill("newpass456");
+    await pw.locator("input[autocomplete=new-password]").nth(1).fill("newpass456");
+    await btn.click();
+    await page.getByText(/비밀번호를 바꿨습니다/).first().waitFor();
+    expect((await page.evaluate(() => localStorage.getItem("token"))) === "rotated", "새 토큰으로 안 바뀜 (다음 요청부터 401 로 로그아웃됨)");
+    await shot(page, "mypage");
+  });
+
+  await test("마이페이지: 탈퇴는 아이디 입력 + 비밀번호 + 확인 후 → 로그인 화면", { api: makeApi({
+    "POST /api/auth/delete-account": { message: "탈퇴했습니다" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/mypage`);
+    const sec = page.getByTestId("delete-section");
+    const btn = sec.getByRole("button", { name: "탈퇴하기" });
+    await sec.getByLabel("탈퇴 비밀번호").fill("pw1234567");
+    await sec.getByLabel("탈퇴 확인 아이디").fill("someone");
+    expect(await btn.isDisabled(), "아이디를 틀리게 썼는데 탈퇴 버튼이 눌림");
+    await sec.getByLabel("탈퇴 확인 아이디").fill("tester");
+    page.once("dialog", (d) => d.dismiss());
+    await btn.click();
+    await page.waitForTimeout(200);
+    expect(!api.calls.some((c) => c.key === "POST /api/auth/delete-account"), "확인 창에서 취소했는데 탈퇴 요청이 감");
+    page.once("dialog", (d) => d.accept());
+    await btn.click();
+    await page.waitForURL(/\/login$/);
+    await page.getByTestId("login-notice").waitFor();
+    expect(!(await page.evaluate(() => localStorage.getItem("token"))), "탈퇴 후 토큰이 남아 있음");
   });
 
   await test("대시보드: 빅테크 브로드컴 주간거래 표시", {}, async (page) => {
@@ -422,7 +544,7 @@ async function run() {
   });
 
   // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)
-  const pages = ["/", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
+  const pages = ["/", "/mypage", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/predictions", "/calendar"];
   for (const theme of ["light", "dark"]) {
     await test(`모든 화면 열기 — 오류로 멈추지 않음 (${theme})`, { theme }, async (page) => {
       for (const p of pages) {
@@ -434,7 +556,7 @@ async function run() {
     });
   }
   await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
-    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant"]) {
+    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant", "/mypage"]) {
       await page.goto(`${BASE}${p}`);
       await page.waitForLoadState("networkidle");
       await noHScroll(page);

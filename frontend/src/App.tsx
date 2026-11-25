@@ -4,6 +4,9 @@ import { queryClient as qc } from "./api/queryClient";
 import { useAuthStore } from "./store/auth";
 import Layout from "./components/common/Layout";
 import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import ForgotPassword from "./pages/ForgotPassword";
+import MyPage from "./pages/MyPage";
 import Dashboard from "./pages/Dashboard";
 import Recommendations from "./pages/Recommendations";
 import Screener from "./pages/Screener";
@@ -26,6 +29,9 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
+          <Route path="/forgot" element={<ForgotPassword />} />
+          <Route path="/mypage" element={<ProtectedRoute><MyPage /></ProtectedRoute>} />
           <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/recommendations" element={<ProtectedRoute><Recommendations /></ProtectedRoute>} />
           <Route path="/screener" element={<ProtectedRoute><Screener /></ProtectedRoute>} />

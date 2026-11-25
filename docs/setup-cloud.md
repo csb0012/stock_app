@@ -126,10 +126,29 @@ bash deploy/setup-server.sh
 
 ## 7. 접속
 - 브라우저에서 `https://mystock.duckdns.org` 를 연다 → 접속 아이디/비밀번호 → 앱 로그인 (PC 에서 쓰던 계정)
-- **2단계 인증(Google Authenticator)을 켜는 것을 권장한다** (인터넷 공개): 앱 오른쪽 위 **보안** → 켜기 → QR 을 휴대폰 앱으로 스캔 → 6자리 입력 → 확인.
-  끌 때도 같은 창에서 지금 코드를 입력한다. 휴대폰을 잃어버렸으면 서버에서
+- **2단계 인증(Google Authenticator)을 켜는 것을 권장한다** (인터넷 공개): 앱 오른쪽 위 **내 아이디(마이페이지)** → 2단계 인증 → 켜기 →
+  QR 을 휴대폰 앱으로 스캔 → 6자리 입력 → 확인. 끌 때도 같은 곳에서 지금 코드를 입력한다. 휴대폰을 잃어버렸으면 서버에서
   `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-totp <아이디>` 로 끈다 (관심종목·투자종목은 그대로).
 - 앱 로그인을 5번 틀리면 그 IP 는 15분 동안 차단된다.
+- **마이페이지에서 이메일을 인증해 둔다** — 비밀번호를 잊었을 때 로그인 화면 '비밀번호 찾기'로 메일 코드를 받아 바꿀 수 있다 (아래 7-1 메일 설정 필요).
+  메일을 못 쓰면 서버에서 `sudo docker compose -f docker-compose.cloud.yml exec backend python create_admin.py --reset-password <아이디> <새 비밀번호>`.
+
+## 7-1. 메일 설정 (회원가입·비밀번호 찾기 인증 코드) — 네이버 메일
+- 회원가입은 **이메일 인증만 하면 누구나** 가능하다 (가입한 사람도 내 KIS 키로 시세를 조회하므로 호출 한도를 같이 씀).
+  다만 클라우드는 앞에 Caddy 접속 비밀번호가 있어 그 비밀번호를 아는 사람만 가입 화면까지 올 수 있다. 가입을 막으려면 `.env` 에 `SIGNUP_OPEN=false`.
+- 네이버 메일 → 환경설정 → **POP3/IMAP 설정 → IMAP/SMTP 설정 → SMTP 사용: 사용함** → 저장
+- 네이버 2단계 인증을 쓰고 있으면: 네이버 내정보 → 보안설정 → 2단계 인증 → **애플리케이션 비밀번호** 생성 → 아래 `SMTP_PASSWORD` 에 넣는다
+- 서버 `backend/.env` 에 추가 (PC 에서 쓰는 `.env` 에도 같게):
+  ```
+  SMTP_HOST=smtp.naver.com
+  SMTP_PORT=465
+  SMTP_USER=내아이디@naver.com
+  SMTP_PASSWORD=네이버 비밀번호 또는 애플리케이션 비밀번호
+  ```
+  → `sudo docker compose -f docker-compose.cloud.yml restart backend`
+- 확인: 로그인 화면 → 회원가입 → 내 다른 메일로 '인증 코드 받기'. 오류 문구가 뜨면 그대로 확인 (예: "메일 계정 로그인 실패" = SMTP 사용 설정·비밀번호 문제).
+  Oracle Cloud 는 25번 포트를 막지만 465/587 은 쓸 수 있다. 465 가 안 되면 `SMTP_PORT=587`.
+- Gmail 을 쓰려면 `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, 구글 계정 **앱 비밀번호**.
 - **회사 PC·집 PC 에서는 이제 `start.bat` / `start-docker.bat` 를 켜지 않는다.** 이유는 두 가지다.
   - 같은 KIS 키로 두 곳이 동시에 호출하면 초당 호출 제한(EGW00201)에 더 자주 걸린다.
   - 데이터(관심종목·예측 기록)가 두 곳으로 갈라진다.

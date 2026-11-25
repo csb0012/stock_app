@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { authApi, errMsg } from "../api/client";
 import { useAuthStore } from "../store/auth";
 import { TrendingUp, Lock, User, Shield } from "lucide-react";
@@ -12,6 +12,7 @@ export default function Login() {
   const [needsTotp, setNeedsTotp] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const notice = (useLocation().state as any)?.notice as string | undefined;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,7 +55,7 @@ export default function Login() {
               <>
                 <div>
                   <label style={{ color: "var(--text-secondary)", fontSize: 12, marginBottom: 6, display: "block" }}>
-                    아이디
+                    아이디 또는 이메일
                   </label>
                   <div style={{ position: "relative" }}>
                     <User size={15} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)" }} />
@@ -62,7 +63,7 @@ export default function Login() {
                       type="text"
                       value={form.username}
                       onChange={(e) => setForm({ ...form, username: e.target.value })}
-                      placeholder="username"
+                      placeholder="아이디 또는 인증한 이메일"
                       required
                       style={{
                         width: "100%", padding: "9px 10px 9px 32px",
@@ -118,6 +119,9 @@ export default function Login() {
               </div>
             )}
 
+            {notice && !error && (
+              <p data-testid="login-notice" style={{ color: "var(--green)", fontSize: 13, textAlign: "center" }}>{notice}</p>
+            )}
             {error && (
               <p style={{ color: "var(--red)", fontSize: 13, textAlign: "center" }}>{error}</p>
             )}
@@ -135,6 +139,12 @@ export default function Login() {
               </button>
             )}
           </form>
+          {!needsTotp && (
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14, fontSize: 12.5 }}>
+              <Link to="/signup" style={{ color: "var(--accent)" }}>회원가입</Link>
+              <Link to="/forgot" style={{ color: "var(--text-secondary)" }}>비밀번호 찾기</Link>
+            </div>
+          )}
         </div>
       </div>
     </div>

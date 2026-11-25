@@ -46,7 +46,7 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 ### 4. 회사 PC에서 파일 복사 → `C:\claude\stock_app\backend\` 에 넣기
 | 파일 | 내용 |
 |---|---|
-| `.env` | KIS 키·계좌번호 (**필수**, 절대 커밋 금지) |
+| `.env` | KIS 키·계좌번호 (**필수**, 절대 커밋 금지). 회원가입·비밀번호 찾기 메일을 쓰려면 `SMTP_*` (`docs/setup-cloud.md` 7-1) |
 | `stock_app.db` | 로그인 계정, 관심종목, 투자종목, 예측 검증 기록 |
 | `.secret_key` | 회사 PC에 있을 때만 (없으면 자동 생성 + 한 번 재로그인) |
 

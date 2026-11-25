@@ -1,35 +1,15 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Shield, X } from "lucide-react";
+import { Shield } from "lucide-react";
 import { authApi, errMsg } from "../../api/client";
 import { toast } from "./Toast";
 
-/** 상단 바 '보안' 버튼 + 2단계 인증(Google Authenticator) 켜기/끄기 창.
- *  클라우드 서버는 인터넷에 열려 있어 켜 두는 것을 권장 (docs/setup-cloud.md 7장) — 예전엔 켜는 화면이 없었음 */
-export default function SecuritySettings() {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button className="btn btn-ghost" onClick={() => setOpen(true)} style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}
-        aria-label="보안 설정" title="2단계 인증(Google Authenticator)">
-        <Shield size={13} /> 보안
-      </button>
-      {open && <Dialog onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
-function Dialog({ onClose }: { onClose: () => void }) {
+/** 마이페이지 '2단계 인증' 구역 — 켜기(QR → 6자리 확인)·끄기(현재 코드) */
+export default function TotpSection() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ["me"], queryFn: () => authApi.me().then((r) => r.data), staleTime: 0 });
   const [setup, setSetup] = useState<any>(null);
   const [code, setCode] = useState("");
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   const start = useMutation({ mutationFn: () => authApi.setupTotp().then((r) => r.data), meta: { inlineError: true },
     onSuccess: (d) => { setSetup(d); setCode(""); } });
@@ -49,12 +29,7 @@ function Dialog({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "var(--overlay)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 150, padding: 16 }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="card" role="dialog" aria-label="보안 설정" data-testid="security-dialog"
-        style={{ width: 420, maxWidth: "100%", position: "relative", display: "flex", flexDirection: "column", gap: 12 }}>
-        <button onClick={onClose} aria-label="닫기" style={{ position: "absolute", top: 12, right: 12, background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)" }}><X size={18} /></button>
-        <h3 style={{ fontWeight: 700 }}>2단계 인증 (Google Authenticator)</h3>
+    <div data-testid="totp-section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {me.isLoading ? <p style={{ fontSize: 13, color: "var(--text-muted)" }}>불러오는 중...</p> : on ? (
           <>
             <p style={{ fontSize: 13, color: "var(--green)", fontWeight: 600 }}>켜져 있음 — 로그인할 때 비밀번호 + 앱의 6자리 코드가 필요합니다</p>
@@ -90,7 +65,6 @@ function Dialog({ onClose }: { onClose: () => void }) {
           </>
         )}
         {err && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(err)}</p>}
-      </div>
     </div>
   );
 }

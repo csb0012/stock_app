@@ -14,7 +14,8 @@ api.interceptors.response.use(
   (err) => {
     // 로그인 만료 → 로그인 화면으로. 단, 로그인 요청 자체의 401(비밀번호 틀림)은 화면에 오류를 보여줘야 하므로
     // 새로고침하지 않음 (예전엔 새로고침돼서 '틀렸다'는 문구가 사라졌음)
-    const isLoginCall = String(err.config?.url || "").includes("/auth/login");
+    const url = String(err.config?.url || "");
+    const isLoginCall = /\/auth\/(login|register|signup|password\/(forgot|reset))/.test(url);
     if (err.response?.status === 401 && !isLoginCall) {
       localStorage.removeItem("token");
       clearPersisted();
@@ -43,6 +44,17 @@ export const authApi = {
   setupTotp: () => api.post("/auth/setup-totp"),
   enableTotp: (totp_code: string) => api.post("/auth/enable-totp", { totp_code }),
   disableTotp: (totp_code: string) => api.post("/auth/disable-totp", { totp_code }),
+  options: () => api.get("/auth/options"),
+  signupSendCode: (email: string) => api.post("/auth/signup/send-code", { email }),
+  register: (username: string, password: string, email: string, code: string) =>
+    api.post("/auth/register", { username, password, email, code }),
+  forgot: (email: string) => api.post("/auth/password/forgot", { email }),
+  reset: (email: string, code: string, new_password: string) => api.post("/auth/password/reset", { email, code, new_password }),
+  changePassword: (current_password: string, new_password: string) =>
+    api.post("/auth/password/change", { current_password, new_password }),
+  emailSendCode: (email: string) => api.post("/auth/email/send-code", { email }),
+  emailVerify: (email: string, code: string) => api.post("/auth/email/verify", { email, code }),
+  deleteAccount: (password: string, totp_code?: string) => api.post("/auth/delete-account", { password, totp_code }),
 };
 
 // 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)

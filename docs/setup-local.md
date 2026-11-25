@@ -38,6 +38,7 @@ git clone -b claude/dazzling-darwin-et76zj https://github.com/csb0012/stock_app.
 ### 3. 비밀·데이터 파일 → `C:\claude\stock_app\backend\`
 - 다른 PC에서 옮길 때: `.env`, `stock_app.db`, `.secret_key`(있으면) 복사
 - 처음 만드는 경우: `backend\.env.example` 을 `backend\.env` 로 복사해서 KIS 키·계좌번호 입력
+- (선택) 회원가입·비밀번호 찾기 메일을 쓰려면 `.env` 의 `SMTP_*` 입력 — 네이버 설정 방법은 `docs/setup-cloud.md` 7-1
 
 ### 4. 백엔드 패키지 — 가상환경은 루트 `C:\claude\stock_app\.venv`
 ```powershell

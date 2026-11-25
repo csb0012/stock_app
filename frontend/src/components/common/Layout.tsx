@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import { useAuthStore } from "../../store/auth";
 import { useQuery } from "@tanstack/react-query";
-import { marketApi } from "../../api/client";
+import { marketApi, authApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
 import Toaster from "./Toast";
-import SecuritySettings from "./SecuritySettings";
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "대시보드" },
@@ -27,6 +26,7 @@ const navItems = [
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const { username, logout } = useAuthStore();
+  const { data: me } = useQuery({ queryKey: ["me"], queryFn: () => authApi.me().then((r) => r.data), staleTime: 5 * 60 * 1000 });
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -86,12 +86,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             style={{ padding: "5px 10px", marginRight: "auto" }}>
             {navOpen ? <X size={16} /> : <Menu size={16} />}
           </button>
-          {username && (
-            <span className="top-user" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-secondary)", marginRight: 6 }}>
-              <UserCircle size={15} /> {username}
-            </span>
-          )}
-          <SecuritySettings />
+          {/* 사용자 이름 = 마이페이지 (비밀번호 변경·이메일 인증·2단계 인증·탈퇴) */}
+          <NavLink to="/mypage" className="btn btn-ghost" data-testid="mypage-link" title="마이페이지"
+            style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999, textDecoration: "none" }}>
+            <UserCircle size={14} /> <span className="top-user">{me?.username || username || "내 계정"}</span>
+            {me && !me.email && <span title="이메일 미인증 — 비밀번호 찾기를 쓰려면 인증하세요" style={{ width: 7, height: 7, borderRadius: 4, background: "var(--yellow)" }} />}
+          </NavLink>
           <ThemeToggle pill />
           <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: "5px 12px", fontSize: 12, borderRadius: 999 }}>
             <LogOut size={13} />

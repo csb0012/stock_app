@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     dart_api_key: str = ""
     fred_api_key: str = ""
 
+    # 메일 발송 (회원가입·비밀번호 찾기 인증 코드) — 네이버: smtp.naver.com, 465 (SSL) 또는 587 (STARTTLS)
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""              # 보내는 계정 (예: myid@naver.com)
+    smtp_password: str = ""          # 네이버 2단계 인증을 쓰면 '애플리케이션 비밀번호'
+    smtp_from: str = ""              # 비우면 smtp_user
+    signup_open: bool = True         # false 면 회원가입 막음 (기존 계정의 비밀번호 찾기·마이페이지는 그대로)
+
     # App
     app_env: str = "development"
     frontend_url: str = "http://localhost:5173"

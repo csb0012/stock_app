@@ -57,6 +57,8 @@ npm run dev
 | `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
 | `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
 | `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) + 경제 캘린더 일정·발표값 |
+| `SMTP_HOST`·`SMTP_PORT`·`SMTP_USER`·`SMTP_PASSWORD`·`SMTP_FROM` | 선택 | 회원가입·비밀번호 찾기·이메일 변경 인증 코드 메일 (네이버 smtp.naver.com 465). 없으면 그 기능만 503 |
+| `SIGNUP_OPEN` | — | 기본 true (이메일 인증하면 누구나 가입). false 면 가입 막음 |
 
 ## 아키텍처
 
@@ -70,7 +72,8 @@ core/
   database.py    — async SQLAlchemy + aiosqlite (backend/stock_app.db); init_db()가 새 컬럼 자동 ALTER
   security.py    — bcrypt 해싱, JWT 생성/검증, pyotp TOTP
 models/
-  user.py        — User (username, hashed_password, totp_secret, totp_enabled)
+  user.py        — User (username, hashed_password, totp_secret, totp_enabled, email·email_verified, password_changed_at)
+                   EmailCode (email_codes: 이메일 6자리 코드 — HMAC 해시만 저장, 10분, 5번 틀리면 무효)
   watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
@@ -82,6 +85,8 @@ services/
   us_daytime.py  — 미국 주간거래 가격 (한국 10:00~18:00, 서머타임 ~17:00 · 블루오션): 주간거래 시간에만 KIS 조회, 종목별 30초 캐시,
                    attach(rows) 가 미국 행에 daytime{price,base,change_rate,time} 을 붙인 **새 목록** 반환 (캐시된 원본 안 바꿈).
                    표시 전용 — 예측 확률·매입가 계산엔 안 씀. 관심종목·투자종목·AI 추천·종목 조회·대시보드 빅테크/ETF 응답에 붙음
+  mailer.py      — SMTP 메일 발송 (465 = SSL, 그 외 STARTTLS). 설정 없으면 MailError(보낸 척 안 함), 오류 문구에 비밀번호 안 넣음
+  email_codes.py — 인증 코드 발급·확인: 같은 메일·용도 60초 재발송 제한, IP 당 1시간 10통, 용도 signup/reset/change
   stock_master.py— KIS 공식 종목마스터(국내 mst + 미국 cod) 다운로드·캐시·검색·코드 검증
   quote.py       — 공통 시세+분석: 국내는 KIS, 미국은 yfinance 배치(60초 캐시), 실시간 현재가 패치(국내는 멀티종목 시세 30개씩),
                    analyze_candles 결과 메모(입력 같으면 재계산 안 함), 미국 PER/PBR(KIS 해외 상세), USD/KRW 환율
@@ -138,7 +143,11 @@ services/
                    (5년 이익 확률 40 + 지수 대비 30 + 낙폭 20 + 데이터 길이 10). 비교 지수 = 코스피 / 나스닥 종합(나스닥 상장) / S&P 500. SWR 6시간
   analysis.py    — calc_technical_indicators(), predict_next_day()(factors·summary 포함), classify_investment_style()
 api/routes/
-  auth.py        — /register, /login (TOTP 지원, 오류 문구 한국어), /setup-totp (이미 켜져 있으면 거부), /enable-totp, /disable-totp (현재 코드 필요), /me
+  auth.py        — /options (가입 가능·메일 설정 여부), /signup/send-code → /register (이메일 코드 + 아이디 3~20자 + 비밀번호 8자↑ 영문·숫자·아이디 미포함, 바로 토큰),
+                   /login (아이디 또는 인증된 이메일, TOTP, 오류 문구 한국어), /password/forgot (가입 여부 노출 안 하는 같은 답) → /password/reset,
+                   /password/change (새 토큰 반환), /email/send-code → /email/verify, /delete-account (비밀번호 + 2단계 코드, 관심·투자종목 같이 삭제),
+                   /setup-totp (이미 켜져 있으면 거부), /enable-totp, /disable-totp (현재 코드 필요), /me (email·email_verified·created_at 포함).
+                   토큰의 pwv(비밀번호 버전) ≠ 사용자 password_changed_at 이면 401 → 비밀번호를 바꾸면 다른 기기 로그인 끊김
   stocks.py      — /search, /test/kis (인증 불필요), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),
@@ -178,12 +187,13 @@ api/client.ts      — axios 인스턴스; Bearer 토큰 자동 주입; 401 → 
 api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
-                     Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio, Predictions(예측 검증), Calendar, Login
+                     Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio, Predictions(예측 검증), Calendar,
+                     Login(회원가입·비밀번호 찾기 링크), Signup(이메일 코드), ForgotPassword(코드로 재설정), MyPage(내 정보·이메일 인증·비밀번호 변경·2단계 인증·탈퇴)
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
-components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(사용자·화이트/다크 모드·로그아웃) + ChatWidget.
+components/common/ — Layout (사이드바 메뉴·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(내 아이디 = 마이페이지 링크, 이메일 미인증이면 노란 점·화이트/다크 모드·로그아웃) + ChatWidget.
                      폭 860px 이하(휴대폰)는 사이드바가 ☰ 버튼으로 여닫는 메뉴 — index.css .app-shell/.sidebar/.page-body),
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
-                     Toast (버튼 요청 실패 알림), SecuritySettings (상단 바 '보안' — 2단계 인증 켜기/끄기),
+                     Toast (버튼 요청 실패 알림), TotpSection (마이페이지 2단계 인증 켜기/끄기), AuthForm (로그인류 화면 틀·비밀번호 규칙 안내),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
@@ -198,7 +208,7 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 
 데이터 조회는 전부 React Query (`api/queryClient.ts`). **버튼 요청(useMutation)이 실패하면 전역 MutationCache 가 화면 아래 알림(Toast)으로 사유를 띄운다** —
 화면 안에 이미 오류 칸이 있는 요청만 `meta: { inlineError: true }` 로 뺀다. `errMsg()` 는 입력 검증 오류(422 목록)도 문장으로 바꾼다.
-401 은 로그인 만료로 보고 /login 으로 보내되, 로그인 요청 자체의 401(비밀번호 틀림)은 새로고침하지 않고 화면에 문구를 보여준다.
+401 은 로그인 만료로 보고 /login 으로 보내되, 로그인·회원가입·비밀번호 찾기 요청의 401(비밀번호 틀림 등)은 새로고침하지 않고 화면에 문구를 보여준다.
  성공한 조회는 `api/persist.ts` 가 localStorage(`rq-cache-v1`, 24시간)에 저장 → 다시 열면 이전 데이터를 바로 보여주고 뒤에서 갱신 (로그아웃·로그인 시 삭제).
 불러온 저장본은 모두 '오래됨'으로 표시해서 staleTime 과 상관없이 화면을 열면 한 번은 새로 받는다 (업데이트 전 형식의 저장본이 남아 보이던 문제 방지). 이전 값을 보여줄 땐 `FetchStatus` 로 기준 시각·갱신 중 표시. 인증 상태는 Zustand (`store/auth.ts`).
 
@@ -215,10 +225,12 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 ### 인증
 
 - JWT를 `localStorage`에 저장, `Authorization: Bearer …` 헤더로 전송.
-- `/api/auth/register` 는 계정이 하나도 없을 때만 동작 (개인용 — 이후 계정은 `create_admin.py`).
+- 회원가입은 **이메일 6자리 인증만 하면 누구나** (사용자 결정, 2026-11-25). `SIGNUP_OPEN=false` 로 막을 수 있음. 서버에서 직접: `create_admin.py <아이디> <비밀번호>`,
+  `--reset-password <아이디> <새 비밀번호>` (이메일 없는 예전 계정), `--reset-totp <아이디>` (휴대폰 분실).
+- 비밀번호를 바꾸면(변경·찾기·서버 명령) 그 전에 발급된 토큰은 무효 (토큰 pwv ≠ password_changed_at).
 - 백엔드는 `127.0.0.1` 에만 바인딩 (같은 네트워크의 다른 PC 접속 차단). 클라우드에선 backend 는 공개하지 않고 Caddy(80/443)만 공개 — Caddy basic auth(`deploy/auth.caddy`, git 제외) 한 겹 + 앱 로그인.
 - 로그인 5회 실패(10분 안) → 그 IP 15분 차단 (`auth.py`, X-Forwarded-For 기준).
-- TOTP(Google Authenticator)는 선택사항; `/api/auth/setup-totp` → `/api/auth/enable-totp` 순서로 활성화.
+- TOTP(Google Authenticator)는 선택사항; 마이페이지에서 켜고 끔 (`/api/auth/setup-totp` → `/api/auth/enable-totp`, `/disable-totp`).
 
 ## Git
 
