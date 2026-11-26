@@ -97,6 +97,7 @@ export default function Gurus() {
   const d = list.data;
   const st = d?.status;
   const v = d?.validation;
+  const va = d?.validation_ai;
 
   return (
     <div>
@@ -218,6 +219,20 @@ export default function Gurus() {
                 {v.validated ? "✓ 시장보다 나았음 → 대가가 산 미국 종목은 AI 장기 점수에 최대 +10점"
                   : "시장보다 낫다고 볼 근거가 부족 (표본 30↑·평균 초과수익 > 0·이긴 비율 50%↑ 필요) → AI 추천엔 근거로만 표시하고 점수엔 안 넣음"}
               </p>
+              {va && (
+                <div data-testid="guru-validation-ai" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.7 }}>
+                  <strong>대가가 산 종목 + AI 가 다시 분석해서 좋은 것만 샀다면</strong> ({va.rule}, 공시일 종가까지의 데이터로 판단)
+                  <div>
+                    {va.signals}건 중 AI 통과 <strong>{va.passed}</strong>건 → S&P500 대비 평균{" "}
+                    <strong style={{ color: (va.avg_excess ?? 0) > 0 ? "var(--green)" : "var(--red)" }}>{va.avg_excess == null ? "-" : `${va.avg_excess > 0 ? "+" : ""}${va.avg_excess}%p`}</strong>,
+                    {" "}이긴 비율 <strong>{va.beat_rate ?? "-"}%</strong> ({va.n}건 기간 끝남)
+                  </div>
+                  <div style={{ fontWeight: 600, color: va.validated ? "var(--green)" : "var(--yellow)" }}>
+                    {va.validated ? "✓ 통과 → 대가가 이번 분기에 산 종목을 AI 모의투자·KIS 미국 주문의 판단 후보에 넣습니다 (사고팔지는 AI 점수가 정함)"
+                      : "미달 → 대가 종목을 판단 후보에 넣지 않습니다 (대가를 무조건 따라가지 않음). 이미 후보인 종목엔 '대가 매수' 이유만 붙음"}
+                  </div>
+                </div>
+              )}
               <div style={{ overflowX: "auto" }}>
                 <table className="data-table">
                   <thead><tr><th>대가</th><th className="num">건수</th><th className="num">평균 수익률</th><th className="num">S&P500 대비</th><th className="num">이긴 비율</th></tr></thead>

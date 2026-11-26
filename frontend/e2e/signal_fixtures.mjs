@@ -18,6 +18,8 @@ export const GURUS = {
     by_guru: { buffett: { n: 12, avg_excess: 2.1, beat_rate: 58.3, avg_return: 6.2 }, tepper: { n: 30, avg_excess: -3.2, beat_rate: 40.0, avg_return: 1.0 } },
     recent: [],
   },
+  validation_ai: { horizon_days: 63, benchmark: "SPY", n: 120, avg_excess: 1.4, beat_rate: 56.1, avg_return: 5.2, pending: 20, missing: 0,
+    validated: true, multi: { n: 10 }, by_guru: {}, recent: [], rule: "AI 점수 60↑ · 상승확률 55%↑ · 50일선 위", signals: 775, passed: 120 },
   status: { running: false, step: null, done: 33, total: 33, message: "대가 33명 · 종목 735개", errors: [], cusip_pending: 0, stale: false },
   updated_at: "2026-11-26T07:15:47", errors: [], unmapped: 40,
 };
@@ -86,6 +88,8 @@ export const FLOWS = {
   daily: ["2026-11-19", "2026-11-20", "2026-11-21", "2026-11-24", "2026-11-25"].map((date, i) => ({
     date, frgn: (i - 2) * 2e11, orgn: 1e11, prsn: (2 - i) * 2e11 - 1e11, n: 1800, double: 100 + i })),
   status: { running: false, done: 0, total: 0, symbols: 1820, rows: 54000 },
+  retail: { retail: { n: 2400, beat_rate: 44.2, avg_excess: -1.3 }, double: { n: 900, beat_rate: 53.0, avg_excess: 0.9 }, dates: 8, active: false,
+    horizon: 20, penalty: 5, rule: "개인 5일 순매수 > 0 이고 외국인+기관 5일 순매수 < 0", need: "표본 300↑·날짜 10↑·평균 초과 -0.5%p 이하·이긴 비율 47.0% 이하" },
 };
 
 export const SIGNALS_KR = {

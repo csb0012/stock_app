@@ -96,21 +96,26 @@ export const adminApi = {
 };
 
 // KIS 모의투자 주문 (관리자만) — AI 제안 → 2단계 코드로 승인 → 모의투자 서버 주문
-export const kisApi = {
-  status: () => api.get("/kis/status"),
-  orders: (kind: "open" | "all") => api.get("/kis/orders", { params: { kind } }),
-  log: () => api.get("/kis/log"),
-  propose: (intraday = false) => api.post("/kis/propose", {}, { timeout: 600_000, params: intraday ? { intraday: true } : undefined }),
-  approve: (ids: number[], totp_code: string) => api.post("/kis/orders/approve", { ids, totp_code }, { timeout: 120_000 }),
-  reject: (ids: number[]) => api.post("/kis/orders/reject", { ids }),
-  cancel: (id: number) => api.post(`/kis/orders/${id}/cancel`),
-  halt: (reason: string) => api.post("/kis/halt", { reason }),
-  notifyTest: () => api.post("/kis/notify-test"),
-  resume: (totp_code: string) => api.post("/kis/resume", { totp_code }),
-  baseline: () => api.post("/kis/baseline", {}),
-  config: (limits: Record<string, number>, params: Record<string, any> | null, totp_code: string) =>
-    api.put("/kis/config", { limits, params, totp_code }),
+// KIS 모의투자 주문 — 국내(KR)·미국(US) 따로 (설정·정지·주문·로그 모두 시장별, 같은 모의투자 계좌)
+export const kisApiFor = (market: string = "KR") => {
+  const p = (extra: Record<string, any> = {}) => ({ params: { market, ...extra } });
+  return {
+    status: () => api.get("/kis/status", p()),
+    orders: (kind: "open" | "all") => api.get("/kis/orders", p({ kind })),
+    log: () => api.get("/kis/log", p()),
+    propose: (intraday = false) => api.post("/kis/propose", {}, { timeout: 600_000, ...p(intraday ? { intraday: true } : {}) }),
+    approve: (ids: number[], totp_code: string) => api.post("/kis/orders/approve", { ids, totp_code }, { timeout: 120_000, ...p() }),
+    reject: (ids: number[]) => api.post("/kis/orders/reject", { ids }, p()),
+    cancel: (id: number) => api.post(`/kis/orders/${id}/cancel`, {}, p()),
+    halt: (reason: string) => api.post("/kis/halt", { reason }, p()),
+    notifyTest: () => api.post("/kis/notify-test"),
+    resume: (totp_code: string) => api.post("/kis/resume", { totp_code }, p()),
+    baseline: () => api.post("/kis/baseline", {}, p()),
+    config: (limits: Record<string, number>, params: Record<string, any> | null, totp_code: string) =>
+      api.put("/kis/config", { limits, params, totp_code }, p()),
+  };
 };
+export const kisApi = kisApiFor("KR");
 
 // 규칙 기반 챗봇 (처음 조회하는 데이터는 몇 초 걸릴 수 있어 1분까지 기다림)
 export const chatApi = {

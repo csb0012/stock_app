@@ -3,7 +3,7 @@
 승인·다시 시작·기준 맞추기·설정 변경은 2단계 코드를 매번 다시 받음 (재사용 불가). 긴급 정지·거절·취소는 위험을 줄이는 일이라 바로."""
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,8 @@ from app.services import kis_trade, kis_order
 from app.services.kis_api import KISError
 
 router = APIRouter(prefix="/kis", tags=["kis"])
+# 모든 경로에 ?market=KR(기본)|US — 국내·미국은 설정·정지·주문·로그가 따로 (같은 모의투자 계좌)
+MarketQ = Query("KR", pattern="^(KR|US|kr|us)$", description="KR 국내 / US 미국")
 
 
 class CodeRequest(BaseModel):
@@ -61,58 +63,65 @@ def _err(e: Exception):
 
 
 @router.get("/status")
-async def status(admin: User = Depends(get_admin)):
+async def status(admin: User = Depends(get_admin), market: str = MarketQ):
     """연결 상태·정지 여부·한도·오늘 주문 수·KIS 잔고·대조 결과·최근 판단 기록"""
-    return await kis_trade.overview()
+    with kis_trade.market(market):
+        return await kis_trade.overview()
 
 
 @router.get("/orders")
-async def orders(kind: str = "open", limit: int = 100, admin: User = Depends(get_admin)):
-    if kind not in ("open", "all"):
-        raise HTTPException(status_code=422, detail="kind 는 open 또는 all")
-    return {"items": await kis_trade.list_orders(kind, limit), "status_labels": kis_trade.STATUS_LABELS}
+async def orders(kind: str = "open", limit: int = 100, admin: User = Depends(get_admin), market: str = MarketQ):
+    with kis_trade.market(market):
+        if kind not in ("open", "all"):
+            raise HTTPException(status_code=422, detail="kind 는 open 또는 all")
+        return {"items": await kis_trade.list_orders(kind, limit), "status_labels": kis_trade.STATUS_LABELS}
 
 
 @router.get("/log")
-async def log(limit: int = 100, admin: User = Depends(get_admin)):
-    return {"items": await kis_trade.list_log(limit)}
+async def log(limit: int = 100, admin: User = Depends(get_admin), market: str = MarketQ):
+    with kis_trade.market(market):
+        return {"items": await kis_trade.list_log(limit)}
 
 
 @router.post("/propose")
-async def propose(intraday: bool = False, admin: User = Depends(get_admin)):
+async def propose(intraday: bool = False, admin: User = Depends(get_admin), market: str = MarketQ):
     """지금 제안 만들기 — 제안만, 주문은 안 함.
     기본 = 확정된 마지막 종가 기준 (예전 승인 대기 제안은 만료) / intraday=true = 장중 판단 (오늘 지금 가격, 새 매수만, 기존 제안 그대로)"""
-    try:
-        if intraday:
-            return await kis_trade.propose_intraday(user_id=admin.id)
-        return await kis_trade.propose(user_id=admin.id)
-    except Exception as e:
-        _err(e)
+    with kis_trade.market(market):
+        try:
+            if intraday:
+                return await kis_trade.propose_intraday(user_id=admin.id)
+            return await kis_trade.propose(user_id=admin.id)
+        except Exception as e:
+            _err(e)
 
 
 @router.post("/orders/approve")
-async def approve(req: IdsRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db)):
-    if not req.ids or len(req.ids) > 20:
-        raise HTTPException(status_code=422, detail="승인할 제안을 1~20건 고르세요")
-    await _step_up(db, admin, req.totp_code)
-    try:
-        return {"results": await kis_trade.approve(list(dict.fromkeys(req.ids)), admin.id)}
-    except Exception as e:
-        _err(e)
+async def approve(req: IdsRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db), market: str = MarketQ):
+    with kis_trade.market(market):
+        if not req.ids or len(req.ids) > 20:
+            raise HTTPException(status_code=422, detail="승인할 제안을 1~20건 고르세요")
+        await _step_up(db, admin, req.totp_code)
+        try:
+            return {"results": await kis_trade.approve(list(dict.fromkeys(req.ids)), admin.id)}
+        except Exception as e:
+            _err(e)
 
 
 @router.post("/orders/reject")
-async def reject(req: IdsRequest, admin: User = Depends(get_admin)):
-    n = await kis_trade.reject(list(dict.fromkeys(req.ids)), admin.id)
-    return {"message": f"{n}건 거절했습니다"}
+async def reject(req: IdsRequest, admin: User = Depends(get_admin), market: str = MarketQ):
+    with kis_trade.market(market):
+        n = await kis_trade.reject(list(dict.fromkeys(req.ids)), admin.id)
+        return {"message": f"{n}건 거절했습니다"}
 
 
 @router.post("/orders/{order_id}/cancel")
-async def cancel(order_id: int, admin: User = Depends(get_admin)):
-    try:
-        return {"message": await kis_trade.cancel_sent(order_id, admin.id)}
-    except Exception as e:
-        _err(e)
+async def cancel(order_id: int, admin: User = Depends(get_admin), market: str = MarketQ):
+    with kis_trade.market(market):
+        try:
+            return {"message": await kis_trade.cancel_sent(order_id, admin.id)}
+        except Exception as e:
+            _err(e)
 
 
 @router.post("/notify-test")
@@ -131,35 +140,39 @@ async def notify_test(admin: User = Depends(get_admin)):
 
 
 @router.post("/halt")
-async def halt(req: HaltRequest, admin: User = Depends(get_admin)):
+async def halt(req: HaltRequest, admin: User = Depends(get_admin), market: str = MarketQ):
     """긴급 정지 — 2단계 코드 없이 바로"""
-    return await kis_trade.halt(admin.id, req.reason)
+    with kis_trade.market(market):
+        return await kis_trade.halt(admin.id, req.reason)
 
 
 @router.post("/resume")
-async def resume(req: CodeRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db)):
-    await _step_up(db, admin, req.totp_code)
-    return await kis_trade.resume(admin.id)
+async def resume(req: CodeRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db), market: str = MarketQ):
+    with kis_trade.market(market):
+        await _step_up(db, admin, req.totp_code)
+        return await kis_trade.resume(admin.id)
 
 
 @router.post("/baseline")
-async def baseline(admin: User = Depends(get_admin)):
+async def baseline(admin: User = Depends(get_admin), market: str = MarketQ):
     """지금 KIS 잔고를 앱 기록 기준으로 (HTS·KIS 앱에서 직접 사고팔았을 때). 주문을 보내지 않고 앱 기록만 바꿔서 2단계 코드 없음
     (사용자 결정 2026-11-26 — 매번 코드가 불편). 주문 승인·다시 시작·설정은 그대로 2단계 필요"""
-    try:
-        return await kis_trade.rebaseline(admin.id)
-    except Exception as e:
-        _err(e)
+    with kis_trade.market(market):
+        try:
+            return await kis_trade.rebaseline(admin.id)
+        except Exception as e:
+            _err(e)
 
 
 @router.put("/config")
-async def config(req: ConfigRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db)):
-    try:   # 입력 확인 먼저 (틀린 값에 2단계 코드를 쓰지 않게)
-        kis_trade.clean_limits(req.limits or {})
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    await _step_up(db, admin, req.totp_code)
-    try:
-        return await kis_trade.set_config(admin.id, req.limits, req.params)
-    except Exception as e:
-        _err(e)
+async def config(req: ConfigRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db), market: str = MarketQ):
+    with kis_trade.market(market):
+        try:   # 입력 확인 먼저 (틀린 값에 2단계 코드를 쓰지 않게)
+            kis_trade.clean_limits(req.limits or {})
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        await _step_up(db, admin, req.totp_code)
+        try:
+            return await kis_trade.set_config(admin.id, req.limits, req.params)
+        except Exception as e:
+            _err(e)

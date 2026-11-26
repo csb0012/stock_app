@@ -3,12 +3,21 @@ import { useSearchParams } from "react-router-dom";
 import { useNarrow } from "../components/common/useNarrow";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot, Radar } from "lucide-react";
-import { kisApi, errMsg } from "../api/client";
+import { kisApiFor, errMsg } from "../api/client";
 import { th, td, when, codeInput } from "../components/common/AdminPanels";
 import { toast } from "../components/common/Toast";
 import { inputStyle } from "../components/common/AuthForm";
 
-const won = (v?: number | null) => (v == null ? "-" : `${Math.round(v).toLocaleString()}원`);
+// 지금 보는 시장 (국내/미국 탭) — 금액·시간 표시가 따라 바뀜 (한 화면에 한 시장만 보이므로 화면을 그릴 때 정함)
+let MK: "KR" | "US" = "KR";
+const won = (v?: number | null) => (v == null ? "-" : MK === "US"
+  ? `${v < 0 ? "-" : ""}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  : `${Math.round(v).toLocaleString()}원`);
+const signedWon = (v: number) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${won(Math.abs(v))}`;
+const HOURS = {
+  KR: { orders: "09:01~15:20", stop: "15:20", intraday: "09:30~15:00", note: "" },
+  US: { orders: "09:31~15:50", stop: "15:50", intraday: "10:00~15:30", note: " (뉴욕 시각 — 한국 밤 11:30~새벽 6:00, 서머타임 땐 1시간 빠름)" },
+};
 const SIDE: Record<string, [string, string]> = { buy: ["매수", "badge-up"], sell: ["매도", "badge-down"] };
 const STATUS_CLS: Record<string, string> = {
   proposed: "badge-accent", approved: "badge-accent", submitting: "badge-neutral", submitted: "badge-neutral", filled: "badge-up",
@@ -57,11 +66,11 @@ function Rules({ s }: { s: any }) {
   const l = s.limits, w = s.watch || {};
   return (
     <div data-testid="kis-rules" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8, fontSize: 12, lineHeight: 1.6 }}>
-      <div><strong>승인한 매수</strong> — 개장 {w.buy_after_open ?? 5}분 뒤부터, 제안가 +{l.max_gap_pct}% 이하 · 지수 −{l.index_drop_pct}% 이내 · VI 아님일 때
-        <strong> 지정가</strong>(현재가 +{l.limit_slip_pct}%)로 주문. 안 맞으면 기다림 (15:20 까지)</div>
+      <div><strong>승인한 매수</strong> — 개장 {w.buy_after_open ?? 5}분 뒤부터, 제안가 +{l.max_gap_pct}% 이하 · 지수 −{l.index_drop_pct}% 이내{MK === "KR" ? " · VI 아님" : " (S&P500·나스닥100 ETF 기준)"}일 때
+        <strong> 지정가</strong>(현재가 +{l.limit_slip_pct}%)로 주문. 안 맞으면 기다림 ({HOURS[MK].stop} 까지{MK === "US" ? ", 뉴욕 시각" : ""})</div>
       <div><strong>급변 → 매수 자동 취소</strong> — 제안가보다 −{(l.max_gap_pct * 2).toFixed(1).replace(/\.0$/, "")}% 넘게 하락 · 10분 안에 −{l.fast_drop_pct}% 넘게 급락.
         승인 대기·조건 대기·접수된 매수 모두 (승인 없이)</div>
-      <div><strong>손절가 도달 → 자동 매도</strong> — 승인 없이 바로 시장가 매도 (긴급 정지 중엔 안 함, 하루 손실 한도 정지 중엔 함).
+      <div><strong>손절가 도달 → 자동 매도</strong> — 승인 없이 바로 {MK === "US" ? "현재가 −1% 지정가로 매도 (모의투자 해외는 시장가가 없음)" : "시장가 매도"} (긴급 정지 중엔 안 함, 하루 손실 한도 정지 중엔 함).
         <strong> 목표가</strong>는 매도 제안만 (승인해야 팔림)</div>
     </div>
   );
@@ -84,18 +93,23 @@ function Setup() {
 
 export default function KisTrade() {
   const qc = useQueryClient();
-  const st = useQuery({ queryKey: ["kis-status"], queryFn: () => kisApi.status().then((r) => r.data), staleTime: 0, refetchInterval: 30_000 });
-  const open = useQuery({ queryKey: ["kis-orders", "open"], queryFn: () => kisApi.orders("open").then((r) => r.data), staleTime: 0, refetchInterval: 30_000,
+  const [sp, setSp] = useSearchParams();
+  const market: "KR" | "US" = sp.get("market") === "US" ? "US" : "KR";
+  MK = market;
+  const kisApi = kisApiFor(market);
+  const st = useQuery({ queryKey: ["kis-status", market], queryFn: () => kisApi.status().then((r) => r.data), staleTime: 0, refetchInterval: 30_000 });
+  const open = useQuery({ queryKey: ["kis-orders", "open", market], queryFn: () => kisApi.orders("open").then((r) => r.data), staleTime: 0, refetchInterval: 30_000,
     enabled: !!st.data?.configured });
-  const hist = useQuery({ queryKey: ["kis-orders", "all"], queryFn: () => kisApi.orders("all").then((r) => r.data), staleTime: 0, enabled: !!st.data?.configured });
-  const log = useQuery({ queryKey: ["kis-log"], queryFn: () => kisApi.log().then((r) => r.data), staleTime: 0 });
+  const hist = useQuery({ queryKey: ["kis-orders", "all", market], queryFn: () => kisApi.orders("all").then((r) => r.data), staleTime: 0, enabled: !!st.data?.configured });
+  const log = useQuery({ queryKey: ["kis-log", market], queryFn: () => kisApi.log().then((r) => r.data), staleTime: 0 });
+  const pickMarket = (m: string) => { setPicked([]); setCode(""); setSp(m === "US" ? { market: "US" } : {}); };
   const refresh = () => { for (const k of ["kis-status", "kis-orders", "kis-log"]) qc.invalidateQueries({ queryKey: [k] }); };
 
   const [picked, setPicked] = useState<number[]>([]);
   const [code, setCode] = useState("");
   const narrow = useNarrow();
   // 휴대폰 알림을 누르면 /kis?order=번호 — 그 주문으로 스크롤 + 강조
-  const focus = Number(useSearchParams()[0].get("order")) || null;
+  const focus = Number(sp.get("order")) || null;
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     if (!focus || scrolled || !open.data || !hist.data) return;
@@ -127,8 +141,16 @@ export default function KisTrade() {
     onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
 
   const s = st.data;
-  if (st.error) return <p style={{ color: "var(--red)" }}>{errMsg(st.error)}</p>;
-  if (!s) return <p style={{ color: "var(--text-muted)" }}>불러오는 중...</p>;
+  const tabs = (
+    <div style={{ display: "flex", gap: 6 }} role="tablist" aria-label="시장">
+      {([["KR", "🇰🇷 국내"], ["US", "🇺🇸 미국"]] as const).map(([m, label]) => (
+        <button key={m} role="tab" aria-selected={market === m} data-testid={`kis-tab-${m}`} className={`btn ${market === m ? "btn-primary" : "btn-ghost"}`}
+          style={{ fontSize: 12.5, padding: "5px 12px" }} onClick={() => pickMarket(m)}>{label}</button>
+      ))}
+    </div>
+  );
+  if (st.error) return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}><h1 style={{ fontSize: 20, fontWeight: 700 }}>KIS 모의투자 주문</h1>{tabs}<p style={{ color: "var(--red)" }}>{errMsg(st.error)}</p></div>;
+  if (!s) return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}><h1 style={{ fontSize: 20, fontWeight: 700 }}>KIS 모의투자 주문</h1>{tabs}<p style={{ color: "var(--text-muted)" }}>불러오는 중...</p></div>;
   const orders: any[] = open.data?.items || [];
   const proposed = orders.filter((o) => o.status === "proposed");
   const bal = s.balance;
@@ -143,8 +165,18 @@ export default function KisTrade() {
           <span className="badge badge-accent" style={{ fontSize: 11 }}>{s.server}</span>
         </h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>AI 가 주문을 제안하고, <strong>내가 2단계 코드로 승인한 매수만</strong> 장중에 조건이 맞을 때 한국투자증권 모의투자 서버로 나갑니다.
-          위험을 줄이는 일 — <strong>손절가 도달 매도 · 급변 때 매수 취소</strong> — 는 승인 없이 자동으로 하고 휴대폰으로 알립니다.</p>
+          위험을 줄이는 일 — <strong>손절가 도달 매도 · 급변 때 매수 취소</strong> — 는 승인 없이 자동으로 하고 휴대폰으로 알립니다.
+          국내·미국은 설정·정지·주문이 따로입니다 (같은 모의투자 계좌).</p>
+        <div style={{ marginTop: 10 }}>{tabs}</div>
       </div>
+
+      {s.configured && s.us_off && (
+        <section className="card" data-testid="kis-us-off" style={{ borderColor: "var(--accent)", fontSize: 12.5, lineHeight: 1.7 }}>
+          <strong>미국 주문은 아직 꺼져 있어요.</strong> 아래 '다시 시작'에 2단계 코드를 넣으면 켜집니다. 켜면 미국 장 마감 15분 뒤 AI 가 미국 종목을 판단해 제안하고,
+          승인한 매수는 미국 정규장{HOURS.US.note}에 조건이 맞으면 <strong>지정가</strong>로 주문합니다 (모의투자 해외는 지정가만 · 금액은 달러).
+          한국투자증권 모의투자에서 해외주식 거래가 막혀 있으면 잔고·주문 오류가 보입니다.
+        </section>
+      )}
 
       {!s.configured && <Setup />}
 
@@ -155,7 +187,7 @@ export default function KisTrade() {
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <strong style={{ fontSize: 15, color: s.halted ? "var(--red)" : "var(--green)" }}>{s.halted ? (s.watch?.stops_ok ? "정지됨 — 새 주문 안 함 (손절 자동 매도는 계속)" : "정지됨 — 주문 안 함")
                 : "운영 중 — 승인한 매수는 조건 맞으면 주문 · 손절 자동"}</strong>
-              {s.halted && <span style={{ fontSize: 12 }}>{s.halted_reason} ({when(s.halted_at)})</span>}
+              {s.halted && !s.us_off && <span style={{ fontSize: 12 }}>{s.halted_reason} ({when(s.halted_at)})</span>}
               <span style={{ fontSize: 12, color: "var(--text-muted)" }} data-testid="kis-account">계좌 {s.account}{s.account_source ? ` (.env ${s.account_source})` : ""} · {WINDOW[s.window] || s.window}</span>
               {s.account_source === "KIS_ACCOUNT_NO" && (
                 <span style={{ fontSize: 12, color: "var(--yellow)" }}>KIS_MOCK_* 가 비어 있어 시세용 계좌번호를 쓰는 중 — 모의투자 계좌가 아니면 잔고·주문이 안 됩니다</span>
@@ -177,7 +209,7 @@ export default function KisTrade() {
           {resume.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(resume.error)}</p>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, fontSize: 12.5 }}>
             <div>오늘 주문 <strong>{s.orders_today}</strong> / {s.limits.max_orders_day}건</div>
-            <div>오늘 손익 <strong style={{ color: loss == null ? undefined : loss > 0 ? "var(--red)" : "var(--green)" }}>{loss == null ? "-" : `${loss > 0 ? "−" : "+"}${Math.abs(Math.round(loss)).toLocaleString()}원`}</strong>
+            <div>오늘 손익 <strong style={{ color: loss == null ? undefined : loss > 0 ? "var(--red)" : "var(--green)" }}>{loss == null ? "-" : signedWon(-loss)}</strong>
               <span style={{ color: "var(--text-muted)" }}> (손실 한도 {won(s.limits.max_loss_krw)})</span></div>
             <div>1회 매수 한도 <strong>{won(s.limits.max_order_krw)}</strong></div>
             <div>마지막 자동 제안 <strong>{s.last_proposal_day || "-"}</strong></div>
@@ -232,7 +264,7 @@ export default function KisTrade() {
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8, fontSize: 12.5 }}>
                 <div>총평가 <strong>{won(bal.total)}</strong></div>
-                <div>주문 가능(D+2 예수금) <strong>{won(bal.d2_cash)}</strong></div>
+                <div>{MK === "US" ? "주문 가능(달러)" : "주문 가능(D+2 예수금)"} <strong>{won(bal.d2_cash)}</strong></div>
                 <div>주식 평가 <strong>{won(bal.stock_value)}</strong></div>
                 <div>평가손익 <strong className={bal.pnl >= 0 ? "up" : "down"}>{bal.pnl >= 0 ? "+" : ""}{won(bal.pnl)}</strong></div>
               </div>
@@ -495,16 +527,16 @@ function WatchLine({ s }: { s: any }) {
           )}
           {w.error && <span style={{ color: "var(--red)" }}>{w.error}</span>}
         </>
-      ) : <span style={{ color: "var(--text-muted)" }}>실시간 감시는 장중(09:01~15:20)에만 — {w.every}초마다 손절·급변·매수 조건 확인</span>}
+      ) : <span style={{ color: "var(--text-muted)" }}>실시간 감시는 장중({HOURS[MK].orders}{HOURS[MK].note})에만 — {w.every}초마다 손절·급변·매수 조건 확인</span>}
     </div>
   );
 }
 
 // 설정 묶음 — 이름·범위를 두 줄로 나눠 칸 높이를 맞춤 (라벨 길이가 달라 입력칸이 들쭉날쭉하던 것)
-const LIMIT_GROUPS: [string, string, string[]][] = [
+const limitGroups = (): [string, string, string[]][] => [
   ["주문 한도", "넘으면 주문을 안 보내거나 멈춤", ["max_order_krw", "max_orders_day", "max_loss_krw"]],
   ["장중 감시 규칙", "승인한 매수를 언제 보내고, 언제 자동 취소할지", ["max_gap_pct", "fast_drop_pct", "index_drop_pct", "limit_slip_pct"]],
-  ["장중 AI 제안", "09:30~15:00 몇 분마다 다시 판단할지 (0 = 끔, 3~60분). 두 번 연속 통과한 종목만 제안", ["intraday_every_min"]],
+  ["장중 AI 제안", `${HOURS[MK].intraday}${MK === "US" ? "(뉴욕)" : ""} 몇 분마다 다시 판단할지 (0 = 끔, 3~60분). 두 번 연속 통과한 종목만 제안`, ["intraday_every_min"]],
 ];
 
 function Field({ label, range, value, onChange }: { label: string; range?: string; value: number; onChange: (n: number) => void }) {
@@ -535,9 +567,10 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
   const [par, setPar] = useState<Record<string, any>>(s.params);
   const [code, setCode] = useState("");
   useEffect(() => { setLim(s.limits); setPar(s.params); }, [JSON.stringify(s.limits), JSON.stringify(s.params)]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const save = useMutation({ mutationFn: () => kisApi.config(lim, Object.fromEntries(PARAM_KEYS.map((k) => [k, par[k]])), code).then((r) => r.data),
+  const save = useMutation({ mutationFn: () => kisApiFor(MK).config(lim, Object.fromEntries(PARAM_KEYS.map((k) => [k, par[k]])), code).then((r) => r.data),
     meta: { inlineError: true }, onSuccess: (d) => { toast(d.message, "info"); setCode(""); onSaved(); } });
   const meta = s.limit_meta as Record<string, any>;
+  const LIMIT_GROUPS = limitGroups();
   const grouped = new Set(LIMIT_GROUPS.flatMap((g) => g[2]));
   const groups = LIMIT_GROUPS.map(([t, d, keys], i) => [t, d, [...keys, ...(i === LIMIT_GROUPS.length - 1 ? Object.keys(meta).filter((k) => !grouped.has(k)) : [])]] as const);
   const limitField = (k: string) => meta[k] && (

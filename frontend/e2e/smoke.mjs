@@ -307,6 +307,8 @@ async function run() {
     await page.getByRole("button", { name: "따라 사기 검증" }).click();
     const v = await page.getByTestId("guru-validation").innerText();
     for (const s of ["다음 거래일 종가", "-1.9%p", "42.3%", "775건", "점수엔 안 넣음", "워런 버핏"]) expect(v.includes(s), `검증에 '${s}' 없음`);
+    const va = await page.getByTestId("guru-validation-ai").innerText();
+    for (const s of ["AI 가 다시 분석해서", "775건 중 AI 통과 120건", "+1.4%p", "56.1%", "판단 후보에 넣습니다"]) expect(va.includes(s), `AI 필터 검증에 '${s}' 없음`);
     await shot(page, "gurus-validation");
   });
 
@@ -343,6 +345,8 @@ async function run() {
     await d.waitFor();
     const dt = await d.innerText();
     for (const s of ["최근 5일 개인", "외국인", "쌍끌이 104종목"]) expect(dt.includes(s), `개미 동향에 '${s}' 없음`);
+    const rc = await page.getByTestId("flow-retail").innerText();
+    for (const s of ["개미만 사는 종목은 약했나", "-1.3%p", "44.2%", "감점 안 함", "+0.9%p"]) expect(rc.includes(s), `개미 검증에 '${s}' 없음`);
     const t = await page.getByTestId("flow-table").innerText();
     for (const s of ["삼성전자", "쌍끌이 3일 연속", "+3,200억", "−4,300억", "+4.12%"]) expect(t.includes(s), `쌍끌이 표에 '${s}' 없음`);
     await shot(page, "flows");
@@ -772,7 +776,8 @@ async function run() {
       && it.includes("(6.2초)") && it.includes("다음 10:05") && it.includes("확인 대기: 카카오") && it.includes("+3%"), `장중 제안: ${it}`);
     await pr.getByTestId("kis-propose").click();
     await page.getByText(/장중 판단 — 새 매수 제안 1건/).waitFor();
-    expect(api.calls.find((c) => c.key === "POST /api/kis/propose").query === "?intraday=true", "장중인데 장중 판단으로 안 부름");
+    const pq = api.calls.find((c) => c.key === "POST /api/kis/propose").query;
+    expect(pq.includes("intraday=true") && pq.includes("market=KR"), `장중인데 장중 판단으로 안 부름: ${pq}`);
     const approve = pr.getByTestId("kis-approve");
     expect(await approve.isDisabled(), "아무것도 안 골랐는데 승인이 눌림");
     await pr.getByRole("button", { name: "모두 선택" }).click();
@@ -856,6 +861,36 @@ async function run() {
     await page.getByText("설정을 저장했습니다").waitFor();
     const b = JSON.parse(api.calls.find((c) => c.key === "PUT /api/kis/config").body);
     expect(b.limits.max_orders_day === 5 && b.params.stop_pct === 7 && b.totp_code === "998877", `설정 요청: ${JSON.stringify(b)}`);
+  });
+
+  await test("KIS 모의투자: 국내/미국 탭 — 미국은 market=US 로 따로 · 처음엔 꺼짐 안내 · 달러 표시 · 주소 기억", { api: adminApi({
+    "GET /api/kis/status": (req) => (new URL(req.url()).searchParams.get("market") === "US" ? {
+      ...KF.KIS_STATUS, market: "US", currency: "USD", us_off: true, halted: true, halted_reason: "미국 주문은 아직 꺼져 있음", window: "closed",
+      limits: { ...KF.KIS_STATUS.limits, max_order_krw: 1500, max_loss_krw: 400 }, day_loss: 12.5,
+      limit_meta: { ...KF.KIS_STATUS.limit_meta, max_order_krw: { default: 1500, min: 50, max: 100000, label: "1회 매수 한도 (달러)" } },
+      balance: { cash: 9000, d2_cash: 8900.5, total: 10120.25, stock_value: 1120.25, prev_total: 0, pnl: 20.25, currency: "USD", holdings: [
+        { symbol: "AAPL", name: "애플", qty: 5, sellable: 5, avg: 220, price: 224.05, value: 1120.25, pnl: 20.25, pnl_pct: 1.84, stop: 204.6, target: 253, hold_days: 2 }] },
+    } : KF.KIS_STATUS),
+    "GET /api/kis/orders": (req) => (new URL(req.url()).searchParams.get("market") === "US" ? { items: [], status_labels: {} }
+      : new URL(req.url()).searchParams.get("kind") === "all" ? KF.KIS_ALL : KF.KIS_OPEN),
+  }) }, async (page, api) => {
+    await page.goto(`${BASE}/kis`);
+    await page.getByTestId("kis-status").waitFor();
+    await page.getByTestId("kis-tab-US").click();
+    await page.getByTestId("kis-us-off").waitFor();
+    expect(page.url().includes("market=US"), `주소에 market=US 없음: ${page.url()}`);
+    expect(api.calls.some((c) => c.key === "GET /api/kis/status" && c.query.includes("market=US")), "미국 상태를 market=US 로 안 물음");
+    const t = await page.locator("body").innerText();
+    for (const x of ["미국 주문은 아직 꺼져 있어요", "$1,500.00", "$8,900.50", "$224.05", "주문 가능(달러)", "현재가 −1% 지정가로 매도", "뉴욕 시각"]) {
+      expect(t.includes(x), `미국 탭에 '${x}' 없음`);
+    }
+    expect(!t.includes("2,000,000원"), "미국 탭에 원화 한도가 보임");
+    await shot(page, "kis-us");
+    await page.reload();
+    await page.getByTestId("kis-us-off").waitFor();                 // 새로고침해도 미국 탭
+    await page.getByTestId("kis-tab-KR").click();
+    await page.getByText("2,000,000원").first().waitFor();
+    expect(await page.getByTestId("kis-us-off").count() === 0, "국내 탭에 미국 안내가 보임");
   });
 
   await test("KIS 모의투자: 계좌번호 거부(INVALID_CHECK_ACNO) → 원인 안내 · 시세용 계좌를 빌려 쓰는 중 경고", { api: adminApi({

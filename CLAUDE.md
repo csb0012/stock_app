@@ -52,7 +52,7 @@ npm run dev
 | `KIS_APP_KEY` / `KIS_APP_SECRET` | 필수 | KIS OAuth 토큰 — 없거나 예시값이면 서버가 시작되지 않음 |
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
-| `KIS_MOCK_APP_KEY`·`KIS_MOCK_APP_SECRET`·`KIS_MOCK_ACCOUNT_NO` | 선택 | KIS 모의투자 주문(AI 제안 → 관리자 승인) 전용 키·계좌 — 비우면 주문 기능 꺼짐. `KIS_IS_REAL=false` 면 비워 둬도 시세용 키·계좌를 씀. 실거래 서버로는 주문 안 함 (`docs/kis-mock-trading.md`) |
+| `KIS_MOCK_APP_KEY`·`KIS_MOCK_APP_SECRET`·`KIS_MOCK_ACCOUNT_NO` | 선택 | KIS 모의투자 주문(AI 제안 → 관리자 승인, 국내·미국 같은 계좌) 전용 키·계좌 — 비우면 주문 기능 꺼짐. `KIS_IS_REAL=false` 면 비워 둬도 시세용 키·계좌를 씀. 실거래 서버로는 주문 안 함 (`docs/kis-mock-trading.md`) |
 | `NTFY_TOPIC`·`NTFY_SERVER`·`NTFY_TOKEN`·`NTFY_CLICK_URL` | 선택 | 휴대폰 푸시(ntfy 앱, 날씨 알림과 같은 JSON 방식·다른 주제) — KIS 모의투자 제안·체결·막힘·정지. 주제를 비우면 끔. 주제 이름은 비밀처럼(로그·화면·오류에 안 냄). 알림을 누르면 웹 `/kis?order=번호` — 사이트 주소 = `NTFY_CLICK_URL`(주소 부분만) 또는 클라우드 `DOMAIN`(docker-compose.cloud.yml 이 deploy/.env 를 backend 에도 넘김) |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
@@ -91,7 +91,7 @@ models/
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
   flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량 — 추천·관심 종목 + 거래대금 1억↑ 국내 전 종목)
-  kis.py         — KIS 모의투자 주문: KisTrade (kis_trade 1행: 정지 여부·한도·매매 규칙·state JSON(expected 앱 기록 보유 수량·meta 손절/목표/보유일·log·day_start)) /
+  kis.py         — KIS 모의투자 주문 (국내·미국 — 주문·로그에 market 칸, 예전 행은 init_db 가 KR 로 채움): KisTrade (kis_trade 시장별 1행 — id 1 국내, id 2 미국: 정지 여부·한도·매매 규칙·state JSON(expected 앱 기록 보유 수량·meta 손절/목표/보유일·log·day_start)) /
                    KisOrder (kis_orders: 제안 1건 → 승인 → 주문 → 체결, source ai/exit(목표가 제안)/stop(자동 손절), limit_price(지정가)·cancel_req(취소 요청 시각), 상태 proposed/approved/submitting/submitted/filled/partial/unfilled/unknown/rejected/expired/cancelled/blocked/failed) /
                    KisLog (kis_log: 감사 로그 — 지우지 않음)
   paper.py       — AI 모의투자: PaperSim (paper_sim: 과거 시뮬레이션 결과 JSON) / PaperAccount (paper_account: 실시간 계좌, 보유·대기 주문·판단 기록은 state JSON) /
@@ -102,9 +102,15 @@ services/
                    국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
                    미국 주간거래 현재가 get_us_daytime_price (해외 현재가 HHDFS00000300, EXCD 를 NAS/NYS/AMS → BAQ/BAY/BAA 로)
   kis_order.py   — KIS 모의투자 서버 주문 API (국내): order(price 있으면 지정가 ORD_DVSN 00, 없으면 시장가)·tick_size/tick_up(호가 단위)·cancel·balance(잔고·D+2 예수금·전날 총자산)·executions(일별 체결, cancel_qty).
+                   미국(해외주식 모의투자): us_order(지정가만 — 모의 서버는 해외 시장가 없음, OVRS_EXCG_CD NASD/NYSE/AMEX)·us_cancel·us_balance(잔고 VTTS3012R 거래소별 + 매수가능금액 VTTS3007R → 국내와 같은 모양, prev_total 0)·
+                   us_executions(VTTS3035R, 취소 줄은 원주문에 합침, '거부' 표시)·us_tick_up/down($0.01).
                    **모의투자 서버 주소가 아니면 거부**(_guard). 키 = KIS_MOCK_*(없고 KIS_IS_REAL=false 면 시세용 키), 토큰 backend/.kis_mock_token.json.
                    TR 은 새 번호 → '없는 TR' 응답일 때만 예전 번호 (주문은 그 외 오류면 다시 안 보냄). KISClient 를 키·주소를 받아 따로 만듦
-  kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 장중 조건 맞으면 주문, 위험 줄이는 일은 자동 — 사용자 결정 2026-11-26):
+  kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 장중 조건 맞으면 주문, 위험 줄이는 일은 자동 — 사용자 결정 2026-11-26).
+                   **국내·미국 같은 코드** (미국 추가: 사용자 결정 2026-11-26): mk() = 지금 시장 (ContextVar, `with market("US"):`), _local() = 현지 시각,
+                   _g(이름) = 시장별 상태 dict(국내는 예전 모듈 변수 그대로), _mine() = 그 시장 주문만, _bk_* = 시장별 KIS 주문 API, _m() = 원/달러 표시,
+                   한도는 같은 키(max_order_krw 등)에 미국은 달러 뜻(LIMITS_US). 미국은 처음 꺼짐(US_OFF — '다시 시작' 2단계 코드로 켬), 매도는 현재가 −1% 지정가(US_SELL_SLIP),
+                   가격 = KIS 해외 현재가 15초(_us_prices, Yahoo 대체 안 함), 지수 = SPY·QQQ. loop() 가 5초마다 국내 → (켜져 있으면) 미국 _cycle:
                    propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단, 이전 제안 만료, 다음 거래일 15:30 까지 유효) ·
                    propose_intraday(장중 AI 제안 — 사용자 결정 2026-11-26: 09:30~15:00 intraday_every_min(기본 5)분마다 schedule_intraday 가 뒤에서(감시 안 멈춤),
                      analyze_live(intraday=True) = 지난 일봉·학습형 비중·지수는 하루 한 번(papertrade._intra), 판단마다 현재가로 오늘 봉만 고침·거래량 하루치 환산(project_today)
@@ -169,19 +175,24 @@ services/
   flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음, 100종목씩 묶어 저장).
                    대상 = 추천·관심·투자 + 퀀트 대상(거래대금 1억↑) 전 종목 (scheduler flow_kr 18:10 → accumulation.rebuild_quant).
                    stock_signal(쌍끌이 연속 일수·5일 순매수 금액(수량×종가 어림)·강도·설명) · rankings(쌍끌이/외국인/기관/개미 순매수·순매도/동반 순매도)
-                   · market_daily(날짜별 개인·외국인·기관 합계 = 개미 동향) · factor_frame(퀀트 '수급' 요인 = **전날까지** 5일 외국인+기관 순매수 ÷ 거래대금)
+                   · market_daily(날짜별 개인·외국인·기관 합계 = 개미 동향) · retail_check('개인만 순매수' 종목의 다음 날 종가부터 20거래일 초과수익 → 감점 여부 active) · factor_frame(퀀트 '수급' 요인 = **전날까지** 5일 외국인+기관 순매수 ÷ 거래대금)
   gurus.py       — 투자 대가 33명 (SEC 13F, data.sec.gov submissions → 13F-HR 정보 표 XML, 원본만·옵션/채권 제외, 대가당 최근 8분기).
                    CUSIP → 티커: OpenFIGI(키 없이 1분 25번×10개) → 못 찾으면 SEC company_tickers.json 이름 맞추기(norm_name·match_name, 모호하면 안 씀).
                    build(): 대가별 비중·직전 분기 대비 신규/추가/축소/전량 매도·최근 1년 추정 수익률(지금 보유 종목 1년 주가의 비중 평균, Yahoo) / 종목별 보유·산·판 대가.
                    validate(): 공시 **다음 거래일** 종가에 '의미 있게 산 종목'(신규·25%↑, 비중 1%↑)을 사서 63거래일 → SPY 대비. 표본 30↑·평균 초과 > 0·이긴 비율 50%↑ 이면 validated
-                   → signal()/boost_points() 가 AI 장기 점수 0~10점, 아니면 0 (근거로만). 하루 1번 loop (시작 3분 뒤). 파일 app/data/guru_filings.json·cusip_map.json·gurus.json
+                   → signal()/boost_points() 가 AI 장기 점수 0~10점, 아니면 0 (근거로만).
+                   ai_filter(): 대가가 산 종목 중 공시일 종가까지로 AI 매수 조건(AI 점수 60↑·상승확률 55%↑·50일선 위, 퀀트 = 그날 대가 종목들 안 순위) 통과한 것만
+                   → validation_ai (이게 통과해야 AI 모의투자·KIS 미국 판단 후보에 대가 종목을 넣음 — '대가를 무조건 따라가지 않음'). 하루 1번 loop (시작 3분 뒤). 파일 app/data/guru_filings.json·cusip_map.json·gurus.json
   fundamentals.py— 가치·재무. 국내 = 네이버 분기 실적(m.stock.naver.com/api/stock/{코드}/finance/quarter, 예상치 제외, 종목마다 7일, app/data/fundamentals_kr.json)
                    → metrics(그날 **알려진** 분기만: 1~3분기 끝+45일, 4분기 +90일 → TTM EPS·BPS·ROE·영업이익률·전년 동분기 성장률·배당) · with_price → PER·PBR·배당수익률.
                    kr_factor_frame = 퀀트 '가치'(E/P·B/P 백분위)·'수익성'(ROE·영업이익률) 요인 (날짜별, 미래 실적 안 씀). KR_SCREENS(토스식 9개 조건) · run_screen.
                    미국 = yahoo_quotes(v7 quote 묶음, 1시간 캐시 — 대가 보유 종목 1년 등락·PER) · us_screen_sync(Yahoo 스크리너 조건 8개: 저평가 성장주·미래의 배당왕 등)
   signals.py     — 투자 신호 묶음: for_row(시장, 종목, 가격) → {guru, value, flow, score_parts, bonus} (AI 추천 행·종목 상세).
                    apply_longterm = 장기 점수 + bonus (검증된 것만: 대가 = 따라 사기 검증 통과 시, 국내 가치·수익성·수급 = 퀀트 비중 > 0 일 때 ±최대 5점) — long_term_base 에 원래 점수.
-                   loop(시작 5분 뒤, 30분마다): 스캔 끝나길 기다림 → 재무 7일 지난 종목 받기 → 수급이 대상의 절반 미만이면 전 종목 수집 → rebuild_quant
+                   loop(시작 5분 뒤, 30분마다): 스캔 끝나길 기다림 → 재무 7일 지난 종목 받기 → 수급이 대상의 절반 미만이면 전 종목 수집 → rebuild_quant.
+                   live_candidates(시장) = AI 모의투자·KIS 주문 판단 후보 넓히기 (사용자 결정 2026-11-26 — 후보만, 사고팔지는 AI 점수):
+                   국내 = 가치주 조건 상위 10(퀀트 점수 순) + 쌍끌이 2일↑ 10 + 개인만 순매수 감점(retail_status 가 과거 검증 통과일 때만 −5),
+                   미국 = 투자 대가가 이번 분기에 산 종목 (gurus validation_ai 통과 때만). 이유는 tags → papertrade.apply_signals → 판단 사유
   chatbot.py     — 규칙 기반 챗봇 (외부 AI 없음): route() 가 질문 키워드로 의도(종목 분석·매수/매도 후보·투자종목·관심종목·
                    테마·매집·시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
                    prediction_log.review·events)를 조회해 정해진 마크다운 형식으로 답함. 종목은 종목마스터 정확 일치 우선
@@ -244,7 +255,7 @@ api/routes/
                    /admin/users/{id} (회원 상세: 연락처 가림·로그인 IP·실패·쓰는 기능 수·최근 활동 50 — 비밀번호·2단계 비밀값 없음), /admin/events (전체 회원 보안 기록), /admin/invites (GET 목록 · POST 만들기 {memo, days, totp_code} — 코드 원문은 이 응답에만 · DELETE /{id} 취소),
                    /admin/users (GET 회원 목록: 2단계 등록·초대한 사람·최근 로그인), PUT /admin/users/{id}/active {active, totp_code} (차단 = 모든 기기 끊김, 나·관리자는 불가).
                    만들기·차단은 2단계 코드를 다시 받음(_step_up)
-  kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
+  kis.py         — KIS 모의투자 주문 (모두 get_admin, 모든 경로 ?market=KR(기본)|US — 설정·정지·주문·로그 시장별): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
                    POST /kis/propose (?intraday=true = 장중 판단) · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
                    POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403). 기준 맞추기(baseline)는 주문 없이 앱 기록만 바꿔서 코드 없음(사용자 결정 2026-11-26)
   stocks.py      — /live?symbols= (국내 실시간 현재가 — kis_ws 메모리 값, KIS 호출 없음, 물은 종목은 구독), /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
@@ -295,7 +306,7 @@ store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
                      Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio,
                      Admin(/admin, 관리자만 — AdminRoute: 요약·회원 목록·회원 상세(활동 기록)·초대 코드·전체 보안 기록),
-                     KisTrade(/kis, 관리자만 — KIS 모의투자: 상태·긴급 정지/다시 시작·잔고·대조 경고·기준 맞추기·제안 선택 → 2단계 코드로 승인·거절·취소·설정·주문 기록·감사 로그.
+                     KisTrade(/kis, 관리자만 — KIS 모의투자: 🇰🇷 국내 / 🇺🇸 미국 탭(?market=US, 금액·시간 표시가 시장 따라 — 모듈 변수 MK, kisApiFor(market)) · 상태·긴급 정지/다시 시작·잔고·대조 경고·기준 맞추기·제안 선택 → 2단계 코드로 승인·거절·취소·설정·주문 기록·감사 로그.
                        ?order=번호 = 휴대폰 알림 링크 → 그 주문 스크롤·강조. 640px 이하(useNarrow)는 표 대신 카드·규칙/설정 접음·승인 줄 화면 아래 고정),
                      Setup2FA(/setup-2fa: 2단계 필수인데 안 켰을 때 — 등록하면 첫 화면, ProtectedRoute 와 403 X-Totp-Required 가 여기로 보냄),
                      PaperTrading(/paper, AI 모의투자: 실시간 계좌 / 과거 시뮬레이션 탭(localStorage paper-tab) · 자산 곡선 SVG(AI vs 지수) · 거래 이유 · 판단 기록),

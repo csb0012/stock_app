@@ -359,6 +359,19 @@ async def _live_universe(market: str, user_id: int, positions: dict) -> tuple:
     for sym, p in positions.items():
         items.setdefault(sym, {"symbol": sym, "name": p["name"]})
     overrides = {}
+    # 가치주·쌍끌이(국내) / 투자 대가가 산 종목(미국, AI 필터 검증 통과 때만) 후보 + 이유·감점 (signals.live_candidates)
+    try:
+        from app.services import signals
+        lc = signals.live_candidates(market)
+    except Exception as e:   # noqa: BLE001 — 후보를 못 늘려도 판단은 그대로
+        print(f"[paper] 추가 후보 실패: {e}")
+        lc = {"items": [], "tags": {}, "penalty": {}, "notes": []}
+    for it in lc["items"]:
+        items.setdefault(it["symbol"], it)
+    for sym, t in lc["tags"].items():
+        overrides.setdefault(sym, {})["tags"] = list(t)
+    for sym, pn in lc["penalty"].items():
+        overrides.setdefault(sym, {})["penalty"] = pn
     if market == "KR":
         r = accumulation.result() or {}
         cands = r.get("candidates") or []
@@ -376,7 +389,7 @@ async def _live_universe(market: str, user_id: int, positions: dict) -> tuple:
             if sym in scores:
                 o.update(accum=scores[sym], accum_ok=sym in ok)
             if o:
-                overrides[sym] = o
+                overrides.setdefault(sym, {}).update(o)
     return list(items.values()), overrides
 
 
@@ -476,6 +489,19 @@ async def _intraday_index(market: str) -> list:
     return c["index"]
 
 
+def apply_signals(rows: dict, overrides: dict):
+    """판단 행에 후보 이유(tags) 붙이고, 과거 검증을 통과한 감점(개인만 순매수)만 AI 점수에서 뺌"""
+    for sym, row in rows.items():
+        o = overrides.get(sym) or {}
+        tags = list(o.get("tags") or [])
+        if o.get("penalty"):
+            pts, why = o["penalty"]
+            row["score"] = int(row["score"]) - int(pts)
+            tags.append(why)
+        if tags:
+            row["tags"] = tags
+
+
 async def analyze_live(market: str, user_id: int, positions: dict, params: dict, intraday: bool = False) -> dict:
     """실시간 판단에 쓰는 오늘 점수 — 확정된 마지막 종가 기준 (실시간 모의투자 계좌와 KIS 모의투자 주문 제안이 같이 씀).
     intraday = 장중 판단 (KIS 모의투자 장중 제안, 몇 분마다): 오늘 미완성 봉을 '지금 가격으로 마감한다면'으로 넣어 판단 (거래량은 하루치로 환산).
@@ -516,6 +542,7 @@ async def analyze_live(market: str, user_id: int, positions: dict, params: dict,
         index = _closed_only(market, await fetch_index(market, "2y"))
     rows = feats.get(last) or {}
     pe.rescore(rows, aw["weights"] if aw else pe.WEIGHTS)
+    apply_signals(rows, overrides)
     regime = pe.regime_on(pe.regime_map(index), last)
     nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
     ev = pe.event_labels(market, nxt, events._cache["events"])

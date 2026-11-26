@@ -235,3 +235,159 @@ async def executions(day: date | None = None) -> list:
                     "cancel_qty": _int(r.get("cncl_cfrm_qty")),     # 원주문 줄의 취소 확인 수량
                     "time": (r.get("ord_tmd") or "").strip()})
     return out
+
+
+# ================= 미국 주식 (해외주식 모의투자) =================
+# KIS 해외주식 모의투자: 미국 정규장(현지 09:30~16:00)만, **지정가만** (모의투자 서버는 해외 시장가 주문을 안 받음)
+# → 매도도 '지금 가격보다 조금 낮은 지정가'(바로 체결되는 값)로 보냄. 호가 단위 $0.01 (1달러 미만 $0.0001)
+US_TR = {
+    "us_buy": ("VTTT1002U",),
+    "us_sell": ("VTTT1001U",),
+    "us_cancel": ("VTTT1004U",),
+    "us_balance": ("VTTS3012R",),
+    "us_cash": ("VTTS3007R",),
+    "us_ccld": ("VTTS3035R",),
+}
+TR.update(US_TR)
+US_EXCG = {"NAS": "NASD", "NYS": "NYSE", "AMS": "AMEX"}      # 종목마스터 거래소 → 해외 주문 거래소 코드
+US_EXCG_BACK = {v: k for k, v in US_EXCG.items()}
+
+
+def us_exchange(symbol: str, hint: str | None = None) -> str:
+    """주문용 거래소 코드 (NASD/NYSE/AMEX) — 종목마스터 기준, 모르면 NASD"""
+    from app.services import stock_master
+    if hint in US_EXCG_BACK:
+        return hint
+    ex = hint or (stock_master.get("US", symbol) or {}).get("exchange")
+    return US_EXCG.get(ex or "", "NASD")
+
+
+def us_tick(price: float) -> float:
+    return 0.01 if price >= 1 else 0.0001
+
+
+def us_tick_up(price: float) -> float:
+    """매수 지정가 — 호가 단위로 올림"""
+    t = us_tick(price)
+    return round(math.ceil(price / t - 1e-9) * t, 4)
+
+
+def us_tick_down(price: float) -> float:
+    """매도 지정가 — 호가 단위로 내림"""
+    t = us_tick(price)
+    return round(math.floor(price / t + 1e-9) * t, 4)
+
+
+def _usd(v) -> str:
+    return f"{float(v):.4f}".rstrip("0").rstrip(".") if float(v) < 1 else f"{float(v):.2f}"
+
+
+async def us_order(side: str, symbol: str, qty: int, price: float, exchange: str | None = None) -> dict:
+    """미국 주식 지정가 주문 → {odno, orgno, time, msg}. price 필수 (모의투자는 지정가만)"""
+    if side not in ("buy", "sell"):
+        raise ValueError("side 는 buy/sell")
+    if not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol or "") or int(qty) < 1:
+        raise ValueError("미국 종목 티커·수량(1주 이상) 확인")
+    if price is None or price <= 0:
+        raise ValueError("미국 주문은 지정가만 — 가격이 필요함")
+    if abs(price / us_tick(price) - round(price / us_tick(price))) > 1e-6:
+        raise ValueError(f"지정가 {price} 가 호가 단위(${us_tick(price)})에 안 맞음")
+    cano, prdt = _account()
+    data = await _call("us_" + side, "POST", "/uapi/overseas-stock/v1/trading/order", {
+        "CANO": cano, "ACNT_PRDT_CD": prdt, "OVRS_EXCG_CD": us_exchange(symbol, exchange), "PDNO": symbol.replace("-", "/"),
+        "ORD_QTY": str(int(qty)), "OVRS_ORD_UNPR": _usd(price), "CTAC_TLNO": "", "MGCO_APTM_ODNO": "",
+        "ORD_SVR_DVSN_CD": "0", "ORD_DVSN": "00",                     # 00 = 지정가
+    })
+    o = data.get("output") or {}
+    odno = (o.get("ODNO") or o.get("odno") or "").strip()
+    if not odno:
+        raise KISError(f"KIS 해외 주문 응답에 주문번호가 없음: {data.get('msg1') or str(o)[:150]}")
+    return {"odno": odno, "orgno": (o.get("KRX_FWDG_ORD_ORGNO") or o.get("krx_fwdg_ord_orgno") or "").strip(),
+            "time": (o.get("ORD_TMD") or o.get("ord_tmd") or "").strip(), "msg": data.get("msg1", "")}
+
+
+async def us_cancel(odno: str, symbol: str, qty: int, exchange: str | None = None) -> dict:
+    """안 체결된 미국 주문 취소 (남은 수량 전부)"""
+    cano, prdt = _account()
+    data = await _call("us_cancel", "POST", "/uapi/overseas-stock/v1/trading/order-rvsecncl", {
+        "CANO": cano, "ACNT_PRDT_CD": prdt, "OVRS_EXCG_CD": us_exchange(symbol, exchange), "PDNO": symbol.replace("-", "/"),
+        "ORGN_ODNO": odno, "RVSE_CNCL_DVSN_CD": "02", "ORD_QTY": str(max(1, int(qty))), "OVRS_ORD_UNPR": "0",
+        "MGCO_APTM_ODNO": "", "ORD_SVR_DVSN_CD": "0",
+    })
+    return {"msg": data.get("msg1", "")}
+
+
+def _sym(pdno: str) -> str:
+    return (pdno or "").strip().replace("/", "-")
+
+
+async def us_balance() -> dict:
+    """미국 잔고 (달러) → 국내 balance() 와 같은 모양 {cash, d2_cash, total, stock_value, prev_total(0 = 모름), pnl, holdings}.
+    보유 = 해외주식 잔고(거래소별 NASD·NYSE·AMEX), 주문 가능 현금 = 해외주식 매수가능금액의 외화주문가능금액"""
+    cano, prdt = _account()
+    holdings, pnl = {}, 0.0
+    for ex in ("NASD", "NYSE", "AMEX"):
+        data = await _call("us_balance", "GET", "/uapi/overseas-stock/v1/trading/inquire-balance", {
+            "CANO": cano, "ACNT_PRDT_CD": prdt, "OVRS_EXCG_CD": ex, "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
+        })
+        for r in data.get("output1") or []:
+            qty = _int(r.get("ovrs_cblc_qty"))
+            sym = _sym(r.get("ovrs_pdno"))
+            if qty <= 0 or not sym:
+                continue
+            holdings[sym] = {"symbol": sym, "name": (r.get("ovrs_item_name") or "").strip(), "qty": qty,
+                             "sellable": _int(r.get("ord_psbl_qty")), "avg": _float(r.get("pchs_avg_pric")),
+                             "price": _float(r.get("now_pric2")), "value": _float(r.get("ovrs_stck_evlu_amt")),
+                             "pnl": _float(r.get("frcr_evlu_pfls_amt")), "pnl_pct": _float(r.get("evlu_pfls_rt")),
+                             "exchange": (r.get("ovrs_excg_cd") or ex).strip()}
+            pnl += _float(r.get("frcr_evlu_pfls_amt"))
+    data = await _call("us_cash", "GET", "/uapi/overseas-stock/v1/trading/inquire-psamount", {
+        "CANO": cano, "ACNT_PRDT_CD": prdt, "OVRS_EXCG_CD": "NASD", "OVRS_ORD_UNPR": "1", "ITEM_CD": "AAPL",
+    })
+    o = data.get("output") or {}
+    if isinstance(o, list):
+        o = o[0] if o else {}
+    if "ord_psbl_frcr_amt" not in o:
+        raise KISError(f"KIS 해외 매수가능금액 응답에 외화주문가능금액(ord_psbl_frcr_amt)이 없음: {str(o)[:150]}")
+    cash = _float(o.get("ord_psbl_frcr_amt"))
+    stock = round(sum(h["value"] for h in holdings.values()), 2)
+    return {"cash": cash, "d2_cash": cash, "total": round(cash + stock, 2), "stock_value": stock, "prev_total": 0,
+            "pnl": round(pnl, 2), "holdings": list(holdings.values()), "currency": "USD"}
+
+
+async def us_executions(day: date | None = None) -> list:
+    """미국 주문·체결 (현지 날짜 day 와 그 전날 — KIS 가 한국/현지 날짜 중 어느 쪽으로 묶어도 빠지지 않게) → executions() 와 같은 모양.
+    취소는 KIS 가 원주문과 따로 '취소 주문' 줄로 줌 → 원주문의 cancelled·cancel_qty 로 합침"""
+    from datetime import timedelta
+    cano, prdt = _account()
+    d = day or date.today()
+    data = await _call("us_ccld", "GET", "/uapi/overseas-stock/v1/trading/inquire-ccnl", {
+        "CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": "", "ORD_STRT_DT": (d - timedelta(days=1)).strftime("%Y%m%d"),
+        "ORD_END_DT": (d + timedelta(days=1)).strftime("%Y%m%d"), "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "00",
+        "OVRS_EXCG_CD": "", "SORT_SQN": "DS", "ORD_DT": "", "ORD_GNO_BRNO": "", "ODNO": "",
+        "CTX_AREA_NK200": "", "CTX_AREA_FK200": "",
+    })
+    rows = data.get("output") or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    out, cancels = {}, {}
+    for r in rows:
+        odno = (r.get("odno") or "").strip()
+        if not odno:
+            continue
+        if (r.get("rvse_cncl_dvsn") or "").strip() == "02":         # 취소 주문 줄
+            orig = (r.get("orgn_odno") or "").strip()
+            if orig:
+                cancels[orig] = cancels.get(orig, 0) + (_int(r.get("ft_ccld_qty")) or _int(r.get("ft_ord_qty")))
+            continue
+        out[odno] = {"odno": odno, "side": "sell" if (r.get("sll_buy_dvsn_cd") or "") == "01" else "buy",
+                     "symbol": _sym(r.get("pdno")), "name": (r.get("prdt_name") or "").strip(),
+                     "qty": _int(r.get("ft_ord_qty")), "filled": _int(r.get("ft_ccld_qty")),
+                     "avg_price": _float(r.get("ft_ccld_unpr3")), "amount": _float(r.get("ft_ccld_amt3")),
+                     "remain": _int(r.get("nccs_qty")), "cancelled": False, "cancel_qty": 0,
+                     "rejected": "거부" in (r.get("prcs_stat_name") or ""), "time": (r.get("ord_tmd") or "").strip()}
+    for orig, q in cancels.items():
+        if orig in out:
+            out[orig].update(cancelled=True, cancel_qty=q)
+    return list(out.values())

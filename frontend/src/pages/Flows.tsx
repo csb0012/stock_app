@@ -103,6 +103,27 @@ export default function Flows() {
         </section>
       )}
 
+      {data?.retail && (
+        <section className="card" style={{ marginBottom: 16, fontSize: 12.5, lineHeight: 1.7 }} data-testid="flow-retail">
+          <h2 style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>개미만 사는 종목은 약했나? (과거 사례로 판단)</h2>
+          {data.retail.retail?.n ? (
+            <>
+              <div>
+                '{data.retail.rule}' 종목을 다음 날 종가에 샀다면 {data.retail.horizon}거래일 뒤 같은 날 전 종목 중간값 대비 평균{" "}
+                <strong style={{ color: (data.retail.retail.avg_excess ?? 0) < 0 ? "var(--red)" : "var(--green)" }}>
+                  {data.retail.retail.avg_excess > 0 ? "+" : ""}{data.retail.retail.avg_excess}%p</strong>, 이긴 비율 <strong>{data.retail.retail.beat_rate}%</strong>
+                {" "}({data.retail.retail.n.toLocaleString()}건 · {data.retail.dates}일).
+                {data.retail.double?.n ? <> 참고: 쌍끌이 2일↑ 종목은 평균 {data.retail.double.avg_excess > 0 ? "+" : ""}{data.retail.double.avg_excess}%p ({data.retail.double.n.toLocaleString()}건).</> : null}
+              </div>
+              <div style={{ fontWeight: 600, color: data.retail.active ? "var(--red)" : "var(--text-secondary)" }}>
+                {data.retail.active ? `→ 실제로 약했음 — AI 모의투자·KIS 주문 판단에서 AI 점수 −${data.retail.penalty}점`
+                  : `→ 감점 안 함 (기준: ${data.retail.need})`}
+              </div>
+            </>
+          ) : <span style={{ color: "var(--text-muted)" }}>판단할 과거 사례가 아직 없습니다 — 수급이 쌓이고 20거래일 뒤 결과가 나와야 계산됩니다 (그동안 감점 안 함).</span>}
+        </section>
+      )}
+
       {picked && <StockQuoteCard item={picked} onClose={() => setPicked(null)} actions={<WatchButton item={picked} />} />}
 
       {data?.date && (

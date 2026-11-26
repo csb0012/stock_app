@@ -34,6 +34,8 @@ import asyncio
 import json
 import math
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, date, timedelta
 
 from sqlalchemy import select, update, func as sa_func
@@ -45,7 +47,65 @@ from app.services.kis_api import KISConnectionError
 from app.services import paper_engine as pe
 from app.services.market_calendar import _TZ, is_trading_day, next_trading_day, session_hours
 
-MARKET = "KR"
+MARKET = "KR"     # 예전 이름 (국내). 지금 시장은 mk() — 국내·미국을 같은 코드로 (미국 추가: 사용자 결정 2026-11-26)
+MARKETS = ("KR", "US")
+_MK: ContextVar = ContextVar("kis_market", default="KR")
+US_OFF = "미국 주문은 아직 꺼져 있음 — '다시 시작'(2단계 코드)을 누르면 시작합니다"
+US_SELL_SLIP = 1.0        # 미국 매도 지정가 = 현재가 −1% (모의투자 서버는 해외 시장가가 없어 바로 체결될 낮은 지정가로)
+_ROW_ID = {"KR": 1, "US": 2}
+_INTRA = {"KR": (9 * 60 + 30, 15 * 60), "US": (10 * 60, 15 * 60 + 30)}   # 장중 AI 판단 시간 (현지)
+_INDEX_NAME = {"KR": "코스피·코스닥", "US": "S&P500(SPY)·나스닥100(QQQ)"}
+
+
+def mk() -> str:
+    """지금 다루는 시장 (KR 기본). with market("US"): 안에서는 미국"""
+    return _MK.get()
+
+
+@contextmanager
+def market(m: str):
+    m = (m or "KR").upper()
+    if m not in MARKETS:
+        raise ValueError("market 은 KR 또는 US")
+    token = _MK.set(m)
+    try:
+        yield m
+    finally:
+        _MK.reset(token)
+
+
+def _local() -> datetime:
+    """그 시장 현지 시각 (국내 = 한국, 미국 = 뉴욕). 테스트가 _kst 를 고정하면 같이 따라감"""
+    t = _kst()
+    return t if mk() == "KR" else t.astimezone(_TZ[mk()])
+
+
+def _m(v, signed: bool = False) -> str:
+    """금액 표시 — 국내 원, 미국 달러"""
+    v = float(v or 0)
+    if mk() == "US":
+        return f"{'+' if signed and v > 0 else '-' if v < 0 else ''}${abs(v):,.2f}"
+    return f"{v:+,.0f}원" if signed else f"{v:,.0f}원"
+
+
+def _mine():
+    from sqlalchemy import or_
+    return KisOrder.market == mk() if mk() != "KR" else or_(KisOrder.market == "KR", KisOrder.market.is_(None))
+
+
+def _mine_log():
+    from sqlalchemy import or_
+    return KisLog.market == mk() if mk() != "KR" else or_(KisLog.market == "KR", KisLog.market.is_(None))
+
+
+def _intra_from() -> int:
+    return _INTRA[mk()][0]
+
+
+def _intra_to() -> int:
+    return _INTRA[mk()][1]
+
+
 # 이름: (기본값, 최소, 최대)
 LIMITS = {
     "max_order_krw": (2_000_000, 100_000, 100_000_000),
@@ -57,6 +117,8 @@ LIMITS = {
     "limit_slip_pct": (0.3, 0.0, 2.0),
     "intraday_every_min": (5, 0, 60),
 }
+# 미국: 금액 항목은 달러 (키 이름은 국내와 같게 두고 뜻만 달러 — 코드 한 벌로)
+LIMITS_US = {**LIMITS, "max_order_krw": (1_500, 50, 100_000), "max_loss_krw": (400, 10, 100_000)}
 LIMIT_LABELS = {
     "max_order_krw": "1회 매수 한도 (원)", "max_orders_day": "하루 주문 횟수", "max_loss_krw": "하루 손실 한도 (원)",
     "max_gap_pct": "제안 뒤 가격 상승 허용 (%)", "fast_drop_pct": "10분 급락 → 매수 취소 (%)",
@@ -68,6 +130,17 @@ STATUS_LABELS = {
     "filled": "체결", "partial": "일부 체결", "unfilled": "안 체결", "unknown": "결과 모름 (KIS 에서 확인)",
     "rejected": "거절", "expired": "기한 지남", "cancelled": "취소", "blocked": "안전장치로 안 보냄", "failed": "KIS 거부",
 }
+LIMIT_LABELS_US = {**LIMIT_LABELS, "max_order_krw": "1회 매수 한도 (달러)", "max_loss_krw": "하루 손실 한도 (달러)"}
+
+
+def _limit_defs() -> dict:
+    return LIMITS_US if mk() == "US" else LIMITS
+
+
+def _limit_labels() -> dict:
+    return LIMIT_LABELS_US if mk() == "US" else LIMIT_LABELS
+
+
 OPEN_AFTER = 1            # 개장 몇 분 뒤 승인된 주문 보내기
 STOP_BEFORE_CLOSE = 10    # 장 마감 몇 분 전부터 새 주문 안 보냄 (15:20~ 동시호가)
 PROPOSE_AFTER = 15        # 장 마감 몇 분 뒤 제안
@@ -100,6 +173,21 @@ _next_try: dict = {}      # 주문 id → 다시 확인할 시각
 _wait_kind: dict = {}     # 주문 id → 마지막 기다림 이유 종류 (감사 로그는 이유가 바뀔 때만)
 _intraday: dict = {"running": False, "last": None, "result": None, "error": None, "task": None, "notes": [], "waiting": [], "took": None}
 _watch: dict = {"last": None, "error": None, "symbols": 0, "realtime": 0, "rest": 0, "missing": 0}
+# 미국용 같은 모양 (국내는 위 이름 그대로 — 테스트·예전 코드가 그 이름을 씀)
+_US: dict = {
+    "_status": {"last_tick": None, "last_error": None},
+    "_balance_cache": {"at": 0.0, "data": None, "error": None},
+    "_rest": {"at": 0.0, "data": {}, "error": None},
+    "_index": {"at": 0.0, "change": None, "error": None},
+    "_intraday": {"running": False, "last": None, "result": None, "error": None, "task": None, "notes": [], "waiting": [], "took": None},
+    "_watch": {"last": None, "error": None, "symbols": 0, "realtime": 0, "rest": 0, "missing": 0},
+}
+_last_exit_at: dict = {"KR": 0.0, "US": 0.0}
+
+
+def _g(name: str):
+    """시장별 상태 dict"""
+    return globals()[name] if mk() == "KR" else _US[name]
 
 
 class TradeError(Exception):
@@ -107,7 +195,7 @@ class TradeError(Exception):
 
 
 def _kst() -> datetime:
-    return datetime.now(_TZ[MARKET])
+    return datetime.now(_TZ[mk()])
 
 
 def _hm(now: datetime) -> int:
@@ -120,14 +208,15 @@ def configured() -> bool:
 
 def clean_limits(raw: dict | None, base: dict | None = None) -> dict:
     raw, out = raw or {}, {}
-    for k, (dflt, lo, hi) in LIMITS.items():
+    labels = _limit_labels()
+    for k, (dflt, lo, hi) in _limit_defs().items():
         v = raw.get(k, (base or {}).get(k, dflt))
         try:
             v = float(v)
         except (TypeError, ValueError):
-            raise ValueError(f"{LIMIT_LABELS[k]} 값이 숫자가 아님")
+            raise ValueError(f"{labels[k]} 값이 숫자가 아님")
         if math.isnan(v) or not (lo <= v <= hi):
-            raise ValueError(f"{LIMIT_LABELS[k]} 는 {lo:,}~{hi:,} 사이여야 함")
+            raise ValueError(f"{labels[k]} 는 {lo:,}~{hi:,} 사이여야 함")
         out[k] = int(v) if isinstance(dflt, int) else round(v, 2)
     if 0 < out["intraday_every_min"] < INTRADAY_MIN_EVERY:
         raise ValueError(f"{LIMIT_LABELS['intraday_every_min']} 는 0(끔) 또는 {INTRADAY_MIN_EVERY}~60 이어야 함")
@@ -136,10 +225,10 @@ def clean_limits(raw: dict | None, base: dict | None = None) -> dict:
 
 def market_window(now: datetime | None = None) -> str:
     """closed(휴장·장 전·장 후) / open(주문 가능) / closing(마감 직전 — 새 주문 안 보냄)"""
-    now = now or _kst()
-    if not is_trading_day(MARKET, now.date()):
+    now = now or _local()
+    if not is_trading_day(mk(), now.date()):
         return "closed"
-    o, c = session_hours(MARKET, now.date())
+    o, c = session_hours(mk(), now.date())
     hm = _hm(now)
     if o + OPEN_AFTER <= hm < c - STOP_BEFORE_CLOSE:
         return "open"
@@ -150,9 +239,9 @@ def market_window(now: datetime | None = None) -> str:
 
 def expiry_for(base_date: str) -> float:
     """판단 기준일 다음 거래일 장 마감 시각 (유닉스 초)"""
-    d = next_trading_day(MARKET, date.fromisoformat(base_date))
-    c = session_hours(MARKET, d)[1]
-    return datetime(d.year, d.month, d.day, c // 60, c % 60, tzinfo=_TZ[MARKET]).timestamp()
+    d = next_trading_day(mk(), date.fromisoformat(base_date))
+    c = session_hours(mk(), d)[1]
+    return datetime(d.year, d.month, d.day, c // 60, c % 60, tzinfo=_TZ[mk()]).timestamp()
 
 
 def _limits(row: KisTrade) -> dict:
@@ -168,9 +257,12 @@ def _stops_ok(row: KisTrade) -> bool:
 # ---------------- 저장 ----------------
 
 async def _row(db) -> KisTrade:
-    row = await db.get(KisTrade, 1)
+    rid = _ROW_ID[mk()]
+    row = await db.get(KisTrade, rid)
     if row is None:
-        row = KisTrade(id=1, halted=False, limits=json.dumps(clean_limits({})),
+        us = mk() == "US"   # 미국은 처음엔 꺼 둠 — 관리자가 2단계 코드로 '다시 시작'해야 제안·주문 시작
+        row = KisTrade(id=rid, halted=us, halted_reason=US_OFF if us else None, halted_at=time.time() if us else None,
+                       limits=json.dumps(clean_limits({})),
                        params=json.dumps(pe.clean_params({}), ensure_ascii=False), state="{}")
         db.add(row)
         await db.flush()
@@ -191,26 +283,60 @@ def _save(row: KisTrade, s: dict):
 
 
 async def audit(db, action: str, detail: str = "", user_id: int | None = None, order_id: int | None = None, ok: bool = True):
-    db.add(KisLog(at=time.time(), user_id=user_id, action=action, order_id=order_id, ok=ok, detail=(detail or "")[:1000]))
+    db.add(KisLog(market=mk(), at=time.time(), user_id=user_id, action=action, order_id=order_id, ok=ok, detail=(detail or "")[:1000]))
 
 
 def _today_start() -> float:
-    n = _kst()
-    return datetime(n.year, n.month, n.day, tzinfo=_TZ[MARKET]).timestamp()
+    n = _local()
+    return datetime(n.year, n.month, n.day, tzinfo=_TZ[mk()]).timestamp()
+
+
+# ---------------- KIS 주문 API (시장별) ----------------
+
+def _exchange_of(k: KisOrder) -> str | None:
+    """미국 주문 거래소 — 잔고에 있으면 그 거래소, 아니면 종목마스터"""
+    for h in ((_g('_balance_cache').get("data") or {}).get("holdings") or []):
+        if h["symbol"] == k.symbol and h.get("exchange"):
+            return h["exchange"]
+    return None
+
+
+async def _bk_balance() -> dict:
+    return await (kis_order.us_balance() if mk() == "US" else kis_order.balance())
+
+
+async def _bk_order(k: KisOrder, qty: int, limit_px: float | None) -> dict:
+    if mk() == "US":
+        return await kis_order.us_order(k.side, k.symbol, qty, limit_px, _exchange_of(k))
+    return await kis_order.order(k.side, k.symbol, qty, limit_px)
+
+
+async def _bk_cancel(k: KisOrder) -> dict:
+    if mk() == "US":
+        return await kis_order.us_cancel(k.odno, k.symbol, max(1, int(k.qty or 0) - int(k.filled_qty or 0)), _exchange_of(k))
+    return await kis_order.cancel(k.odno, k.orgno or "")
+
+
+async def _bk_exec(day) -> list:
+    return await (kis_order.us_executions(day) if mk() == "US" else kis_order.executions(day))
+
+
+def _tick_up(px: float) -> float:
+    return kis_order.us_tick_up(px) if mk() == "US" else kis_order.tick_up(px)
 
 
 # ---------------- 잔고 · 대조 · 손실 한도 ----------------
 
 async def fetch_balance(max_age: float = 0) -> dict:
     """KIS 잔고 (max_age 초 안에 받은 게 있으면 그것)"""
-    if max_age and _balance_cache["data"] and time.time() - _balance_cache["at"] < max_age:
-        return _balance_cache["data"]
+    if max_age and _g('_balance_cache')["data"] and time.time() - _g('_balance_cache')["at"] < max_age:
+        return _g('_balance_cache')["data"]
     try:
-        b = await kis_order.balance()
+        b = await _bk_balance()
     except Exception as e:
-        _balance_cache["error"] = str(e)[:300]
+        _g('_balance_cache')["error"] = str(e)[:300]
         raise
-    _balance_cache.update(at=time.time(), data=b, error=None)
+    _g('_balance_cache').update(at=time.time(), data=b, error=None)
     return b
 
 
@@ -237,7 +363,7 @@ def _meta_for(h: dict, params: dict, day: str) -> dict:
 
 def baseline(s: dict, bal: dict, params: dict):
     """지금 KIS 잔고를 앱 기록 기준으로 (처음 연결 · '기준 다시 맞추기')"""
-    day = _kst().date().isoformat()
+    day = _local().date().isoformat()
     s["expected"] = {h["symbol"]: h["qty"] for h in bal["holdings"]}
     s["meta"] = {sym: m for sym, m in s["meta"].items() if sym in s["expected"]}
     for h in bal["holdings"]:
@@ -246,7 +372,7 @@ def baseline(s: dict, bal: dict, params: dict):
 
 def day_loss(s: dict, bal: dict) -> float:
     """오늘 손실(원, 이익이면 음수) = 오늘 기준 총자산 − 지금 총자산. 기준 = KIS 전날 총자산, 없으면 오늘 처음 본 총자산"""
-    today = _kst().date().isoformat()
+    today = _local().date().isoformat()
     ds = s.get("day_start") or {}
     if ds.get("date") != today:
         ds = {"date": today, "total": bal["prev_total"] or bal["total"]}
@@ -258,7 +384,7 @@ async def _halt(db, row: KisTrade, reason: str, user_id: int | None):
     if row.halted:
         return
     row.halted, row.halted_reason, row.halted_at = True, reason, time.time()
-    n = (await db.execute(update(KisOrder).where(KisOrder.status.in_(("proposed", "approved")))
+    n = (await db.execute(update(KisOrder).where(_mine(), KisOrder.status.in_(("proposed", "approved")))
                           .values(status="cancelled", message=f"정지로 취소 — {reason}"))).rowcount
     await audit(db, "halt", f"{reason} (승인 대기·대기 주문 {n}건 취소)", user_id, ok=False)
     _alert_admins("[StockApp] KIS 모의투자 주문 정지", f"주문을 멈췄습니다: {reason}\n"
@@ -277,14 +403,14 @@ def _ws_status() -> dict:
 async def check_loss(db, row: KisTrade, s: dict, bal: dict, limits: dict) -> float:
     loss = day_loss(s, bal)
     if loss >= limits["max_loss_krw"] and not row.halted:
-        await _halt(db, row, f"하루 손실 한도 도달 — 오늘 {loss:,.0f}원 손실 (한도 {limits['max_loss_krw']:,}원)", None)
+        await _halt(db, row, f"하루 손실 한도 도달 — 오늘 {_m(loss)} 손실 (한도 {_m(limits['max_loss_krw'])})", None)
     return loss
 
 
 # ---------------- 제안 ----------------
 
 def _positions_for_decide(s: dict, bal: dict, params: dict) -> dict:
-    day = _kst().date().isoformat()
+    day = _local().date().isoformat()
     pos = {}
     for h in bal["holdings"]:
         m = s["meta"].get(h["symbol"]) or _meta_for(h, params, day)
@@ -312,7 +438,7 @@ async def propose(user_id: int | None = None) -> dict:
                     baseline(s, bal, params)
                     await audit(db, "baseline", f"처음 연결 — KIS 잔고 {len(bal['holdings'])}종목을 앱 기록 기준으로")
                 positions = _positions_for_decide(s, bal, params)
-                a = await papertrade.analyze_live(MARKET, owner, positions, params)
+                a = await papertrade.analyze_live(mk(), owner, positions, params)
                 rows, last = a["rows"], a["last"]
                 if s.get("last_close") != last:   # 종가 반영(하루 한 번): 보유일·최고가·추격 손절
                     closes = {sym: r["close"] for sym, r in rows.items() if sym in positions}
@@ -322,21 +448,21 @@ async def propose(user_id: int | None = None) -> dict:
                         s["meta"][sym].update(hold_days=p["hold_days"], peak=p["peak"], stop=p["stop"])
                     s["last_close"] = last
                 state = {"cash": float(max(0, bal["d2_cash"])), "positions": positions}
-                orders, notes = pe.decide(state, rows, a["regime"], a["events"], params, MARKET)
+                orders, notes = pe.decide(state, rows, a["regime"], a["events"], params, mk())
             except Exception as e:
                 why = str(e)[:300] or type(e).__name__
-                row.last_error = f"{_kst().isoformat(timespec='seconds')} 제안 실패: {why}"
+                row.last_error = f"{_local().isoformat(timespec='seconds')} 제안 실패: {why}"
                 await audit(db, "propose_fail", why, user_id, ok=False)
                 await db.commit()
                 raise
             now = time.time()
-            old = (await db.execute(update(KisOrder).where(KisOrder.status == "proposed")
+            old = (await db.execute(update(KisOrder).where(_mine(), KisOrder.status == "proposed")
                                     .values(status="expired", message="새 제안으로 바뀜"))).rowcount
             exp = expiry_for(last)
             made = []
             for o in orders:
                 r = rows.get(o["symbol"]) or {}
-                k = KisOrder(created_at=now, base_date=last, source="ai", side=o["side"], symbol=o["symbol"], name=o["name"],
+                k = KisOrder(market=mk(), created_at=now, base_date=last, source="ai", side=o["side"], symbol=o["symbol"], name=o["name"],
                              qty=int(o["qty"]) if o["side"] == "sell" else None, budget=o.get("budget"),
                              ref_price=r.get("close"), reason=o["reason"], score=o.get("score") or r.get("score"),
                              status="proposed", expires_at=exp)
@@ -344,14 +470,14 @@ async def propose(user_id: int | None = None) -> dict:
                 made.append(k)
             top = [{"symbol": sym, "name": r["name"], "score": r["score"], "prob": r["prob"]}
                    for sym, r in sorted(rows.items(), key=lambda kv: -kv[1]["score"])[:5]]
-            s["log"].append({"ts": _kst().isoformat(timespec="seconds"), "base_date": last, "regime": a["regime"],
+            s["log"].append({"ts": _local().isoformat(timespec="seconds"), "base_date": last, "regime": a["regime"],
                              "events": a["events"], "manual": bool(user_id), "notes": notes
                              + ([pe.weights_text(a["aw"])] if params.get("adaptive") else [])
                              + ([f"일봉 못 받은 종목 {len(a['errors'])}개"] if a["errors"] else []),
                              "orders": [f"{'매수' if o['side'] == 'buy' else '매도'} {o['name']} — {o['reason']}" for o in orders],
                              "top": top, "universe": len(rows)})
             if not user_id:
-                row.last_proposal_day = _kst().date().isoformat()
+                row.last_proposal_day = _local().date().isoformat()
             row.last_error = None
             _save(row, s)
             await db.flush()
@@ -361,8 +487,8 @@ async def propose(user_id: int | None = None) -> dict:
     if made:
         _alert_admins(f"[StockApp] AI 주문 제안 {len(made)}건 — 승인 대기",
                       "\n".join(f"- {'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol})"
-                                + (f" {k.budget:,.0f}원어치" if k.side == "buy" and k.budget else f" {k.qty}주" if k.qty else "") for k in made)
-                      + "\n\n앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 승인하세요. 승인하지 않으면 주문하지 않습니다. (다음 거래일 15:30 까지)",
+                                + (f" {_m(k.budget)}어치" if k.side == "buy" and k.budget else f" {k.qty}주" if k.qty else "") for k in made)
+                      + f"\n\n앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 승인하세요. 승인하지 않으면 주문하지 않습니다. (다음 거래일 {_hours_txt()[2]}{_tz_note()} 까지)",
                       priority=4, tags=["chart_with_upwards_trend"])
     return {"proposed": len(made), "base_date": last, "notes": notes}
 
@@ -373,9 +499,19 @@ def _hhmm(m: int) -> str:
     return f"{m // 60:02d}:{m % 60:02d}"
 
 
+def _tz_note() -> str:
+    return " (뉴욕 시각)" if mk() == "US" else ""
+
+
+def _hours_txt(d: date | None = None) -> tuple:
+    """(주문 시작, 새 주문 마감, 장 마감) 'HH:MM' — 현지 시각"""
+    o, c = session_hours(mk(), d or _local().date())
+    return _hhmm(o + OPEN_AFTER), _hhmm(c - STOP_BEFORE_CLOSE), _hhmm(c)
+
+
 def _intraday_today(s: dict) -> dict:
     """오늘 장중 판단 기록 {date, last_start(유닉스 초), runs, seen{종목: 마지막 통과 시각}} (날짜가 바뀌면 새로)"""
-    today = _kst().date().isoformat()
+    today = _local().date().isoformat()
     st = s.get("intraday") or {}
     if st.get("date") != today:
         st = {"date": today, "last_start": None, "runs": 0, "seen": {}}
@@ -386,9 +522,9 @@ def _intraday_today(s: dict) -> dict:
 
 def intraday_due(s: dict, limits: dict, now: datetime | None = None) -> bool:
     """지금 장중 판단을 할 때인가: 장중 주문 시간 + 09:30~15:00 + 간격(분)이 지남. 간격 0 = 끔"""
-    now = now or _kst()
+    now = now or _local()
     every = int(limits.get("intraday_every_min") or 0)
-    if every <= 0 or market_window(now) != "open" or not (INTRADAY_FROM <= _hm(now) <= INTRADAY_TO):
+    if every <= 0 or market_window(now) != "open" or not (_intra_from() <= _hm(now) <= _intra_to()):
         return False
     st = s.get("intraday") or {}
     last = st.get("last_start") if st.get("date") == now.date().isoformat() else None
@@ -409,9 +545,9 @@ def intraday_chase(r: dict, prev: float | None, limits: dict) -> str | None:
 
 def _since_prev_close() -> float:
     """직전 거래일 장 마감 시각 — 그 뒤에 만든 제안·주문이 있는 종목은 장중 제안에서 뺌 (어제 저녁 거절한 종목을 다시 묻지 않게)"""
-    d = pe._prev_trading_day(MARKET, _kst().date())
-    c = session_hours(MARKET, d)[1]
-    return datetime(d.year, d.month, d.day, c // 60, c % 60, tzinfo=_TZ[MARKET]).timestamp()
+    d = pe._prev_trading_day(mk(), _local().date())
+    c = session_hours(mk(), d)[1]
+    return datetime(d.year, d.month, d.day, c // 60, c % 60, tzinfo=_TZ[mk()]).timestamp()
 
 
 async def propose_intraday(user_id: int | None = None) -> dict:
@@ -427,10 +563,11 @@ async def propose_intraday(user_id: int | None = None) -> dict:
     if not configured():
         raise TradeError("KIS 모의투자 키가 없음")
     if market_window() != "open":
-        raise TradeError("장중(09:01~15:20)에만 장중 판단을 합니다")
-    if _intraday["running"]:
+        o_, c_, _ = _hours_txt()
+        raise TradeError(f"장중({o_}~{c_}{_tz_note()})에만 장중 판단을 합니다")
+    if _g('_intraday')["running"]:
         raise TradeError("장중 판단이 이미 진행 중 — 끝나면 결과가 보입니다")
-    _intraday.update(running=True, error=None)
+    _g('_intraday').update(running=True, error=None)
     started = time.time()
     t0 = _mono()
     try:
@@ -442,7 +579,7 @@ async def propose_intraday(user_id: int | None = None) -> dict:
             params, s, limits = json.loads(row.params), _state(row), _limits(row)
             owner = user_id or await _owner_id(db)
             since = _since_prev_close()
-            recent = (await db.execute(select(KisOrder).where(
+            recent = (await db.execute(select(KisOrder).where(_mine(), 
                 KisOrder.status.in_(("proposed", "approved") + ACTIVE) | (KisOrder.created_at >= since)))).scalars().all()
         bal = await fetch_balance()
         positions = _positions_for_decide(s, bal, params)
@@ -453,7 +590,7 @@ async def propose_intraday(user_id: int | None = None) -> dict:
             px = float(k.ref_price or 0) or 1.0
             positions.setdefault(k.symbol, {"name": k.name, "qty": max(1, int(float(k.budget or 0) // px)), "avg": px, "last": px,
                                             "hold_days": 0, "peak": px, "stop": 0, "target": 0, "buy_fee": 0.0, "pending": True})
-        a = await papertrade.analyze_live(MARKET, owner, positions, params, intraday=True)
+        a = await papertrade.analyze_live(mk(), owner, positions, params, intraday=True)
         rows, prev = a["rows"], a.get("prev_close") or {}
         notes, out = [], {}
         for sym, r in rows.items():
@@ -469,13 +606,13 @@ async def propose_intraday(user_id: int | None = None) -> dict:
                 continue
             out[sym] = r
         state = {"cash": float(max(0.0, bal["d2_cash"] - reserved)), "positions": positions}
-        orders, n2 = pe.decide(state, out, a["regime"], a["events"], params, MARKET)
+        orders, n2 = pe.decide(state, out, a["regime"], a["events"], params, mk())
         orders = [o for o in orders if o["side"] == "buy"]
         notes += n2
         if reserved:
-            notes.insert(0, f"승인 대기·진행 중 매수 {len(pending)}건({reserved:,.0f}원)은 이미 산 것으로 계산")
+            notes.insert(0, f"승인 대기·진행 중 매수 {len(pending)}건({_m(reserved)})은 이미 산 것으로 계산")
         notes += a["errors"][:2]
-        hm = _hhmm(_hm(_kst()))
+        hm = _hhmm(_hm(_local()))
         every = int(limits.get("intraday_every_min") or 0) or 10
         made, waiting = [], []
         async with _lock:
@@ -487,8 +624,8 @@ async def propose_intraday(user_id: int | None = None) -> dict:
                     raise TradeError("판단하는 사이 장중 주문 시간이 끝남 — 제안 안 함")
                 s = _state(row)
                 st = _intraday_today(s)
-                again = set((await db.execute(select(KisOrder.symbol).where(KisOrder.created_at >= started))).scalars().all())
-                close_today = expiry_for((_kst().date() - timedelta(days=1)).isoformat())
+                again = set((await db.execute(select(KisOrder.symbol).where(_mine(), KisOrder.created_at >= started))).scalars().all())
+                close_today = expiry_for((_local().date() - timedelta(days=1)).isoformat())
                 now = time.time()
                 seen = st["seen"]
                 st["seen"] = {o["symbol"]: now for o in orders}   # 이번에 통과한 종목만 남김 (통과 못 하면 연속 끊김)
@@ -499,7 +636,7 @@ async def propose_intraday(user_id: int | None = None) -> dict:
                         waiting.append(o["name"])   # 처음 통과 — 다음 판단에서도 통과하면 제안
                         continue
                     r = out[o["symbol"]]
-                    k = KisOrder(created_at=now, base_date=_kst().date().isoformat(), source="intraday", side="buy", symbol=o["symbol"],
+                    k = KisOrder(market=mk(), created_at=now, base_date=_local().date().isoformat(), source="intraday", side="buy", symbol=o["symbol"],
                                  name=o["name"], budget=o.get("budget"), ref_price=r["close"], score=o.get("score") or r.get("score"),
                                  reason=f"장중 판단 {hm} — {o['reason']}", status="proposed", expires_at=close_today)
                     db.add(k)
@@ -510,7 +647,7 @@ async def propose_intraday(user_id: int | None = None) -> dict:
                 if waiting:
                     notes.insert(0, f"확인 대기: {', '.join(waiting[:4])} — 다음 판단({every}분 뒤)에서도 통과하면 제안")
                 if made or user_id:
-                    s["log"].append({"ts": _kst().isoformat(timespec="seconds"), "base_date": f"{a['last']} 장중 {hm}", "intraday": True,
+                    s["log"].append({"ts": _local().isoformat(timespec="seconds"), "base_date": f"{a['last']} 장중 {hm}", "intraday": True,
                                      "regime": a["regime"], "events": a["events"], "manual": bool(user_id), "notes": notes,
                                      "orders": [f"매수 {k.name} — {k.reason}" for k in made], "top": top, "universe": len(rows)})
                 s["intraday"] = st
@@ -521,30 +658,30 @@ async def propose_intraday(user_id: int | None = None) -> dict:
                 await db.commit()
         if made:
             _alert_admins(f"[StockApp] 장중 AI 매수 제안 {len(made)}건 — 승인 대기",
-                          "\n".join(f"- 매수 {k.name}({k.symbol})" + (f" {k.budget:,.0f}원어치" if k.budget else "") + f" · 지금 {k.ref_price:,.0f}원"
+                          "\n".join(f"- 매수 {k.name}({k.symbol})" + (f" {_m(k.budget)}어치" if k.budget else "") + f" · 지금 {_m(k.ref_price)}"
                                     for k in made)
-                          + "\n\n장중 판단(오늘 지금 가격 기준)입니다. 승인하지 않으면 주문하지 않습니다. (오늘 15:20 까지)",
+                          + f"\n\n장중 판단(오늘 지금 가격 기준)입니다. 승인하지 않으면 주문하지 않습니다. (오늘 {_hours_txt()[1]}{_tz_note()} 까지)",
                           priority=4, tags=["chart_with_upwards_trend"])
         res = f"{hm} 새 매수 제안 {len(made)}건" + (f" · 확인 대기 {len(waiting)}" if waiting else "")
-        _intraday.update(last=_kst().isoformat(timespec="seconds"), result=res, error=None, notes=notes[:6], waiting=waiting,
+        _g('_intraday').update(last=_local().isoformat(timespec="seconds"), result=res, error=None, notes=notes[:6], waiting=waiting,
                          took=round(_mono() - t0, 1))
         return {"proposed": len(made), "base_date": f"{a['last']} 장중 {hm}", "notes": notes, "intraday": True, "waiting": waiting}
     except Exception as e:
         why = str(e)[:300] or type(e).__name__
-        _intraday.update(last=_kst().isoformat(timespec="seconds"), error=why)
+        _g('_intraday').update(last=_local().isoformat(timespec="seconds"), error=why)
         if not isinstance(e, TradeError):
             async with AsyncSessionLocal() as db:
                 await audit(db, "propose_intraday_fail", why, user_id, ok=False)
                 await db.commit()
         raise
     finally:
-        _intraday["running"] = False
+        _g('_intraday')["running"] = False
 
 
 async def schedule_intraday() -> bool:
     """장중 판단 간격이 지났으면 뒤에서 판단 시작 (loop 가 5초마다 부름 — 판단 중에도 감시는 안 멈춤).
     시작 시각을 먼저 기록 → 실패해도 다음 간격에 다시 (매 5초 다시 하지 않음). 판단이 간격보다 오래 걸리면 끝난 뒤 바로 다음"""
-    if not configured() or _intraday["running"]:
+    if not configured() or _g('_intraday')["running"]:
         return False
     async with AsyncSessionLocal() as db:
         row = await _row(db)
@@ -556,7 +693,7 @@ async def schedule_intraday() -> bool:
             await db.commit()
             return False
         st = _intraday_today(s)
-        st.update(last_start=_kst().timestamp(), runs=int(st["runs"]) + 1)   # (intraday_due 와 같은 시계)
+        st.update(last_start=_local().timestamp(), runs=int(st["runs"]) + 1)   # (intraday_due 와 같은 시계)
         s["intraday"] = st
         _save(row, s)
         await db.commit()
@@ -564,9 +701,9 @@ async def schedule_intraday() -> bool:
     async def go():
         try:
             await propose_intraday()
-        except Exception as e:   # noqa: BLE001 — _intraday['error'] 로 화면에 보임
+        except Exception as e:   # noqa: BLE001 — _g('_intraday')['error'] 로 화면에 보임
             print(f"[kis] 장중 제안 실패: {e}")
-    _intraday["task"] = asyncio.get_running_loop().create_task(go())
+    _g('_intraday')["task"] = asyncio.get_running_loop().create_task(go())
     return True
 
 
@@ -575,6 +712,8 @@ async def schedule_intraday() -> bool:
 async def _fetch_prices(symbols: list) -> dict:
     """종목 → (가격, 출처 'ws'|'rest'). KIS 실시간 체결가(10초 안 값) 우선, 없는 종목은 REST 멀티종목 시세(REST_EVERY 초마다).
     못 받은 종목은 빠짐 (가격을 지어내지 않음)"""
+    if mk() == "US":
+        return await _us_prices(symbols)
     from app.services import kis_ws
     from app.services.kis_api import kis_client
     kis_ws.want(symbols)
@@ -586,17 +725,44 @@ async def _fetch_prices(symbols: list) -> dict:
         else:
             missing.append(sym)
     now = time.time()
-    if missing and now - _rest["at"] >= REST_EVERY:
-        _rest["at"] = now
+    if missing and now - _g('_rest')["at"] >= REST_EVERY:
+        _g('_rest')["at"] = now
         try:
             for i in range(0, len(missing), 30):
                 for sym, r in (await kis_client.get_kr_multi_price(missing[i:i + 30])).items():
-                    _rest["data"][sym] = (float(r["price"]), now)
-            _rest["error"] = None
+                    _g('_rest')["data"][sym] = (float(r["price"]), now)
+            _g('_rest')["error"] = None
         except Exception as e:   # noqa: BLE001 — 다음 주기에 다시. 그동안 그 종목은 판단 안 함
-            _rest["error"] = f"REST 시세 실패: {str(e)[:150]}"
+            _g('_rest')["error"] = f"REST 시세 실패: {str(e)[:150]}"
     for sym in missing:
-        v = _rest["data"].get(sym)
+        v = _g('_rest')["data"].get(sym)
+        if v and now - v[1] <= REST_EVERY * 3:
+            out[sym] = (v[0], "rest")
+    return out
+
+
+async def _us_prices(symbols: list) -> dict:
+    """미국: KIS 해외 현재가를 REST_EVERY(15)초마다 직접 (화면용 공유 캐시는 모의 키·장 밖이면 1~10분이라 손절 감시엔 늦음).
+    못 받은 종목은 빠짐 — Yahoo 등 다른 출처로 대신하지 않음 (늦은 가격으로 주문 판단 안 함)"""
+    from app.services.kis_api import kis_client
+    from app.services.kis_order import US_EXCG_BACK, us_exchange
+    rest, now = _g('_rest'), time.time()
+    if now - rest["at"] >= REST_EVERY:
+        rest["at"] = now
+        errs = []
+        for sym in symbols:
+            try:
+                q = await kis_client.get_us_stock_price(sym, US_EXCG_BACK.get(us_exchange(sym), "NAS"))
+                if q.get("price"):
+                    rest["data"][sym] = (float(q["price"]), now)
+                else:
+                    errs.append(f"{sym}: 현재가 0")
+            except Exception as e:   # noqa: BLE001 — 다음 주기에 다시. 그동안 그 종목은 판단 안 함
+                errs.append(f"{sym}: {str(e)[:100]}")
+        rest["error"] = ("KIS 해외 현재가 실패 — " + "; ".join(errs[:2])) if errs else None
+    out = {}
+    for sym in symbols:
+        v = rest["data"].get(sym)
         if v and now - v[1] <= REST_EVERY * 3:
             out[sym] = (v[0], "rest")
     return out
@@ -626,11 +792,11 @@ def shock_reason(k: KisOrder, px: float, limits: dict) -> str | None:
     if k.ref_price:
         gap = round((px / k.ref_price - 1) * 100, 6)   # (부동소수 오차로 딱 경계값이 넘친 것으로 보이지 않게)
         if gap < -2 * limits["max_gap_pct"]:
-            return (f"제안 때 {k.ref_price:,.0f}원 → 지금 {px:,.0f}원 ({gap:.1f}%, 허용 −{2 * limits['max_gap_pct']:g}%) "
+            return (f"제안 때 {_m(k.ref_price)} → 지금 {_m(px)} ({gap:.1f}%, 허용 −{2 * limits['max_gap_pct']:g}%) "
                     f"— 급락 (판단 때와 상황이 다름)")
     fd = fast_drop(k.symbol, px)
     if fd and fd[0] <= -limits["fast_drop_pct"]:
-        return f"10분 안에 {fd[0]:.1f}% 급락 ({fd[1]:,.0f} → {px:,.0f}원, 기준 −{limits['fast_drop_pct']:g}%)"
+        return f"10분 안에 {fd[0]:.1f}% 급락 ({fd[1]:,.0f} → {_m(px)}, 기준 −{limits['fast_drop_pct']:g}%)"
     return None
 
 
@@ -638,30 +804,35 @@ async def _index_change() -> float | None:
     """코스피·코스닥 중 더 많이 빠진 쪽의 전일 대비 등락률(%) — INDEX_EVERY 초 캐시. 못 받으면 None"""
     from app.services.kis_api import kis_client
     now = time.time()
-    if now - _index["at"] < INDEX_EVERY:
-        return _index["change"]
-    _index["at"] = now
+    if now - _g('_index')["at"] < INDEX_EVERY:
+        return _g('_index')["change"]
+    _g('_index')["at"] = now
     try:
-        a, b = await kis_client.get_kr_index("0001"), await kis_client.get_kr_index("1001")
-        _index.update(change=min(float(a["change_rate"]), float(b["change_rate"])), error=None)
+        if mk() == "US":   # 미국: S&P500·나스닥100 ETF(SPY·QQQ) 의 KIS 해외 현재가 등락률
+            a, b = await kis_client.get_us_stock_price("SPY", "AMS"), await kis_client.get_us_stock_price("QQQ", "NAS")
+            if not a.get("price") or not b.get("price"):
+                raise RuntimeError("KIS 해외 현재가 SPY·QQQ 가 0")
+        else:
+            a, b = await kis_client.get_kr_index("0001"), await kis_client.get_kr_index("1001")
+        _g('_index').update(change=min(float(a["change_rate"]), float(b["change_rate"])), error=None)
     except Exception as e:   # noqa: BLE001 — 지수를 모르면 매수는 기다림 (이유를 화면에 표시)
-        _index.update(change=None, error=str(e)[:200])
-    return _index["change"]
+        _g('_index').update(change=None, error=str(e)[:200])
+    return _g('_index')["change"]
 
 
 def buy_wait_reason(k: KisOrder, px: float, limits: dict, idx_change: float | None, now: datetime | None = None) -> tuple | None:
     """승인한 매수를 지금은 안 보내고 기다릴 이유 → (종류, 문구). 다 괜찮으면 None"""
-    now = now or _kst()
-    o, _c = session_hours(MARKET, now.date())
+    now = now or _local()
+    o, _c = session_hours(mk(), now.date())
     if _hm(now) < o + BUY_AFTER_OPEN:
         return "open", f"개장 {BUY_AFTER_OPEN}분 뒤부터 매수 (개장 직후엔 가격이 크게 출렁임)"
     if k.ref_price:
         gap = round((px / k.ref_price - 1) * 100, 6)
         if gap > limits["max_gap_pct"]:
-            return "gap", (f"제안 때 {k.ref_price:,.0f}원 → 지금 {px:,.0f}원 (+{gap:.1f}%, 허용 +{limits['max_gap_pct']:g}%) "
+            return "gap", (f"제안 때 {_m(k.ref_price)} → 지금 {_m(px)} (+{gap:.1f}%, 허용 +{limits['max_gap_pct']:g}%) "
                            f"— 비싸서 기다림 (쫓아가서 안 삼)")
     if idx_change is None:
-        return "index", "코스피·코스닥 지수를 못 받아 기다림" + (f" ({_index['error'][:80]})" if _index.get("error") else "")
+        return "index", f"{_INDEX_NAME[mk()]} 지수를 못 받아 기다림" + (f" ({_g('_index')['error'][:80]})" if _g('_index').get("error") else "")
     if idx_change <= -limits["index_drop_pct"]:
         return "index", f"지수 {idx_change:.1f}% 하락 (기준 −{limits['index_drop_pct']:g}%) — 시장 전체가 빠져서 매수 보류"
     return None
@@ -670,7 +841,7 @@ def buy_wait_reason(k: KisOrder, px: float, limits: dict, idx_change: float | No
 async def _set_wait(order_id: int, kind: str, why: str):
     """조건 대기 이유를 주문에 적음 (승인 상태일 때만 — 그 사이 처리된 주문은 안 건드림). 감사 로그는 이유 종류가 바뀔 때만"""
     async with AsyncSessionLocal() as db:
-        await db.execute(update(KisOrder).where(KisOrder.id == order_id, KisOrder.status == "approved").values(message=why))
+        await db.execute(update(KisOrder).where(_mine(), KisOrder.id == order_id, KisOrder.status == "approved").values(message=why))
         if _wait_kind.get(order_id) != kind:
             _wait_kind[order_id] = kind
             await audit(db, "wait", why, order_id=order_id)
@@ -702,9 +873,9 @@ async def check_exits(prices: dict | None = None) -> int:
                 held = {sym: (int(q), (s["meta"].get(sym) or {}).get("name") or sym, prices[sym])
                         for sym, q in (s["expected"] or {}).items() if int(q) > 0 and prices.get(sym)}
             today0, now = _today_start(), time.time()
-            sells = (await db.execute(select(KisOrder).where(KisOrder.side == "sell", (
+            sells = (await db.execute(select(KisOrder).where(_mine(), KisOrder.side == "sell", (
                 KisOrder.status.in_(("proposed", "approved") + ACTIVE)) | (KisOrder.created_at >= today0)))).scalars().all()
-            close_today = expiry_for((_kst().date() - timedelta(days=1)).isoformat())
+            close_today = expiry_for((_local().date() - timedelta(days=1)).isoformat())
             for sym, (qty, name, px) in held.items():
                 m = s["meta"].get(sym)
                 if not m:
@@ -719,17 +890,17 @@ async def check_exits(prices: dict | None = None) -> int:
                     tries = [o.created_at for o in mine if o.source == "stop" and o.created_at >= today0]
                     if len(tries) >= STOP_TRIES or (tries and now - max(tries) < STOP_RETRY):
                         continue
-                    k = KisOrder(created_at=now, base_date=_kst().date().isoformat(), source="stop", side="sell", symbol=sym,
+                    k = KisOrder(market=mk(), created_at=now, base_date=_local().date().isoformat(), source="stop", side="sell", symbol=sym,
                                  name=name, qty=qty, ref_price=px, status="approved", decided_at=now, expires_at=close_today,
-                                 reason=f"손절가 도달 — 자동 매도 (장중 {px:,.0f}원 · 손절 {m['stop']:,.0f}원)")
+                                 reason=f"손절가 도달 — 자동 매도 (장중 {_m(px)} · 손절 {_m(m['stop'])})")
                     db.add(k)
                     stops.append(k)
                 elif px >= m["target"] and not row.halted:
                     if any(o.status in ("proposed", "approved") + ACTIVE or (o.source == "exit" and o.created_at >= today0) for o in mine):
                         continue   # 제안 중이거나 오늘 이미 제안함 (거절했으면 오늘은 다시 안 물음)
-                    k = KisOrder(created_at=now, base_date=_kst().date().isoformat(), source="exit", side="sell", symbol=sym,
+                    k = KisOrder(market=mk(), created_at=now, base_date=_local().date().isoformat(), source="exit", side="sell", symbol=sym,
                                  name=name, qty=qty, ref_price=px, status="proposed", expires_at=close_today,
-                                 reason=f"목표가 도달 (장중 {px:,.0f}원 · 목표 {m['target']:,.0f}원) — 승인하면 매도")
+                                 reason=f"목표가 도달 (장중 {_m(px)} · 목표 {_m(m['target'])}) — 승인하면 매도")
                     db.add(k)
                     made.append(k)
             if made or stops:
@@ -761,7 +932,7 @@ async def approve(ids: list, user_id: int) -> list:
             raise TradeError(f"정지 중 — {row.halted_reason}. 다시 시작한 뒤 승인하세요")
         now = time.time()
         for i in ids:
-            r = await db.execute(update(KisOrder).where(KisOrder.id == i, KisOrder.status == "proposed", KisOrder.expires_at > now)
+            r = await db.execute(update(KisOrder).where(_mine(), KisOrder.id == i, KisOrder.status == "proposed", KisOrder.expires_at > now)
                                  .values(status="approved", decided_by=user_id, decided_at=now))
             if r.rowcount != 1:
                 out.append({"id": i, "status": None, "message": "승인할 수 없음 (이미 처리됐거나 기한 지남)"})
@@ -781,7 +952,7 @@ async def reject(ids: list, user_id: int) -> int:
     async with AsyncSessionLocal() as db:
         n = 0
         for i in ids:
-            r = await db.execute(update(KisOrder).where(KisOrder.id == i, KisOrder.status.in_(("proposed", "approved")))
+            r = await db.execute(update(KisOrder).where(_mine(), KisOrder.id == i, KisOrder.status.in_(("proposed", "approved")))
                                  .values(status="rejected", decided_by=user_id, decided_at=time.time()))
             if r.rowcount:
                 n += 1
@@ -796,7 +967,7 @@ async def cancel_sent(order_id: int, user_id: int | None, why: str | None = None
     async with _lock:
         async with AsyncSessionLocal() as db:
             k = await db.get(KisOrder, order_id)
-            if k is None:
+            if k is None or (k.market or "KR") != mk():
                 raise LookupError("없는 주문")
             if k.status != "submitted" or not k.odno:
                 raise TradeError("접수된(안 체결) 주문만 취소할 수 있음")
@@ -812,7 +983,7 @@ async def cancel_sent(order_id: int, user_id: int | None, why: str | None = None
                 await db.commit()
                 return f"이미 {STATUS_LABELS.get(k.status, k.status)} — 취소할 것이 없음"
             try:
-                r = await kis_order.cancel(k.odno, k.orgno or "")
+                r = await _bk_cancel(k)
             except Exception as e:
                 await audit(db, "cancel_fail", (f"{why} · " if why else "") + str(e)[:300], user_id, order_id, ok=False)
                 await db.commit()
@@ -837,12 +1008,18 @@ async def _price_now(symbol: str, bal: dict) -> float:
     for h in bal["holdings"]:
         if h["symbol"] == symbol and h["price"]:
             return float(h["price"])
+    if mk() == "US":
+        return float((await _quote(symbol))["price"])
     return float((await kis_client.get_kr_stock_price(symbol))["price"])
 
 
 async def _quote(symbol: str) -> dict:
     """매수 주문 직전 현재가 + VI(변동성 완화장치)·거래 정지 여부 (KIS REST 현재가)"""
     from app.services.kis_api import kis_client
+    if mk() == "US":   # 미국은 VI 없음. 현재가 0 이면 거래 정지로 봄
+        from app.services.kis_order import US_EXCG_BACK, us_exchange
+        q = await kis_client.get_us_stock_price(symbol, US_EXCG_BACK.get(us_exchange(symbol), "NAS"))
+        return {"price": float(q["price"] or 0), "vi": False, "halted": not q.get("price")}
     q = await kis_client.get_kr_stock_price(symbol)
     return {"price": float(q["price"]), "vi": bool(q.get("vi")), "halted": bool(q.get("halted"))}
 
@@ -851,7 +1028,9 @@ def _push(title: str, body: str, priority: int = 3, tags: list | None = None, or
     """주문 결과는 휴대폰 푸시만 (메일까지 보내면 너무 많음). NTFY_TOPIC 없으면 아무것도 안 함.
     알림을 누르면 웹 화면 /kis?order=번호 (그 주문으로 스크롤·강조)"""
     from app.services import notify
-    notify.send_bg(title, body, priority, tags, click=f"/kis?order={order_id}" if order_id else "/kis")
+    q = "market=US&" if mk() == "US" else ""
+    notify.send_bg(("[미국] " if mk() == "US" else "") + title, body, priority, tags,
+                   click=f"/kis?{q}order={order_id}" if order_id else ("/kis?market=US" if mk() == "US" else "/kis"))
 
 
 async def _block(db, k: KisOrder, why: str) -> dict:
@@ -878,7 +1057,7 @@ async def submit(order_id: int, auto: bool = False) -> dict:
     async with _lock:
         async with AsyncSessionLocal() as db:
             k = await db.get(KisOrder, order_id)
-            if k is None or k.status != "approved":
+            if k is None or (k.market or "KR") != mk() or k.status != "approved":
                 return {"status": k.status if k else None, "message": "승인된 주문이 아님"}
             row = await _row(db)
             s, limits, params = _state(row), _limits(row), json.loads(row.params)
@@ -892,18 +1071,18 @@ async def submit(order_id: int, auto: bool = False) -> dict:
             if market_window() != "open":
                 return {"status": "approved", "message": "장이 열리면 조건을 확인해서 주문합니다"}
             if k.side == "buy":
-                o = session_hours(MARKET, _kst().date())[0]
-                if _hm(_kst()) < o + BUY_AFTER_OPEN:
+                o = session_hours(mk(), _local().date())[0]
+                if _hm(_local()) < o + BUY_AFTER_OPEN:
                     return await _wait(db, k, "open", f"개장 {BUY_AFTER_OPEN}분 뒤부터 매수 (개장 직후엔 가격이 크게 출렁임)")
-            sent_today = (await db.execute(select(sa_func.count()).select_from(KisOrder).where(
+            sent_today = (await db.execute(select(sa_func.count()).select_from(KisOrder).where(_mine(), 
                 KisOrder.status.in_(SENT), KisOrder.submitted_at >= _today_start()))).scalar() or 0
             if sent_today >= limits["max_orders_day"] and not stop:   # 자동 손절은 위험을 줄이는 주문이라 안 막음
                 return await _block(db, k, f"오늘 주문 {sent_today}건 — 하루 주문 횟수 한도({limits['max_orders_day']}건)")
             if stop:   # 이미 파는 중이거나 결과 모름인 매도만 막음
-                dup = (await db.execute(select(KisOrder.id).where(KisOrder.id != k.id, KisOrder.symbol == k.symbol, KisOrder.side == "sell", (
+                dup = (await db.execute(select(KisOrder.id).where(_mine(), KisOrder.id != k.id, KisOrder.symbol == k.symbol, KisOrder.side == "sell", (
                     KisOrder.status.in_(ACTIVE)) | ((KisOrder.status == "unknown") & (KisOrder.created_at >= _today_start()))))).first()
             else:
-                dup = (await db.execute(select(KisOrder.id).where(KisOrder.id != k.id, KisOrder.symbol == k.symbol, (
+                dup = (await db.execute(select(KisOrder.id).where(_mine(), KisOrder.id != k.id, KisOrder.symbol == k.symbol, (
                     KisOrder.status.in_(ACTIVE)) | ((KisOrder.side == k.side) & KisOrder.status.in_(("filled", "partial", "unknown"))
                                                     & (KisOrder.submitted_at >= _today_start()))))).first()
             if dup:
@@ -945,11 +1124,11 @@ async def submit(order_id: int, auto: bool = False) -> dict:
                 w = buy_wait_reason(k, px, limits, await _index_change())
                 if w:
                     return await _wait(db, k, *w)
-                limit_px = kis_order.tick_up(px * (1 + limits["limit_slip_pct"] / 100))
+                limit_px = _tick_up(px * (1 + limits["limit_slip_pct"] / 100))
                 money = min(float(k.budget or 0), float(limits["max_order_krw"]), float(max(0, bal["d2_cash"])))
                 qty = math.floor(money / (limit_px * 1.001))   # 수수료 여유
                 if qty < 1:
-                    return await _block(db, k, f"살 수 있는 돈 {money:,.0f}원으로 1주(지정가 {limit_px:,.0f}원)도 못 삼")
+                    return await _block(db, k, f"살 수 있는 돈 {_m(money)}으로 1주(지정가 {_m(limit_px)})도 못 삼")
             else:
                 try:
                     px = await _price_now(k.symbol, bal)
@@ -959,14 +1138,16 @@ async def submit(order_id: int, auto: bool = False) -> dict:
                 qty = min(int(k.qty or 0), int(h["sellable"]) if h else 0)
                 if qty < 1:
                     return await _block(db, k, "팔 수 있는 수량이 없음 (KIS 잔고 기준)")
+                if mk() == "US":   # 모의투자 해외는 시장가가 없음 → 바로 체결될 만큼 낮은 지정가
+                    limit_px = kis_order.us_tick_down(px * (1 - US_SELL_SLIP / 100))
             # 보내기 전에 '보내는 중'으로 저장 — 응답 전에 서버가 꺼져도 다시 보내지 않음 (결과 모름으로 표시)
             k.status, k.qty, k.order_price, k.limit_price, k.submitted_at = "submitting", qty, px, limit_px, time.time()
-            how = f"지정가 {limit_px:,.0f}원" if limit_px else "시장가"
-            await audit(db, "submit", f"{'매수' if k.side == 'buy' else '매도'} {k.name} {qty}주 {how} (현재가 {px:,.0f}원 · 오늘 손익 {(-loss or 0.0):+,.0f}원)"
+            how = (f"지정가 {_m(limit_px)}" if limit_px else "시장가") + (" (매도 — 현재가보다 낮은 지정가로 바로 체결)" if mk() == "US" and k.side == "sell" else "")
+            await audit(db, "submit", f"{'매수' if k.side == 'buy' else '매도'} {k.name} {qty}주 {how} (현재가 {_m(px)} · 오늘 손익 {_m((-loss or 0.0), True)})"
                         + (" — 자동 손절" if stop else " — 조건 충족" if auto else ""), order_id=k.id)
             await db.commit()
             try:
-                r = await kis_order.order(k.side, k.symbol, qty, limit_px)
+                r = await _bk_order(k, qty, limit_px)
             except KISConnectionError as e:
                 if e.maybe_sent:   # 요청은 갔는데 답을 못 받음 → 들어갔을 수 있음. 다시 보내지 않고 사람이 확인
                     k.status, k.message = "unknown", f"주문을 보냈는데 KIS 응답을 못 받음 — KIS 앱에서 체결 여부를 확인하세요 ({str(e)[:200]})"
@@ -985,7 +1166,7 @@ async def submit(order_id: int, auto: bool = False) -> dict:
                 await db.commit()
                 _push(f"KIS 주문 거부 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) {qty}주: {k.message}", 4, ["x"], order_id=k.id)
                 return {"status": "failed", "message": k.message}
-            _balance_cache["data"] = None   # 잔고가 바뀜 — 화면이 예전 잔고로 '대조 다름'을 띄우지 않게
+            _g('_balance_cache')["data"] = None   # 잔고가 바뀜 — 화면이 예전 잔고로 '대조 다름'을 띄우지 않게
             _wait_kind.pop(k.id, None)
             _next_try.pop(k.id, None)
             k.status, k.odno, k.orgno = "submitted", r["odno"], r["orgno"]
@@ -993,7 +1174,7 @@ async def submit(order_id: int, auto: bool = False) -> dict:
             await audit(db, "submitted", k.message, order_id=k.id)
             await db.commit()
             if auto and k.side == "buy":
-                _push(f"매수 주문 — {k.name}", f"{k.name}({k.symbol}) {qty}주 {how} (현재가 {px:,.0f}원) — 승인한 조건이 맞아 주문했습니다", 3,
+                _push(f"매수 주문 — {k.name}", f"{k.name}({k.symbol}) {qty}주 {how} (현재가 {_m(px)}) — 승인한 조건이 맞아 주문했습니다", 3,
                       ["shopping_cart"], order_id=k.id)
             return {"status": "submitted", "message": k.message}
 
@@ -1001,7 +1182,7 @@ async def submit(order_id: int, auto: bool = False) -> dict:
 async def submit_approved() -> int:
     """승인된 주문을 보냄 (매도 먼저 — 판 돈으로 삼). 기다리는 중인 매수는 WAIT_RETRY 초가 지난 것만"""
     async with AsyncSessionLocal() as db:
-        ids = (await db.execute(select(KisOrder.id).where(KisOrder.status == "approved").order_by(
+        ids = (await db.execute(select(KisOrder.id).where(_mine(), KisOrder.status == "approved").order_by(
             (KisOrder.side == "buy"), KisOrder.id))).scalars().all()
     n = 0
     for i in ids:
@@ -1021,7 +1202,7 @@ def _apply_fill(s: dict, k: KisOrder, delta: int, price: float, params: dict):
         exp[k.symbol] = cur + delta
         m = s["meta"].get(k.symbol)
         if not m or cur == 0:
-            s["meta"][k.symbol] = {"name": k.name, "entry_date": _kst().date().isoformat(), "hold_days": 0, "peak": price,
+            s["meta"][k.symbol] = {"name": k.name, "entry_date": _local().date().isoformat(), "hold_days": 0, "peak": price,
                                    "avg": price, "stop": price * (1 - params["stop_pct"] / 100),
                                    "target": price * (1 + params["take_pct"] / 100)}
     else:
@@ -1048,11 +1229,11 @@ async def refresh_fills(final: bool = False) -> int:
 async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True) -> int:
     """(_lock 안에서) 오늘 접수한 주문의 새 체결을 앱 기록(expected)에 더하고 s 를 row 에 저장 (commit 은 부르는 쪽).
     apply=False = 기록에 더하지 않고 '이미 반영됨'으로만 표시 — 기준 다시 맞추기 때 (KIS 잔고에 이미 들어간 체결을 나중에 또 더하지 않게)"""
-    ks = (await db.execute(select(KisOrder).where(KisOrder.status == "submitted",
+    ks = (await db.execute(select(KisOrder).where(_mine(), KisOrder.status == "submitted",
                                                   KisOrder.submitted_at >= _today_start()))).scalars().all()
     if not ks:
         return 0
-    ex = {e["odno"]: e for e in await kis_order.executions(_kst().date())}
+    ex = {e["odno"]: e for e in await _bk_exec(_local().date())}
     params = json.loads(row.params)
     if s["expected"] is None:
         s["expected"] = {}
@@ -1066,6 +1247,12 @@ async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True)
                 _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"], order_id=k.id)
                 changed += 1
             continue
+        if e.get("rejected") and not int(e["filled"] or 0):   # 미국: 접수 뒤 거래소·KIS 가 거부 (체결 내역 '거부')
+            k.status, k.message = "failed", "KIS 가 주문을 거부함 (체결 내역 '거부') — KIS 앱에서 사유 확인"
+            await audit(db, "fill_rejected", f"{k.name} {k.message}", order_id=k.id, ok=False)
+            _push(f"주문 거부 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["x"], order_id=k.id)
+            changed += 1
+            continue
         delta = int(e["filled"]) - int(k.filled_qty or 0)
         if delta > 0:
             if apply:
@@ -1074,8 +1261,8 @@ async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True)
             changed += 1
         if k.filled_qty >= (k.qty or 0) and k.filled_qty > 0:
             k.status = "filled"
-            await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {k.filled_price or 0:,.0f}원", order_id=k.id)
-            _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {k.filled_price or 0:,.0f}원 (모의투자)",
+            await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {_m(k.filled_price or 0)}", order_id=k.id)
+            _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {_m(k.filled_price or 0)} (모의투자)",
                   3, ["white_check_mark"], order_id=k.id)
         elif (e["cancelled"] or (final and e["remain"] >= 0)
               or (k.cancel_req and (e["remain"] <= 0 or int(e.get("cancel_qty") or 0) > 0))):
@@ -1086,7 +1273,7 @@ async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True)
             changed += 1
     _save(row, s)
     if changed:
-        _balance_cache["data"] = None
+        _g('_balance_cache')["data"] = None
     return changed
 
 
@@ -1098,7 +1285,7 @@ async def halt(user_id: int, reason: str = "") -> dict:
         row = await _row(db)
         await _halt(db, row, f"긴급 정지 버튼{(' — ' + reason.strip()[:100]) if reason.strip() else ''}", user_id)
         await db.commit()
-        sent = (await db.execute(select(KisOrder.id).where(KisOrder.status == "submitted"))).scalars().all()
+        sent = (await db.execute(select(KisOrder.id).where(_mine(), KisOrder.status == "submitted"))).scalars().all()
     cancelled, failed = 0, []
     for i in sent:
         try:
@@ -1145,7 +1332,7 @@ async def set_config(user_id: int, limits: dict | None, params: dict | None) -> 
         new_l = clean_limits(limits, old_l) if limits is not None else old_l
         new_p = pe.clean_params({**old_p, **params}) if params is not None else old_p
         row.limits, row.params = json.dumps(new_l), json.dumps(new_p, ensure_ascii=False)
-        diff = [f"{LIMIT_LABELS.get(k) or pe.PARAM_LABELS.get(k, k)} {old.get(k)}→{v}"
+        diff = [f"{_limit_labels().get(k) or pe.PARAM_LABELS.get(k, k)} {old.get(k)}→{v}"
                 for old, new in ((old_l, new_l), (old_p, new_p)) for k, v in new.items() if old.get(k) != v]
         await audit(db, "config", ", ".join(diff) or "변경 없음", user_id)
         await db.commit()
@@ -1168,10 +1355,10 @@ def _intraday_view(s: dict, limits: dict) -> dict:
     every = int(limits["intraday_every_min"])
     nxt = None
     if every and st.get("last_start"):
-        n = datetime.fromtimestamp(float(st["last_start"]) + every * 60, _TZ[MARKET])
-        nxt = n.strftime("%H:%M") if INTRADAY_FROM <= _hm(n) <= INTRADAY_TO else None
-    return {"every": every, "from": _hhmm(INTRADAY_FROM), "to": _hhmm(INTRADAY_TO), "runs": st["runs"], "next": nxt,
-            **{k: _intraday[k] for k in ("running", "last", "result", "error", "notes", "waiting", "took")}}
+        n = datetime.fromtimestamp(float(st["last_start"]) + every * 60, _TZ[mk()])
+        nxt = n.strftime("%H:%M") if _intra_from() <= _hm(n) <= _intra_to() else None
+    return {"every": every, "from": _hhmm(_intra_from()), "to": _hhmm(_intra_to()), "runs": st["runs"], "next": nxt,
+            **{k: _g('_intraday')[k] for k in ("running", "last", "result", "error", "notes", "waiting", "took")}}
 
 
 async def overview(with_balance: bool = True) -> dict:
@@ -1184,22 +1371,23 @@ async def overview(with_balance: bool = True) -> dict:
         row = await _row(db)
         await db.commit()
         s, limits = _state(row), _limits(row)
-        sent_today = (await db.execute(select(sa_func.count()).select_from(KisOrder).where(
+        sent_today = (await db.execute(select(sa_func.count()).select_from(KisOrder).where(_mine(), 
             KisOrder.status.in_(SENT), KisOrder.submitted_at >= _today_start()))).scalar() or 0
         out = {
             "configured": configured(), "server": "모의투자 (가상 자금)", "account": kis_order.masked_account(),
             "account_source": kis_order.account_source(),
             "notify": __import__("app.services.notify", fromlist=["status"]).status(),
             "halted": bool(row.halted), "halted_reason": row.halted_reason, "halted_at": row.halted_at,
-            "limits": limits, "limit_meta": {k: {"default": d, "min": lo, "max": hi, "label": LIMIT_LABELS[k]}
-                                             for k, (d, lo, hi) in LIMITS.items()},
+            "market": mk(), "currency": "USD" if mk() == "US" else "KRW", "us_off": mk() == "US" and row.halted_reason == US_OFF,
+            "limits": limits, "limit_meta": {k: {"default": d, "min": lo, "max": hi, "label": _limit_labels()[k]}
+                                             for k, (d, lo, hi) in _limit_defs().items()},
             "params": json.loads(row.params),
             "param_meta": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
             "orders_today": int(sent_today), "window": market_window(),
             "last_proposal_day": row.last_proposal_day,
-            "intraday": _intraday_view(s, limits), "last_error": row.last_error, "loop": dict(_status),
-            "watch": {**_watch, "every": WATCH_EVERY, "index_change": _index["change"], "index_error": _index["error"],
-                      "buy_after_open": BUY_AFTER_OPEN, "stops_ok": _stops_ok(row), "ws": _ws_status()},
+            "intraday": _intraday_view(s, limits), "last_error": row.last_error, "loop": dict(_g('_status')),
+            "watch": {**_g('_watch'), "every": WATCH_EVERY, "index_change": _g('_index')["change"], "index_error": _g('_index')["error"],
+                      "buy_after_open": BUY_AFTER_OPEN, "stops_ok": _stops_ok(row), "ws": _ws_status() if mk() == "KR" else None},
             "baseline": s["expected"] is not None, "log": list(reversed(s["log"][-10:])),
             "balance": None, "balance_error": None, "mismatches": [], "day_loss": None,
         }
@@ -1213,7 +1401,7 @@ async def overview(with_balance: bool = True) -> dict:
                     async with AsyncSessionLocal() as db2:
                         r2 = await _row(db2)
                         r2.last_error = None
-                        if r2.last_proposal_day == _kst().date().isoformat():
+                        if r2.last_proposal_day == _local().date().isoformat():
                             r2.last_proposal_day = None
                         await audit(db2, "account_ok", "계좌 확인됨 — 계좌번호 오류로 실패한 제안을 다시 합니다")
                         await db2.commit()
@@ -1221,7 +1409,7 @@ async def overview(with_balance: bool = True) -> dict:
                 mm = mismatches(s, bal)
                 if mm:   # 아직 체결 중인 주문이 있는 종목 = 곧 맞춰짐 (기준 맞추기 필요 없음)
                     async with AsyncSessionLocal() as db3:
-                        busy = set((await db3.execute(select(KisOrder.symbol).where(
+                        busy = set((await db3.execute(select(KisOrder.symbol).where(_mine(), 
                             KisOrder.status.in_(("submitting", "submitted")), KisOrder.submitted_at >= _today_start()))).scalars().all())
                     for m in mm:
                         m["pending"] = m["symbol"] in busy
@@ -1238,7 +1426,7 @@ async def overview(with_balance: bool = True) -> dict:
 
 async def list_orders(kind: str = "open", limit: int = 100) -> list:
     async with AsyncSessionLocal() as db:
-        q = select(KisOrder)
+        q = select(KisOrder).where(_mine())
         if kind == "open":
             q = q.where(KisOrder.status.in_(("proposed", "approved") + ACTIVE))
         rows = (await db.execute(q.order_by(KisOrder.id.desc()).limit(max(1, min(limit, 300))))).scalars().all()
@@ -1248,7 +1436,7 @@ async def list_orders(kind: str = "open", limit: int = 100) -> list:
 async def list_log(limit: int = 100) -> list:
     from app.models.user import User
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(select(KisLog).order_by(KisLog.id.desc()).limit(max(1, min(limit, 500))))).scalars().all()
+        rows = (await db.execute(select(KisLog).where(_mine_log()).order_by(KisLog.id.desc()).limit(max(1, min(limit, 500))))).scalars().all()
         ids = {r.user_id for r in rows if r.user_id}
         names = dict((await db.execute(select(User.id, User.username).where(User.id.in_(ids)))).all()) if ids else {}
         return [{"id": r.id, "at": r.at, "action": r.action, "order_id": r.order_id, "ok": bool(r.ok), "detail": r.detail,
@@ -1267,7 +1455,9 @@ def _alert_admins(subject: str, body: str, priority: int = 3, tags: list | None 
     """관리자 알림 — 휴대폰 푸시(ntfy, NTFY_TOPIC 있을 때) + 인증된 이메일(메일 설정 있을 때). 뒤에서 보냄, 실패해도 주문 흐름은 그대로"""
     from app.services import mailer, notify
     from app.models.user import User
-    notify.send_bg(subject.replace("[StockApp] ", ""), body, priority, tags, click="/kis")
+    if mk() == "US":
+        subject = subject.replace("[StockApp] ", "[StockApp] [미국] ")
+    notify.send_bg(subject.replace("[StockApp] ", ""), body, priority, tags, click="/kis?market=US" if mk() == "US" else "/kis")
     if not mailer.configured():
         return
 
@@ -1289,7 +1479,7 @@ def _alert_admins(subject: str, body: str, priority: int = 3, tags: list | None 
 
 async def expire_old() -> int:
     async with AsyncSessionLocal() as db:
-        n = (await db.execute(update(KisOrder).where(KisOrder.status.in_(("proposed", "approved")), KisOrder.expires_at <= time.time())
+        n = (await db.execute(update(KisOrder).where(_mine(), KisOrder.status.in_(("proposed", "approved")), KisOrder.expires_at <= time.time())
                               .values(status="expired", message="기한 지남 (다음 거래일 장 마감까지만 유효)"))).rowcount
         if n:
             await audit(db, "expire", f"{n}건 기한 지남")
@@ -1300,7 +1490,7 @@ async def expire_old() -> int:
 async def mark_interrupted():
     """서버가 주문 보내는 도중 꺼졌으면 그 주문은 '결과 모름' (다시 보내지 않음)"""
     async with AsyncSessionLocal() as db:
-        n = (await db.execute(update(KisOrder).where(KisOrder.status == "submitting")
+        n = (await db.execute(update(KisOrder).where(_mine(), KisOrder.status == "submitting")
                               .values(status="unknown", message="주문을 보내던 중 서버가 꺼짐 — KIS 앱에서 체결 여부를 확인하세요"))).rowcount
         if n:
             await audit(db, "interrupted", f"보내던 주문 {n}건 결과 모름", ok=False)
@@ -1327,20 +1517,20 @@ async def watch() -> dict:
         row = await _row(db)
         await db.commit()
         s, limits, halted = _state(row), _limits(row), bool(row.halted)
-        buys = (await db.execute(select(KisOrder).where(KisOrder.side == "buy", KisOrder.status.in_(
+        buys = (await db.execute(select(KisOrder).where(_mine(), KisOrder.side == "buy", KisOrder.status.in_(
             ("proposed", "approved", "submitted"))))).scalars().all()
     held = [sym for sym, q in (s["expected"] or {}).items() if int(q) > 0]
     syms = sorted(set(held) | {k.symbol for k in buys})
-    _watch.update(last=_kst().isoformat(timespec="seconds"), symbols=len(syms))
+    _g('_watch').update(last=_local().isoformat(timespec="seconds"), symbols=len(syms))
     if not syms:
-        _watch.update(realtime=0, rest=0, missing=0, error=None)
+        _g('_watch').update(realtime=0, rest=0, missing=0, error=None)
         return {"symbols": 0}
     raw = await _fetch_prices(syms)
     prices = {sym: p for sym, (p, _src) in raw.items()}
     _record(prices)
     miss = len(syms) - len(raw)
-    _watch.update(realtime=sum(1 for _p, src in raw.values() if src == "ws"), rest=sum(1 for _p, src in raw.values() if src == "rest"),
-                  missing=miss, error=_rest["error"] if miss else None)
+    _g('_watch').update(realtime=sum(1 for _p, src in raw.values() if src == "ws"), rest=sum(1 for _p, src in raw.values() if src == "rest"),
+                  missing=miss, error=_g('_rest')["error"] if miss else None)
     done = {"stops": 0, "cancelled": 0, "sent": 0}
     # ① 손절·목표
     hp = {sym: prices[sym] for sym in held if sym in prices}
@@ -1373,7 +1563,7 @@ async def watch() -> dict:
     # ③ 승인한 주문 보내기 (매도 먼저). 매수는 가볍게 먼저 확인하고 맞을 때만 submit (submit 이 KIS 로 한 번 더 확인)
     if not halted:
         async with AsyncSessionLocal() as db:
-            ready = (await db.execute(select(KisOrder).where(KisOrder.status == "approved").order_by(
+            ready = (await db.execute(select(KisOrder).where(_mine(), KisOrder.status == "approved").order_by(
                 (KisOrder.side == "buy"), KisOrder.id))).scalars().all()
         idx = await _index_change() if any(k.side == "buy" for k in ready) else None
         for k in ready:
@@ -1393,14 +1583,13 @@ async def watch() -> dict:
 
 
 async def tick():
-    global _last_exit
     if not configured():
         return
     await expire_old()
-    now = _kst()
-    if not is_trading_day(MARKET, now.date()):
+    now = _local()
+    if not is_trading_day(mk(), now.date()):
         return
-    o, c = session_hours(MARKET, now.date())
+    o, c = session_hours(mk(), now.date())
     hm, w = _hm(now), market_window(now)
     async with AsyncSessionLocal() as db:
         row = await _row(db)
@@ -1410,8 +1599,8 @@ async def tick():
         if not halted:
             await submit_approved()
         await refresh_fills()
-        if time.time() - _last_exit >= EXIT_EVERY:
-            _last_exit = time.time()
+        if time.time() - _last_exit_at[mk()] >= EXIT_EVERY:
+            _last_exit_at[mk()] = time.time()
             await check_exits()
     elif w == "closing":
         await refresh_fills()
@@ -1430,34 +1619,63 @@ async def tick():
                 raise
 
 
-async def loop():
-    from app.services.kis_api import mark_background
-    mark_background()
-    try:
-        await mark_interrupted()
-    except Exception as e:
-        print(f"[kis] 시작 정리 실패: {e}")
-    await asyncio.sleep(20)
-    last_tick = 0.0
-    while True:
-        if _mono() - last_tick >= 60:   # 1분마다: 기한·체결 확인·손실 한도·장 마감 후 제안
-            last_tick = _mono()
+def _us_off_row(row) -> bool:
+    return mk() == "US" and bool(row.halted) and row.halted_reason == US_OFF
+
+
+async def _us_active() -> bool:
+    """미국을 돌릴지 — 키가 있고 관리자가 켰을 때만 (처음엔 꺼짐: US_OFF)"""
+    if not configured():
+        return False
+    with market("US"):
+        async with AsyncSessionLocal() as db:
+            row = await _row(db)
+            await db.commit()
+            return not _us_off_row(row)
+
+
+async def _cycle(m: str, do_tick: bool):
+    with market(m):
+        if do_tick:   # 1분마다: 기한·체결 확인·손실 한도·장 마감 후 제안
             try:
                 await tick()
-                _status["last_tick"] = datetime.now().isoformat(timespec="seconds")
+                _g('_status')["last_tick"] = datetime.now().isoformat(timespec="seconds")
             except Exception as e:
-                _status["last_error"] = f"{datetime.now().isoformat(timespec='seconds')} {str(e)[:200]}"
-                print(f"[kis] 자동 운영 실패: {e}")
+                _g('_status')["last_error"] = f"{datetime.now().isoformat(timespec='seconds')} {str(e)[:200]}"
+                print(f"[kis] {m} 자동 운영 실패: {e}")
         try:   # 장중 AI 제안 시각이면 뒤에서 판단 시작 (감시는 안 멈춤)
             await schedule_intraday()
         except Exception as e:   # noqa: BLE001
-            _intraday["error"] = str(e)[:200]
-            print(f"[kis] 장중 제안 예약 실패: {e}")
+            _g('_intraday')["error"] = str(e)[:200]
+            print(f"[kis] {m} 장중 제안 예약 실패: {e}")
         try:   # 5초마다: 장중 실시간 감시
             await watch()
         except Exception as e:   # noqa: BLE001
-            _watch["error"] = f"{datetime.now().isoformat(timespec='seconds')} {str(e)[:200]}"
-            print(f"[kis] 실시간 감시 실패: {e}")
+            _g('_watch')["error"] = f"{datetime.now().isoformat(timespec='seconds')} {str(e)[:200]}"
+            print(f"[kis] {m} 실시간 감시 실패: {e}")
+
+
+async def loop():
+    from app.services.kis_api import mark_background
+    mark_background()
+    for m in MARKETS:
+        with market(m):
+            try:
+                await mark_interrupted()
+            except Exception as e:
+                print(f"[kis] {m} 시작 정리 실패: {e}")
+    await asyncio.sleep(20)
+    last_tick = 0.0
+    while True:
+        do_tick = _mono() - last_tick >= 60
+        if do_tick:
+            last_tick = _mono()
+        await _cycle("KR", do_tick)
+        try:
+            if await _us_active():
+                await _cycle("US", do_tick)
+        except Exception as e:   # noqa: BLE001
+            print(f"[kis] 미국 확인 실패: {e}")
         await asyncio.sleep(WATCH_EVERY)
 
 

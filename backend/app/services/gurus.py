@@ -444,21 +444,72 @@ def _us_name(ticker: str) -> str | None:
     return None
 
 
-def _closes_sync(tickers: list) -> dict:
-    """yfinance 일봉 종가 (3년) → {ticker: [(날짜, 종가)]}"""
+def _ohlcv_sync(tickers: list) -> dict:
+    """yfinance 일봉 (3년, 배당·분할 반영 수정주가) → {ticker: [{date, open, high, low, close, volume}] 오름차순}"""
     import yfinance as yf
     out = {}
     for i in range(0, len(tickers), 200):
         part = tickers[i:i + 200]
-        df = yf.download(part, period="3y", interval="1d", auto_adjust=True, progress=False, threads=True, group_by="column")
+        df = yf.download(part, period="3y", interval="1d", auto_adjust=True, progress=False, threads=True, group_by="ticker")
         if df is None or df.empty:
             continue
-        close = df["Close"] if "Close" in df else df
-        if hasattr(close, "columns"):
-            for t in close.columns:
-                s = close[t].dropna()
-                if len(s):
-                    out[str(t)] = [(d.strftime("%Y-%m-%d"), float(v)) for d, v in s.items()]
+        for t in part:
+            try:
+                d = (df[t] if len(part) > 1 else df).dropna(subset=["Close"])
+            except KeyError:
+                continue
+            out[t] = [{"date": ix.strftime("%Y-%m-%d"), "open": float(r["Open"]), "high": float(r["High"]), "low": float(r["Low"]),
+                       "close": float(r["Close"]), "volume": float(r["Volume"] or 0)} for ix, r in d.iterrows()]
+    return out
+
+
+def _closes_of(ohlcv: dict) -> dict:
+    return {t: [(c["date"], c["close"]) for c in cs] for t, cs in ohlcv.items()}
+
+
+# AI 필터 (사용자 결정 2026-11-26: 대가를 무조건 따라가지 않고 AI 가 다시 보고 좋은 것만) —
+# 실시간 AI 모의투자·KIS 주문의 매수 조건과 같게: AI 점수(상승확률 45% + 퀀트 35%) ≥ 60 · 상승확률 ≥ 55% · 50일선 위.
+# 판단은 공시일 종가까지의 데이터로만 (공시 다음 거래일 종가에 삼 — validate 와 같은 진입). 퀀트는 같은 날 대가 종목들 안의 순위(요인 같은 비중)
+AI_BUY_SCORE, AI_MIN_PROB = 60, 55
+
+
+def ai_filter(signals: list, ohlcv: dict) -> list:
+    """대가가 산 종목 중 그날 AI 매수 조건을 통과한 것만 (+ ai 칸: 점수·확률·퀀트)"""
+    import pandas as pd
+    from app.services import quant, paper_engine as pe
+    from app.services.analysis import calc_technical_indicators, predict_next_day
+    frames = []
+    for t, cs in ohlcv.items():
+        if len(cs) >= quant.MIN_ROWS:
+            f = quant.factor_frame(cs)
+            if not f.empty:
+                frames.append(f.assign(symbol=t))
+    qp = {}
+    if frames:
+        df = pd.concat(frames, ignore_index=True).dropna(subset=["rs"])
+        for k in quant.KEYS:
+            df[f"p_{k}"] = df.groupby("date")[k].rank(pct=True).mul(98).add(1)
+        df["raw"] = sum(df[f"p_{k}"].fillna(50) for k in quant.KEYS) / len(quant.KEYS)
+        df["comp"] = df.groupby("date")["raw"].rank(pct=True).mul(98).add(1)
+        qp = {(d, s): float(c) for d, s, c in zip(df["date"], df["symbol"], df["comp"])}
+    out = []
+    for s in signals:
+        cs = ohlcv.get(s["ticker"]) or []
+        idx = [i for i, c in enumerate(cs) if c["date"] <= s["filed"]]
+        if not idx or idx[-1] < 59:
+            continue
+        i = idx[-1]
+        hist = cs[max(0, i + 1 - pe.WINDOW): i + 1]
+        try:
+            prob = int(predict_next_day(hist, calc_technical_indicators(hist))["probability"])
+        except Exception:   # noqa: BLE001 — 계산 못 하면 통과 안 함
+            continue
+        closes = [c["close"] for c in cs[i - 49: i + 1]]
+        ma50 = sum(closes) / len(closes)
+        q = qp.get((cs[i]["date"], s["ticker"]))
+        score = pe.ai_score(prob, q, None, False)
+        if score >= AI_BUY_SCORE and prob >= AI_MIN_PROB and cs[i]["close"] >= ma50:
+            out.append({**s, "ai": {"score": score, "prob": prob, "quant": round(q) if q is not None else None}})
     return out
 
 
@@ -545,10 +596,15 @@ async def refresh(force: bool = False) -> dict:
             sigs = buy_signals(filings, cmap)
             try:
                 tick = sorted({s["ticker"] for s in sigs} | {"SPY"})
-                closes = await asyncio.get_event_loop().run_in_executor(None, _closes_sync, tick)
+                ohlcv = await asyncio.get_event_loop().run_in_executor(None, _ohlcv_sync, tick)
+                closes = _closes_of(ohlcv)
                 res["validation"] = validate(sigs, closes)
+                # 대가가 산 종목 + AI 필터 → 통과한 것만 따라 샀다면 (이게 통과해야 AI 모의투자·KIS 미국 후보에 넣음)
+                passed = await asyncio.get_event_loop().run_in_executor(None, ai_filter, sigs, ohlcv)
+                res["validation_ai"] = {**validate(passed, closes), "rule": f"AI 점수 {AI_BUY_SCORE}↑ · 상승확률 {AI_MIN_PROB}%↑ · 50일선 위",
+                                        "signals": len(sigs), "passed": len(passed)}
             except Exception as e:
-                res["validation"] = None
+                res["validation"], res["validation_ai"] = None, None
                 _status["errors"].append(f"검증 주가: {str(e)[:150]}")
             res["accs"] = {k: [f["acc"] for f in fl] for k, fl in filings.items()}
             res.update(updated_at=datetime.now().isoformat(timespec="seconds"), errors=_status["errors"][:10],
@@ -624,7 +680,9 @@ def signal(symbol: str) -> dict | None:
         return None
     v = r.get("validation") or {}
     pts = boost_points(s, v)
+    va = r.get("validation_ai") or {}
     return {"n_holders": s["n_holders"], "n_buyers": s["n_buyers"], "n_sellers": s["n_sellers"],
+            "ai_validated": bool(va.get("validated")),
             "holders": s["holders"][:6], "buyers": s["buyers"][:6], "sellers": s["sellers"][:6],
             "period": max((g["period"] for g in r.get("gurus", []) if not g.get("stale")), default=None),
             "points": pts, "validated": bool(v.get("validated")),

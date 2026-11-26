@@ -4,7 +4,7 @@ from app.core.database import Base
 
 
 class KisTrade(Base):
-    """설정·상태 1행 (id=1). 한 서버에 모의투자 계좌 하나 (.env 의 KIS_MOCK_ACCOUNT_NO)"""
+    """설정·상태 시장별 1행 (id=1 국내, id=2 미국). 한 서버에 모의투자 계좌 하나 (.env 의 KIS_MOCK_ACCOUNT_NO) — 국내·미국 같은 계좌"""
     __tablename__ = "kis_trade"
 
     id = Column(Integer, primary_key=True)
@@ -26,6 +26,7 @@ class KisOrder(Base):
     __tablename__ = "kis_orders"
 
     id = Column(Integer, primary_key=True, index=True)
+    market = Column(String, nullable=True, default="KR", index=True)   # KR / US (예전 행은 업데이트 때 KR 로 채움)
     created_at = Column(Float, nullable=False)
     base_date = Column(String, nullable=True)        # 판단에 쓴 종가 날짜
     source = Column(String, nullable=False, default="ai")   # ai(장 마감 후 판단) / exit(장중 목표가 매도 제안) / stop(자동 손절 — 승인 없이)
@@ -58,6 +59,7 @@ class KisLog(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     at = Column(Float, nullable=False, index=True)
+    market = Column(String, nullable=True, default="KR")                # KR / US
     user_id = Column(Integer, nullable=True)          # 사람이 한 일이면 그 사람, 자동이면 비움
     action = Column(String, nullable=False)
     order_id = Column(Integer, nullable=True)

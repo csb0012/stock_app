@@ -220,3 +220,75 @@ def factor_frame(frames: dict) -> pd.DataFrame | None:
         return None
     df = pd.concat(parts, ignore_index=True)
     return df.replace([np.inf, -np.inf], np.nan)
+
+
+# ---------------- '개인만 순매수' 종목이 실제로 약했나 (감점 여부 — 사용자 결정 2026-11-26: 과거 사례로 판단) ----------------
+RETAIL_HORIZON = 20
+RETAIL_MIN_N, RETAIL_MIN_DATES = 300, 10
+RETAIL_MAX_EXCESS, RETAIL_MAX_BEAT = -0.5, 47.0     # 이보다 나빠야 '약했다' (평균 초과수익 %p, 이긴 비율 %)
+RETAIL_PENALTY = 5                                  # AI 점수 감점
+
+
+def _is_retail_only(q5: dict) -> bool:
+    return q5["prsn_qty"] > 0 and q5["frgn_qty"] + q5["orgn_qty"] < 0
+
+
+def retail_check(closes: dict, horizon: int = RETAIL_HORIZON) -> dict:
+    """그날(d)까지 5거래일 '개인만 순매수(외국인+기관은 순매도)' 종목 vs 나머지 — d 다음 거래일 종가에 사서 horizon 거래일 뒤,
+    같은 날 수급이 있는 전 종목 중간값 대비 초과수익. 수급 확정치는 저녁에 나오므로 그날 종가가 아니라 다음 날 종가부터 셈 (미래 데이터 미사용).
+    closes: {종목: {날짜: 종가}} → {retail{n, beat_rate, avg_excess}, double(쌍끌이 2일↑ 참고), dates, active(감점할지)}"""
+    rows = []
+    for sym, s in _mem.items():
+        c = closes.get(sym) or {}
+        cd = sorted(c)
+        if len(cd) <= horizon + 1:
+            continue
+        pos = {d: i for i, d in enumerate(cd)}
+        fd = sorted(s)
+        for j in range(4, len(fd)):
+            d = fd[j]
+            if d not in pos:
+                continue
+            i = pos[d]
+            if i + 1 + horizon >= len(cd):
+                continue
+            win = fd[j - 4: j + 1]
+            q5 = {k: sum((s[x].get(k) or 0) for x in win) for k in KEYS}
+            streak = 0
+            for x in reversed(fd[: j + 1]):
+                v = s[x]
+                if (v.get("frgn_qty") or 0) > 0 and (v.get("orgn_qty") or 0) > 0:
+                    streak += 1
+                else:
+                    break
+            p0, p1 = c[cd[i + 1]], c[cd[i + 1 + horizon]]
+            if p0 and p1:
+                rows.append((d, sym, p1 / p0 - 1, _is_retail_only(q5), streak >= 2))
+    if not rows:
+        return {"retail": {"n": 0}, "double": {"n": 0}, "dates": 0, "active": False, "horizon": horizon,
+                "rule": "개인 5일 순매수 > 0 이고 외국인+기관 5일 순매수 < 0"}
+    df = pd.DataFrame(rows, columns=["date", "symbol", "ret", "retail", "double"])
+    df["excess"] = df["ret"] - df.groupby("date")["ret"].transform("median")
+
+    def st(g):
+        n = int(len(g))
+        return {"n": n, "beat_rate": round(float((g["excess"] > 0).mean()) * 100, 1) if n else None,
+                "avg_excess": round(float(g["excess"].mean()) * 100, 2) if n else None}
+    r, dbl = st(df[df["retail"]]), st(df[df["double"]])
+    dates = int(df[df["retail"]]["date"].nunique())
+    active = bool(r["n"] >= RETAIL_MIN_N and dates >= RETAIL_MIN_DATES and r["avg_excess"] is not None
+                  and r["avg_excess"] <= RETAIL_MAX_EXCESS and r["beat_rate"] <= RETAIL_MAX_BEAT)
+    return {"retail": r, "double": dbl, "others": st(df[~df["retail"]]), "dates": dates, "active": active,
+            "horizon": horizon, "penalty": RETAIL_PENALTY,
+            "rule": "개인 5일 순매수 > 0 이고 외국인+기관 5일 순매수 < 0",
+            "need": f"표본 {RETAIL_MIN_N}↑·날짜 {RETAIL_MIN_DATES}↑·평균 초과 {RETAIL_MAX_EXCESS}%p 이하·이긴 비율 {RETAIL_MAX_BEAT}% 이하"}
+
+
+def retail_only_now() -> set:
+    """지금(마지막 수집일까지 5거래일) 개인만 순매수인 종목"""
+    out = set()
+    for sym, s in _mem.items():
+        fd = sorted(s)[-5:]
+        if len(fd) == 5 and _is_retail_only({k: sum((s[x].get(k) or 0) for x in fd) for k in KEYS}):
+            out.add(sym)
+    return out

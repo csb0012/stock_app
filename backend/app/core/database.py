@@ -30,6 +30,7 @@ async def init_db():
         from app.models import user, watchlist, portfolio, prediction, flow, paper, kis  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+        await conn.run_sync(_fill_market)
         await conn.run_sync(_ensure_owner)
 
 
@@ -44,6 +45,13 @@ def _add_missing_columns(sync_conn):
             if col.name not in existing:
                 col_type = col.type.compile(dialect=sync_conn.dialect)
                 sync_conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col_type}'))
+
+
+def _fill_market(sync_conn):
+    """KIS 주문·감사 로그에 시장(market) 칸이 새로 생김 — 그 전 행은 모두 국내 (2026-11-26 미국 주문 추가)"""
+    from sqlalchemy import text
+    for t in ("kis_orders", "kis_log"):
+        sync_conn.execute(text(f'UPDATE "{t}" SET market = \'KR\' WHERE market IS NULL'))
 
 
 def _ensure_owner(sync_conn):

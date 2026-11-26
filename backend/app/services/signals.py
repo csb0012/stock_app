@@ -104,7 +104,11 @@ def flow_overview(limit: int = 50) -> dict:
         for r in lst:
             r["name"] = names.get(r["symbol"], r["symbol"])
     daily = flows.market_daily(kr_closes())
-    return {**rk, "daily": daily, "status": flows.status(), "universe": len(prices)}
+    try:
+        retail = retail_status()
+    except Exception as e:   # noqa: BLE001 — 검증 실패가 목록을 막지 않게
+        retail = {"error": str(e)[:200], "active": False}
+    return {**rk, "daily": daily, "status": flows.status(), "universe": len(prices), "retail": retail}
 
 
 def kr_value_rows() -> list:
@@ -169,3 +173,74 @@ async def loop():
             _loop_status["last_error"] = f"{time.strftime('%m-%d %H:%M')} {str(e)[:150]}"
             print(f"[signals] {e}")
         await asyncio.sleep(1800)
+
+
+# ---------------- AI 모의투자·KIS 주문 판단 후보 넓히기 (사용자 결정 2026-11-26) ----------------
+# 후보만 늘림 — 사고팔지는 AI 점수(상승확률·퀀트·매집)가 정함. 후보가 된 이유는 판단 사유(tags)에 붙음
+VALUE_SCREENS = ("undervalued_growth", "high_roe_cheap", "value_breakout", "cash_cow", "steady_growth")
+MAX_VALUE, MAX_DOUBLE, MAX_GURU = 10, 10, 15
+_retail_cache: dict = {"key": None, "res": None}
+
+
+def retail_status() -> dict:
+    """'개인만 순매수' 과거 성과 (요인 원값 파일·수급이 바뀌었을 때만 다시 계산)"""
+    from app.services import accumulation
+    try:
+        mt = accumulation._FRAMES.stat().st_mtime
+    except OSError:
+        mt = None
+    key = (mt, flows.status()["rows"])
+    if _retail_cache["key"] != key:
+        _retail_cache.update(key=key, res=flows.retail_check(kr_closes()))
+    return _retail_cache["res"]
+
+
+def live_candidates(market: str) -> dict:
+    """→ {items: [{symbol, name}], tags: {종목: [이유]}, penalty: {종목: (점수, 문구)}, notes}"""
+    items, tags, pen, notes = {}, {}, {}, []
+
+    def tag(sym, t):
+        tags.setdefault(sym, []).append(t)
+
+    if market == "KR":
+        try:
+            rows = kr_value_rows()
+            picked: dict = {}
+            names = {k: n for k, n, *_ in fundamentals.KR_SCREENS}
+            for key in VALUE_SCREENS:
+                for r in fundamentals.run_screen(rows, key, 50):
+                    picked.setdefault(r["symbol"], [r, []])[1].append(names[key])
+            best = sorted(picked.values(), key=lambda x: (-(x[0].get("quant_score") or 0), -len(x[1])))[:MAX_VALUE]
+            for r, why in best:
+                items[r["symbol"]] = {"symbol": r["symbol"], "name": r["name"]}
+                tag(r["symbol"], "가치주(" + "·".join(why[:2]) + ")")
+        except Exception as e:   # noqa: BLE001 — 후보를 못 늘려도 판단은 그대로
+            notes.append(f"가치주 후보 실패: {str(e)[:80]}")
+        try:
+            prices, tv = kr_prices()
+            dbl = [r for r in flows.rankings(prices, tv, None, 100)["lists"].get("double", []) if r["streak"] >= 2][:MAX_DOUBLE]
+            nm = _kr_names({r["symbol"] for r in dbl})
+            for r in dbl:
+                items.setdefault(r["symbol"], {"symbol": r["symbol"], "name": nm.get(r["symbol"], r["symbol"])})
+                tag(r["symbol"], f"쌍끌이 {r['streak']}일")
+        except Exception as e:   # noqa: BLE001
+            notes.append(f"쌍끌이 후보 실패: {str(e)[:80]}")
+        rc = retail_status()
+        if rc.get("active"):
+            for sym in flows.retail_only_now():
+                pen[sym] = (rc["penalty"], f"개인만 순매수 −{rc['penalty']}점(과거 검증)")
+    elif market == "US":
+        g = gurus.result() or {}
+        va = g.get("validation_ai") or {}
+        stocks = sorted((g.get("stocks") or {}).values(), key=lambda s: (-s["n_buyers"], -s["n_holders"]))
+        for s in stocks:
+            if s["n_buyers"]:
+                tag(s["ticker"], f"대가 매수({', '.join(b['name'] for b in s['buyers'][:2])})")
+            elif s["n_holders"] >= 3:
+                tag(s["ticker"], f"대가 {s['n_holders']}명 보유")
+        if va.get("validated"):
+            for s in [x for x in stocks if x["n_buyers"]][:MAX_GURU]:
+                items.setdefault(s["ticker"], {"symbol": s["ticker"], "name": s.get("name") or s["ticker"]})
+        elif va:
+            notes.append(f"대가+AI 필터 검증 미달(S&P500 대비 {va.get('avg_excess')}%p) — 대가 종목은 후보에 안 넣음")
+    return {"items": list(items.values()), "tags": tags, "penalty": pen, "notes": notes}

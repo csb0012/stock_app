@@ -331,6 +331,7 @@ def test_signal_routes(api_client, monkeypatch):
     monkeypatch.setattr(signals, "kr_closes", lambda: {})
     fo = client.get("/api/flows/overview").json()
     assert fo["lists"]["double"][0]["symbol"] == "A" and fo["daily"] == [] and fo["universe"] == 1
+    assert fo["retail"]["active"] is False and fo["retail"]["retail"]["n"] == 0      # 쌓인 수급·종가가 없으면 감점 안 함
 
 
 def test_name_match_fallback():
@@ -391,3 +392,100 @@ def test_flows_collect_bulk_store(monkeypatch):
     assert len(got) == 6 and {x.frgn_qty for x in got if x.symbol == "A"} == {50}
     assert flows.status()["running"] is False
     run(engine.dispose())
+
+
+# ---------------- 판단 후보 넓히기 · 대가 AI 필터 · 개인만 순매수 감점 (사용자 결정 2026-11-26) ----------------
+
+def _walk_candles(n, drift, seed, start="2024-01-01"):
+    rng = np.random.default_rng(seed)
+    closes = 100 * np.exp(np.cumsum(rng.normal(drift, 0.012, n)))
+    dates = pd.bdate_range(start, periods=n).strftime("%Y-%m-%d")
+    return [{"date": d, "open": c, "high": c * 1.01, "low": c * 0.99, "close": float(c), "volume": 1e6} for d, c in zip(dates, closes)]
+
+
+def test_ai_filter_uses_only_data_until_filing():
+    up = _walk_candles(400, 0.002, 1)
+    down = _walk_candles(400, -0.004, 2)
+    filed = up[300]["date"]
+    sigs = [{"key": "buffett", "ticker": "UP", "filed": filed, "period": "x", "weight": 3},
+            {"key": "buffett", "ticker": "DN", "filed": filed, "period": "x", "weight": 3}]
+    ohlcv = {"UP": up, "DN": down, **{f"N{i}": _walk_candles(400, 0, 10 + i) for i in range(8)}}
+    got = gurus.ai_filter(sigs, ohlcv)
+    assert [s["ticker"] for s in got] == ["UP"] and got[0]["ai"]["score"] >= gurus.AI_BUY_SCORE
+    crash = up[:301] + [{**c, "close": c["close"] * 0.3, "low": c["low"] * 0.3} for c in up[301:]]   # 공시 뒤 폭락으로 바꿔도
+    assert [s["ticker"] for s in gurus.ai_filter(sigs, {**ohlcv, "UP": crash})] == ["UP"]           # 판단은 같음
+    assert gurus.ai_filter([{**sigs[0], "filed": up[20]["date"]}], ohlcv) == []                     # 일봉 60개 전이면 판단 안 함
+
+
+def test_retail_check_active_only_when_weak_and_no_future():
+    dates = pd.bdate_range("2026-08-03", periods=60).strftime("%Y-%m-%d").tolist()
+    mem, closes = {}, {}
+    rng = np.random.default_rng(5)
+    for i in range(40):
+        retail = i < 20
+        mem[f"S{i}"] = {d: ({"frgn_qty": -10, "orgn_qty": -5, "prsn_qty": 15} if retail else
+                            {"frgn_qty": 10, "orgn_qty": 5, "prsn_qty": -15}) for d in dates[:35]}
+        drift = -0.003 if retail else 0.003
+        closes[f"S{i}"] = dict(zip(dates, 100 * np.exp(np.cumsum(rng.normal(drift, 0.002, 60)))))
+    import app.services.flows as fl
+    old = dict(fl._mem)
+    fl._mem.clear()
+    fl._mem.update(mem)
+    try:
+        r = flows.retail_check(closes)
+        assert r["retail"]["n"] >= 300 and r["retail"]["avg_excess"] < -0.5 and r["active"] is True
+        assert r["double"]["avg_excess"] > 0
+        # 신호 날짜 '그날' 종가는 안 씀 — 수급(그날 저녁 확정)을 본 뒤 다음 날 종가에 산 것으로 셈
+        class Track(dict):
+            used: set = set()
+
+            def __getitem__(self, k):
+                Track.used.add(k)
+                return super().__getitem__(k)
+        fl._mem.clear()
+        fl._mem.update({"X": {d: {"frgn_qty": -1, "orgn_qty": -1, "prsn_qty": 2} for d in dates[:5]}})
+        one = flows.retail_check({"X": Track(closes["S0"])})
+        assert one["retail"]["n"] == 1 and Track.used == {dates[5], dates[5 + flows.RETAIL_HORIZON]}
+        fl._mem.clear()
+        fl._mem.update(mem)
+        assert flows.retail_only_now() == {f"S{i}" for i in range(20)}
+        # 반대로 개인만 산 종목이 더 좋았으면 감점 안 함
+        flipped = {s: {d: 200 - v for d, v in c.items()} for s, c in closes.items()}
+        assert flows.retail_check(flipped)["active"] is False
+        assert flows.retail_check({})["active"] is False
+    finally:
+        fl._mem.clear()
+        fl._mem.update(old)
+
+
+def test_live_candidates_kr_and_us(monkeypatch):
+    rows = [{"symbol": "000001", "name": "가", "per": 8, "roe": 20, "eps_ttm": 1, "op_margin": 25, "quant_score": 9},
+            {"symbol": "000002", "name": "나", "per": 30, "roe": 2, "eps_ttm": 1, "op_margin": 1, "quant_score": 3}]
+    monkeypatch.setattr(signals, "kr_value_rows", lambda: rows)
+    monkeypatch.setattr(signals, "kr_prices", lambda: ({"000003": 100, "000004": 100}, {}))
+    monkeypatch.setattr(signals, "_kr_names", lambda syms: {s: f"이름{s}" for s in syms})
+    monkeypatch.setattr(flows, "_mem", {"000003": flow_series([(1, 1, -2)] * 3), "000004": flow_series([(1, -1, 0)] * 3)})
+    monkeypatch.setattr(signals, "retail_status", lambda: {"active": False})
+    c = signals.live_candidates("KR")
+    assert {i["symbol"] for i in c["items"]} == {"000001", "000003"}
+    assert "고수익 저평가" in c["tags"]["000001"][0] and c["tags"]["000003"] == ["쌍끌이 3일"] and c["penalty"] == {}
+    monkeypatch.setattr(signals, "retail_status", lambda: {"active": True, "penalty": 5})
+    monkeypatch.setattr(flows, "retail_only_now", lambda: {"000009"})
+    assert signals.live_candidates("KR")["penalty"] == {"000009": (5, "개인만 순매수 −5점(과거 검증)")}
+
+    res = gurus.build(_filings(), CMAP, {})
+    res["validation_ai"] = {"validated": False, "avg_excess": -1.2}
+    monkeypatch.setattr(gurus, "_result", res)
+    u = signals.live_candidates("US")
+    assert u["items"] == [] and "대가 매수" in u["tags"]["BBB"][0] and "검증 미달" in u["notes"][0]
+    res["validation_ai"] = {"validated": True}
+    assert [i["symbol"] for i in signals.live_candidates("US")["items"]] == ["BBB"]
+
+
+def test_apply_signals_tags_penalty_and_reason():
+    from app.services import papertrade, paper_engine as pe
+    rows = {"A": {"name": "가", "score": 66, "prob": 60, "quant": 80, "grade": "A", "accum": None, "accum_ok": False, "close": 1},
+            "B": {"name": "나", "score": 62, "prob": 60, "quant": 70, "grade": "B+", "accum": None, "accum_ok": False, "close": 1}}
+    papertrade.apply_signals(rows, {"A": {"tags": ["쌍끌이 3일"]}, "B": {"penalty": (5, "개인만 순매수 −5점(과거 검증)")}})
+    assert rows["A"]["score"] == 66 and rows["B"]["score"] == 57
+    assert "쌍끌이 3일" in pe._fmt_reason(rows["A"], None, []) and "개인만 순매수" in pe._fmt_reason(rows["B"], None, [])

@@ -21,8 +21,8 @@ async def guru_list(current_user: User = Depends(get_current_user)):
     r = gurus.result()
     st = {**gurus.status(), "stale": gurus.stale()}
     if not r:
-        return {"gurus": [], "validation": None, "status": st, "updated_at": None, "errors": []}
-    return {"gurus": r["gurus"], "validation": r.get("validation"), "status": st,
+        return {"gurus": [], "validation": None, "validation_ai": None, "status": st, "updated_at": None, "errors": []}
+    return {"gurus": r["gurus"], "validation": r.get("validation"), "validation_ai": r.get("validation_ai"), "status": st,
             "updated_at": r.get("updated_at"), "errors": r.get("errors", []), "unmapped": r.get("unmapped")}
 
 

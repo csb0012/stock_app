@@ -355,6 +355,8 @@ def _fmt_reason(row: dict, regime, ev: list) -> str:
     if row.get("accum") is not None:
         parts.append(f"매집 {row['accum']}점" + ("" if row.get("accum_ok") else "(제외 조건)"))
     txt = f"AI 점수 {row['score']} — " + " · ".join(parts)
+    if row.get("tags"):   # 후보가 된 이유·참고 신호 (가치주·쌍끌이·투자 대가·개미 감점) — signals.live_candidates
+        txt += " · " + " · ".join(row["tags"][:3])
     if regime:
         txt += f" · 시장 {regime}"
     if ev:

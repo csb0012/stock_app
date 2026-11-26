@@ -1287,3 +1287,203 @@ def test_schedule_intraday_every_interval(kenv, monkeypatch):
     kenv.c.put("/api/kis/config", json={"limits": {"intraday_every_min": 0}, "totp_code": kenv.code()})
     kenv.clock["t"] = at(10, 0)
     assert run(go()) is False                                              # 0 = 끔
+
+
+# ---------------- 미국 (해외주식 모의투자, 사용자 결정 2026-11-26) ----------------
+
+ET = _TZ["US"]
+
+
+class FakeUSBroker:
+    """KIS 해외주식 모의투자 흉내 — 지정가만, 현재가 이상 매수·이하 매도 지정가는 바로 현재가로 체결"""
+
+    def __init__(self):
+        self.cash = 10_000.0
+        self.prices = {"AAPL": 200.0, "NVDA": 150.0}
+        self.holdings, self.orders = {}, []
+
+    async def us_balance(self):
+        hs = [{"symbol": s, "name": s, "qty": q, "sellable": q, "avg": a, "price": self.prices[s], "value": q * self.prices[s],
+               "pnl": 0.0, "pnl_pct": 0.0, "exchange": "NASD"} for s, (q, a) in self.holdings.items()]
+        st = sum(h["value"] for h in hs)
+        return {"cash": self.cash, "d2_cash": self.cash, "total": self.cash + st, "stock_value": st, "prev_total": 0, "pnl": 0,
+                "holdings": hs, "currency": "USD"}
+
+    async def us_order(self, side, symbol, qty, price, exchange=None):
+        assert price is not None, "미국은 지정가만"
+        odno = f"US{len(self.orders) + 1:08d}"
+        px = self.prices[symbol]
+        o = {"odno": odno, "side": side, "symbol": symbol, "qty": qty, "px": px, "limit": price, "filled": 0, "exchange": exchange}
+        self.orders.append(o)
+        if (side == "buy" and price >= px) or (side == "sell" and price <= px):
+            q, a = self.holdings.get(symbol, [0, 0])
+            if side == "buy":
+                self.cash -= qty * px
+                self.holdings[symbol] = [q + qty, px]
+            else:
+                self.cash += qty * px
+                if q - qty:
+                    self.holdings[symbol] = [q - qty, a]
+                else:
+                    self.holdings.pop(symbol)
+            o["filled"] = qty
+        return {"odno": odno, "orgno": "", "time": "100000", "msg": "해외 주문 완료"}
+
+    async def us_executions(self, day=None):
+        return [{"odno": o["odno"], "side": o["side"], "symbol": o["symbol"], "name": "", "qty": o["qty"], "filled": o["filled"],
+                 "avg_price": o["px"] if o["filled"] else 0, "amount": 0, "remain": o["qty"] - o["filled"],
+                 "cancelled": o.get("cancelled", False), "cancel_qty": 0, "rejected": False, "time": ""} for o in self.orders]
+
+    async def us_cancel(self, odno, symbol, qty, exchange=None):
+        for o in self.orders:
+            if o["odno"] == odno:
+                o["cancelled"] = True
+        return {"msg": "취소"}
+
+
+@pytest.fixture
+def usenv(kenv, monkeypatch):
+    ub = FakeUSBroker()
+    kenv.b.prices.update(ub.prices)
+    ub.prices = kenv.b.prices          # kenv 가 바꿔 둔 현재가·지수 함수(_quote·_fetch_prices 등)가 미국 가격도 보게
+    for name in ("us_balance", "us_order", "us_executions", "us_cancel"):
+        monkeypatch.setattr(kis_order, name, getattr(ub, name))
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 30, tzinfo=ET).astimezone(KST)   # 뉴욕 화요일 10:30 (한국 수요일 00:30)
+    kis_trade._US["_balance_cache"].update(at=0.0, data=None, error=None)
+    kenv.ub = ub
+    return kenv
+
+
+def us_get(env, path, **kw):
+    return env.c.get(path, params={"market": "US", **kw.pop("params", {})}, **kw)
+
+
+def us_post(env, path, **kw):
+    return env.c.post(path, params={"market": "US", **kw.pop("params", {})}, **kw)
+
+
+def add_us(env, **kw):
+    from app.models.kis import KisOrder
+
+    async def go():
+        with kis_trade.market("US"):
+            exp = kis_trade.expiry_for("2026-11-23")
+        async with env.Session() as s:
+            k = KisOrder(market="US", created_at=env.clock["t"].timestamp(), base_date="2026-11-23", source="ai", status="proposed",
+                         expires_at=exp, **kw)
+            s.add(k)
+            await s.commit()
+            return k.id
+    return run(go())
+
+
+def test_us_local_time_market_window_and_money():
+    with kis_trade.market("US"):
+        t = dt.datetime(2026, 11, 24, 10, 30, tzinfo=ET)
+        assert kis_trade.market_window(t) == "open"
+        assert kis_trade.market_window(dt.datetime(2026, 11, 24, 15, 55, tzinfo=ET)) == "closing"
+        assert kis_trade.market_window(dt.datetime(2026, 11, 26, 11, 0, tzinfo=ET)) == "closed"   # 추수감사절 휴장
+        assert kis_trade._m(1234.5) == "$1,234.50" and kis_trade._m(-3, True) == "-$3.00"
+        assert kis_trade.clean_limits({})["max_order_krw"] == 1500                       # 미국 한도 = 달러
+        with pytest.raises(ValueError, match="달러"):
+            kis_trade.clean_limits({"max_order_krw": 1_000_000})
+    assert kis_trade.mk() == "KR" and kis_trade._m(1234.6) == "1,235원"
+    with pytest.raises(ValueError):
+        with kis_trade.market("JP"):
+            pass
+
+
+def test_us_starts_off_then_resume_and_orders_separate(usenv):
+    st = us_get(usenv, "/api/kis/status").json()
+    assert st["market"] == "US" and st["currency"] == "USD" and st["us_off"] is True and st["halted"] is True
+    assert st["limit_meta"]["max_order_krw"]["label"] == "1회 매수 한도 (달러)"
+    r = us_post(usenv, "/api/kis/propose")
+    assert r.status_code == 400 and "꺼져" in r.json()["detail"]
+    assert us_post(usenv, "/api/kis/resume", json={"totp_code": usenv.code()}).status_code == 200
+    assert us_get(usenv, "/api/kis/status").json()["us_off"] is False
+    assert usenv.c.get("/api/kis/status").json()["market"] == "KR"                     # 국내는 따로 (그대로 켜져 있음)
+    add_us(usenv, side="buy", symbol="AAPL", name="애플", budget=1000, ref_price=200.0, reason="AI")
+    assert us_get(usenv, "/api/kis/orders").json()["items"][0]["symbol"] == "AAPL"
+    assert usenv.c.get("/api/kis/orders").json()["items"] == []                         # 국내 목록엔 안 보임
+
+
+def test_us_buy_limit_usd_budget_and_stop_sell_limit(usenv, monkeypatch):
+    us_post(usenv, "/api/kis/resume", json={"totp_code": usenv.code()})
+    oid = add_us(usenv, side="buy", symbol="AAPL", name="애플", budget=5_000, ref_price=200.0, reason="AI 점수 70")
+    with kis_trade.market("US"):
+        assert kis_trade._quote is not None
+    r = us_post(usenv, "/api/kis/orders/approve", json={"ids": [oid], "totp_code": usenv.code()})
+    assert r.status_code == 200, r.text
+    res = r.json()["results"][0]
+    assert res["status"] == "submitted", res
+    o = usenv.ub.orders[0]
+    assert o["limit"] == 200.6 and o["qty"] == 7          # 지정가 = 200 × 1.003 · 1회 한도 $1,500 → 7주
+    assert usenv.b.orders == []                            # 국내 주문은 안 나감
+    with kis_trade.market("US"):
+        assert run(kis_trade.refresh_fills()) == 1
+        st = run(kis_trade.overview())
+    assert st["mismatches"] == [] and st["balance"]["holdings"][0]["stop"] == pytest.approx(200 * 0.93)
+    # 손절가 아래로 → 자동 매도 = 현재가 −1% 지정가 (모의투자 해외는 시장가 없음)
+    usenv.ub.prices["AAPL"] = 180.0
+    with kis_trade.market("US"):
+        n = run(kis_trade.check_exits({"AAPL": 180.0}))
+    assert n == 1 and usenv.ub.orders[-1]["side"] == "sell" and usenv.ub.orders[-1]["limit"] == 178.2
+    assert usenv.ub.orders[-1]["filled"] == 7
+    log = us_get(usenv, "/api/kis/log").json()["items"]
+    assert any("$178.20" in (x["detail"] or "") for x in log)
+    assert not any(x["action"] == "auto_stop" for x in usenv.c.get("/api/kis/log").json()["items"])   # 국내 로그엔 없음
+
+
+def test_us_order_api_payloads(monkeypatch):
+    """kis_order 미국 주문·잔고·체결 — 보내는 값·받은 값 해석 (가짜 _call)"""
+    sent = []
+
+    async def fake_call(kind, method, path, payload):
+        sent.append((kind, path, payload))
+        if kind == "us_buy":
+            return {"output": {"ODNO": "0030001", "ORD_TMD": "103000"}, "msg1": "ok"}
+        if kind == "us_balance":
+            if payload["OVRS_EXCG_CD"] == "NASD":
+                return {"output1": [{"ovrs_pdno": "AAPL", "ovrs_item_name": "애플", "ovrs_cblc_qty": "3", "ord_psbl_qty": "3",
+                                     "pchs_avg_pric": "190.5", "now_pric2": "200.25", "ovrs_stck_evlu_amt": "600.75",
+                                     "frcr_evlu_pfls_amt": "29.25", "evlu_pfls_rt": "5.1", "ovrs_excg_cd": "NASD"}]}
+            return {"output1": [{"ovrs_pdno": "BRK/B", "ovrs_item_name": "버크셔", "ovrs_cblc_qty": "1", "ord_psbl_qty": "1",
+                                 "pchs_avg_pric": "500", "now_pric2": "510", "ovrs_stck_evlu_amt": "510", "frcr_evlu_pfls_amt": "10",
+                                 "evlu_pfls_rt": "2", "ovrs_excg_cd": "NYSE"}]} if payload["OVRS_EXCG_CD"] == "NYSE" else {"output1": []}
+        if kind == "us_cash":
+            return {"output": {"ord_psbl_frcr_amt": "8888.12"}}
+        if kind == "us_ccld":
+            return {"output": [
+                {"odno": "0030001", "sll_buy_dvsn_cd": "02", "pdno": "AAPL", "ft_ord_qty": "5", "ft_ccld_qty": "2",
+                 "ft_ccld_unpr3": "200.1", "nccs_qty": "0", "rvse_cncl_dvsn": "00", "prcs_stat_name": "완료"},
+                {"odno": "0030002", "orgn_odno": "0030001", "rvse_cncl_dvsn": "02", "ft_ord_qty": "3", "ft_ccld_qty": "3"},
+                {"odno": "0030003", "sll_buy_dvsn_cd": "01", "pdno": "NVDA", "ft_ord_qty": "1", "ft_ccld_qty": "0",
+                 "nccs_qty": "0", "rvse_cncl_dvsn": "00", "prcs_stat_name": "거부"}]}
+        return {}
+    monkeypatch.setattr(kis_order, "_call", fake_call)
+    monkeypatch.setattr(kis_order, "creds", lambda: ("k", "s", "50123456-01"))
+    r = run(kis_order.us_order("buy", "AAPL", 5, 200.6, "NAS"))
+    assert r["odno"] == "0030001"
+    body = sent[0][2]
+    assert body["OVRS_EXCG_CD"] == "NASD" and body["OVRS_ORD_UNPR"] == "200.60" and body["ORD_DVSN"] == "00" and body["CANO"] == "50123456"
+    with pytest.raises(ValueError):
+        run(kis_order.us_order("buy", "AAPL", 1, 200.605))      # 호가 단위($0.01) 안 맞음
+    with pytest.raises(ValueError):
+        run(kis_order.us_order("buy", "AAPL", 1, None))         # 지정가만
+    b = run(kis_order.us_balance())
+    assert b["d2_cash"] == 8888.12 and {h["symbol"] for h in b["holdings"]} == {"AAPL", "BRK-B"}
+    assert b["total"] == pytest.approx(8888.12 + 600.75 + 510) and b["prev_total"] == 0
+    ex = {e["odno"]: e for e in run(kis_order.us_executions(dt.date(2026, 11, 24)))}
+    assert set(ex) == {"0030001", "0030003"}                    # 취소 줄은 원주문에 합침
+    assert ex["0030001"]["cancelled"] and ex["0030001"]["cancel_qty"] == 3 and ex["0030001"]["filled"] == 2
+    assert ex["0030003"]["rejected"] and ex["0030003"]["side"] == "sell"
+    assert kis_order.us_tick_up(10.001) == 10.01 and kis_order.us_tick_down(10.009) == 10.0
+
+
+def test_us_guard_refuses_real_server(monkeypatch):
+    from app.services import kis_order as ko
+    monkeypatch.setattr(ko, "creds", lambda: ("k", "s", "50123456-01"))
+    cl = KISClient(app_key="k", app_secret="s", base_url=KIS_REAL_BASE)
+    monkeypatch.setattr(ko, "client", lambda: cl)
+    with pytest.raises(KISError, match="실거래"):
+        run(ko.us_order("buy", "AAPL", 1, 100.0))
