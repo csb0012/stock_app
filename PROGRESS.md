@@ -1021,7 +1021,7 @@ pull 후 패키지 목록이 바뀌었을 때:
   예측 방식 카드 / 종목탐색 이름 한 줄·표가 카드 안 / 빅테크 이름 안 잘림 · 각 화면 가로 스크롤 없음, 기존 '모든 화면 — 모바일' 을 12개 화면으로 늘리고 스크린샷), pytest 281개, `bash scripts/check.sh` 통과.
   고친 뒤 12개 화면 390px 스크린샷을 다시 보고 확인 (API·백엔드 변경 없음 — 화면 배치만)
 
-### 2026-11-26 — Oracle VM 자동 재시도: '응답 시간 초과'에서 멈추던 것 (commit `HASH`)
+### 2026-11-26 — Oracle VM 자동 재시도: '응답 시간 초과'에서 멈추던 것 (commit `27e68f2`)
 - 사용자 제보: `deploy/oci-launch-retry.sh` 340번째 시도 뒤 `다른 오류 — 중단: "The request timed out. The request may have reached the service and the operation may have completed."`
   → 예전엔 '자리 없음'·429·한도 초과 말고는 전부 중단. 이 오류는 VM 이 실제로 만들어졌을 수도 있는 경우
 - 고침: 매 시도 전에 이름(`stock-app`)으로 지워지지 않은 VM 이 있는지 먼저 확인(`find_existing`, TERMINATING 제외) → 있으면 그 VM 으로 공인 IP 단계 (두 번 만들지 않음 — A1 은 무료 한도 안에서 여러 개 만들어질 수 있어서).
