@@ -59,6 +59,7 @@ npm run dev
 | `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
 | `DART_API_KEY` | 선택 | 국내 종목 최근 공시 요인 (opendart.fss.or.kr) |
 | `FRED_API_KEY` | 선택 | 거시환경 요인 (VIX·하이일드 스프레드·금리) + 경제 캘린더 일정·발표값 |
+| `SEC_USER_AGENT` | 선택 | 투자 대가(SEC 13F) 요청의 User-Agent — SEC 는 '이름 연락처' 를 요구 (비우면 앱 이름 + 예시 주소). 키는 필요 없음 |
 | `SMTP_HOST`·`SMTP_PORT`·`SMTP_USER`·`SMTP_PASSWORD`·`SMTP_FROM` | 선택 | 회원가입·비밀번호 찾기·이메일 변경 인증 코드 메일 (네이버 smtp.naver.com 465). 없으면 그 기능만 503 |
 | `SMS_API_KEY`·`SMS_API_SECRET`·`SMS_FROM`·`SMS_DAILY_LIMIT` | 선택 | 휴대폰 문자 인증 (솔라피 solapi.com, SMS_FROM = 등록한 발신번호, 하루 기본 50건). 없으면 휴대폰 인증만 503 |
 | `SIGNUP_OPEN` | — | 기본 true. false 면 가입 자체를 막음 (초대 코드가 있어도) |
@@ -89,7 +90,7 @@ models/
   watchlist.py   — WatchlistItem (symbol, market, name, memo, target_price)
   portfolio.py   — PortfolioItem (symbol, market, name, quantity, avg_price)
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
-  flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
+  flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량 — 추천·관심 종목 + 거래대금 1억↑ 국내 전 종목)
   kis.py         — KIS 모의투자 주문: KisTrade (kis_trade 1행: 정지 여부·한도·매매 규칙·state JSON(expected 앱 기록 보유 수량·meta 손절/목표/보유일·log·day_start)) /
                    KisOrder (kis_orders: 제안 1건 → 승인 → 주문 → 체결, source ai/exit(목표가 제안)/stop(자동 손절), limit_price(지정가)·cancel_req(취소 요청 시각), 상태 proposed/approved/submitting/submitted/filled/partial/unfilled/unknown/rejected/expired/cancelled/blocked/failed) /
                    KisLog (kis_log: 감사 로그 — 지우지 않음)
@@ -165,7 +166,22 @@ services/
                    실시간은 검증 통과 + 오늘 특징값이 다 있는 첫 변형(수급 포함 우선). 결과 app/data/model_*.json (gitignore)
   scheduler.py   — 자동 예측 기록: 국내 장 시작 전(08:20~)·장 마감 후(15:40~), 미국 장 마감 후(16:10~ ET), 국내 수급 수집(18:10~)
                    + AI 추천 기본 데이터 14분마다 미리 계산 + 이벤트 일정 6시간마다 갱신
-  flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음)
+  flows.py       — 국내 외국인·기관·개인 일별 순매수 (KIS FHKST01010900, 최근 30일만 줘서 investor_flow 테이블에 매일 쌓음, 100종목씩 묶어 저장).
+                   대상 = 추천·관심·투자 + 퀀트 대상(거래대금 1억↑) 전 종목 (scheduler flow_kr 18:10 → accumulation.rebuild_quant).
+                   stock_signal(쌍끌이 연속 일수·5일 순매수 금액(수량×종가 어림)·강도·설명) · rankings(쌍끌이/외국인/기관/개미 순매수·순매도/동반 순매도)
+                   · market_daily(날짜별 개인·외국인·기관 합계 = 개미 동향) · factor_frame(퀀트 '수급' 요인 = **전날까지** 5일 외국인+기관 순매수 ÷ 거래대금)
+  gurus.py       — 투자 대가 33명 (SEC 13F, data.sec.gov submissions → 13F-HR 정보 표 XML, 원본만·옵션/채권 제외, 대가당 최근 8분기).
+                   CUSIP → 티커: OpenFIGI(키 없이 1분 25번×10개) → 못 찾으면 SEC company_tickers.json 이름 맞추기(norm_name·match_name, 모호하면 안 씀).
+                   build(): 대가별 비중·직전 분기 대비 신규/추가/축소/전량 매도·최근 1년 추정 수익률(지금 보유 종목 1년 주가의 비중 평균, Yahoo) / 종목별 보유·산·판 대가.
+                   validate(): 공시 **다음 거래일** 종가에 '의미 있게 산 종목'(신규·25%↑, 비중 1%↑)을 사서 63거래일 → SPY 대비. 표본 30↑·평균 초과 > 0·이긴 비율 50%↑ 이면 validated
+                   → signal()/boost_points() 가 AI 장기 점수 0~10점, 아니면 0 (근거로만). 하루 1번 loop (시작 3분 뒤). 파일 app/data/guru_filings.json·cusip_map.json·gurus.json
+  fundamentals.py— 가치·재무. 국내 = 네이버 분기 실적(m.stock.naver.com/api/stock/{코드}/finance/quarter, 예상치 제외, 종목마다 7일, app/data/fundamentals_kr.json)
+                   → metrics(그날 **알려진** 분기만: 1~3분기 끝+45일, 4분기 +90일 → TTM EPS·BPS·ROE·영업이익률·전년 동분기 성장률·배당) · with_price → PER·PBR·배당수익률.
+                   kr_factor_frame = 퀀트 '가치'(E/P·B/P 백분위)·'수익성'(ROE·영업이익률) 요인 (날짜별, 미래 실적 안 씀). KR_SCREENS(토스식 9개 조건) · run_screen.
+                   미국 = yahoo_quotes(v7 quote 묶음, 1시간 캐시 — 대가 보유 종목 1년 등락·PER) · us_screen_sync(Yahoo 스크리너 조건 8개: 저평가 성장주·미래의 배당왕 등)
+  signals.py     — 투자 신호 묶음: for_row(시장, 종목, 가격) → {guru, value, flow, score_parts, bonus} (AI 추천 행·종목 상세).
+                   apply_longterm = 장기 점수 + bonus (검증된 것만: 대가 = 따라 사기 검증 통과 시, 국내 가치·수익성·수급 = 퀀트 비중 > 0 일 때 ±최대 5점) — long_term_base 에 원래 점수.
+                   loop(시작 5분 뒤, 30분마다): 스캔 끝나길 기다림 → 재무 7일 지난 종목 받기 → 수급이 대상의 절반 미만이면 전 종목 수집 → rebuild_quant
   chatbot.py     — 규칙 기반 챗봇 (외부 AI 없음): route() 가 질문 키워드로 의도(종목 분석·매수/매도 후보·투자종목·관심종목·
                    테마·매집·시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
                    prediction_log.review·events)를 조회해 정해진 마크다운 형식으로 답함. 종목은 종목마스터 정확 일치 우선
@@ -177,7 +193,9 @@ services/
                    추세(50/120일선·200일 고저)·거래량 매집(50일 상승일/하락일 거래량)·안정성(60일 변동성 낮음)·고점 근접(200일 고점 대비),
                    같은 날 전 종목 백분위 → 요인 비중 = 날짜별 순위 상관(IC)이 양수인 만큼 (손으로 안 정함) → 종합 백분위·점수 1~10·등급 A+~F.
                    검증: 앞쪽 날짜로 비중을 정하고(20거래일 겹침 제거) 뒤쪽 날짜에서 점수 구간별 '20거래일 뒤 그날 전 종목 중간값을 이긴 비율'.
-                   매집 스캔(accumulation.scan)이 같은 일봉으로 계산해 accumulation.json 의 quant 에 저장 (KIS 추가 호출 없음). 거래대금 1억 미만 제외
+                   매집 스캔(accumulation.scan)이 같은 일봉으로 계산해 accumulation.json 의 quant 에 저장 (KIS 추가 호출 없음). 거래대금 1억 미만 제외.
+                   일봉 밖 요인 EXTRA_FACTORS(가치·수익성·수급, build(extra=)) — 20거래일 뒤 결과가 난 날짜가 MIN_EXTRA_DATES(15)↑ 쌓여야 IC 로 비중(그 전엔 0, 화면 '쌓는 중').
+                   요인 원값은 app/data/quant_frames.pkl 에 저장 → accumulation.rebuild_quant() 가 재무·수급이 새로 오면 KIS 호출 없이 다시 계산
   market_regime.py — 시장 상태(CAN SLIM 'M'): 코스피·코스닥·S&P500·나스닥 yfinance 5년 일봉 → 50/200일선·200일선 기울기·분산일(25일 중 −0.2%↓+거래량↑)
                    → 상승 추세/상승 압박/하락 추세 + 상태별 20거래일 뒤 지수 성과 검증. 예측 확률엔 안 넣고 경고로만
   themes.py      — 테마별 종목: 네이버 증권 모바일 API(m.stock.naver.com/api/stocks/theme, JSON) → 하루 1회 app/data/themes.json
@@ -240,13 +258,16 @@ api/routes/
   themes.py      — GET /themes (테마 전체, SWR 60초), GET /themes/{no} (테마 종목), POST /themes/refresh, GET /themes/status
   accumulation.py— GET /accumulation (?min_score, 후보·검증·스캔 상태), POST /accumulation/scan (전 종목 다시 계산),
                    GET /quant (?limit, 퀀트 점수 상위·요인 비중·검증 — 전 종목 점수표는 응답에 안 실음)
+  signals.py     — 투자 대가: GET /gurus (목록·따라 사기 검증·수집 상태) · /gurus/stocks?sort=holders|buyers|sellers · /gurus/{key} (보유 전체·변화, 없으면 404) · POST /gurus/refresh.
+                   가치주 찾기: GET /value/screens · /value/{KR|US}/{조건} (국내 재무 없으면 items [] + message, 미국 Yahoo 실패 502).
+                   수급: GET /flows/overview (lists·daily(개미 동향)·status). GET /signals/status
   predictions.py — /review (채점 후 적중률·기록·method_accuracy·factor_weights(지표 비중 조정)·model 상태, kind=all|live|backtest, outcome, limit), POST /backtest (?force), /backtest/status
   papertrade.py  — /paper/config (기본값·설정 범위·자동 운영 상태), /paper/simulations (POST 시작 {market, capital, months, params} — 범위 밖 422·계산 중 409 / GET 목록 / GET·DELETE /{id}),
                    POST /paper/simulations/{id}/cancel (계산 중이 아니면 409),
                    /paper/accounts (POST 생성 / GET 목록(현재가 평가) / GET /{id} 거래·자산 곡선·판단 기록 / POST /{id}/run / PUT /{id}/active / DELETE /{id}). 남의 것 404
 ```
 
-`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과나 퀀트 점수가 없으면 전 종목 스캔 — 매집·퀀트 같이), papertrade.loop (AI 모의투자 자동 운영), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
+`main.py` lifespan: init_db → stock_master.load → repair_symbols → flows.load_all (쌓아둔 수급) → 백그라운드: themes.loop (테마 구성 하루 1회), accumulation.startup (결과나 퀀트 점수·요인 원값 파일이 없으면 전 종목 스캔 — 매집·퀀트 같이), gurus.loop (SEC 13F 하루 1회, 시작 3분 뒤), signals.loop (국내 재무·전 종목 수급 채우고 퀀트 다시 계산, 시작 5분 뒤·30분마다), papertrade.loop (AI 모의투자 자동 운영), 30분마다 prediction_log.evaluate_pending, 하루 1회 backtest.run (시작 20초 후 첫 실행, 학습 모델 재학습 포함), 10분마다 ml_model.refresh_ctx (지수 일봉), scheduler.loop (장 시작 전·장 마감 후 자동 예측 기록), scheduler.warm_recommendations, extras.worker (수집 결과는 app/data/extras_cache.json 에 저장·복원, 시작 1초 뒤 추천 후보 종목 미리 수집 예약), 시작 2초 뒤 market.warm_overview (대시보드 미리 받기).
 
 **오류 처리 원칙:** KIS·yfinance 실패를 빈 목록이나 다른 데이터로 대체하지 않는다. `HTTPException(502, 원인 메시지)`로 올려서 화면에 그대로 표시한다. 단, 예측 기록(prediction_log)처럼 부가 기능의 실패는 주 응답을 막지 않고 로그로 남긴다.
 
@@ -279,6 +300,9 @@ pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검�
                      Setup2FA(/setup-2fa: 2단계 필수인데 안 켰을 때 — 등록하면 첫 화면, ProtectedRoute 와 403 X-Totp-Required 가 여기로 보냄),
                      PaperTrading(/paper, AI 모의투자: 실시간 계좌 / 과거 시뮬레이션 탭(localStorage paper-tab) · 자산 곡선 SVG(AI vs 지수) · 거래 이유 · 판단 기록),
                      Predictions(예측 검증), Calendar,
+                     Gurus(/gurus 투자 대가: 목록(추정 수익률 순)·대가 상세(비중·변화·전량 매도)·대가들이 산 종목·따라 사기 검증),
+                     ValueScreens(/value 가치주 찾기: 국내/미국 · 토스식 조건 목록 → 표, 시장·조건은 localStorage value-market/value-screen),
+                     Flows(/flows 수급 동향: 개미 동향 날짜별 막대 + 쌍끌이·외국인·기관·개미 순매수/순매도·동반 순매도 목록),
                      Login(회원가입·비밀번호 찾기 링크, 아이디·이메일·휴대폰 번호), Signup·ForgotPassword(이메일/휴대폰 탭 → 코드),
                      MyPage(관리자면 관리자 페이지 링크·프로필 카드·닉네임·본인인증(이메일/휴대폰)·비밀번호·2단계 인증·로그인 기기/최근 활동·모든 기기 로그아웃·CSV 내려받기·탈퇴)
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
@@ -291,7 +315,7 @@ components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관�
                      accountEvents.ts (활동 기록 종류 이름·기기 이름 — 마이페이지·관리자 공통),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
                      PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래·프리마켓·애프터마켓 가격 배지 — label 대로. extPrice()·SessionTag: 프리·애프터마켓이면 관심종목·종목탐색·AI 추천은 현재가 자리에 그 가격(종가는 마우스 올림), 투자종목은 손익 때문에 배지),
-                     QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
+                     QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), SignalBadges (투자 대가·PER/PBR/ROE·쌍끌이 배지 + 장기 점수 보정 — AI 추천 카드·종목 상세), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
                      LongTermPanel (장기 보유 분석 표·지수 카드), format.ts,
                      useNarrow (640px 이하 = 휴대폰 — KIS·캘린더·AI 모의투자·예측 검증은 표 대신 카드), 챗봇 버튼·창 위치는 index.css .chat-fab/.chat-panel (휴대폰 작게),

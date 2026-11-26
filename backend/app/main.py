@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.core.config import settings
-from app.api.routes import auth, admin as admin_route, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route, kis as kis_route
+from app.api.routes import auth, admin as admin_route, stocks, market, watchlist, portfolio, predictions, chat, themes as themes_route, accumulation as accumulation_route, papertrade as papertrade_route, kis as kis_route, signals as signals_route
 import asyncio
 from app.services import stock_master, prediction_log, extras, backtest, ml_model, scheduler, flows
 from app.services.repair import repair_symbols
@@ -45,9 +45,15 @@ async def lifespan(app: FastAPI):
     # 국내 실시간 현재가 (KIS 웹소켓 — 장 시간에 화면이 보는 종목만 구독) — kis_ws.py
     from app.services import kis_ws
     ws_task = asyncio.create_task(kis_ws.loop())
+    # 투자 대가(SEC 13F) 하루 1번 · 국내 재무(네이버, 종목마다 7일)·전 종목 수급 채우고 퀀트 다시 계산 — gurus.py / signals.py
+    from app.services import gurus, signals
+    guru_task = asyncio.create_task(gurus.loop())
+    signal_task = asyncio.create_task(signals.loop())
     # 대시보드 데이터 미리 받기 (첫 화면 대기 줄이기)
     asyncio.get_event_loop().call_later(2.0, market.warm_overview)
     yield
+    guru_task.cancel()
+    signal_task.cancel()
     ws_task.cancel()
     kis_task.cancel()
     paper_task.cancel()
@@ -116,6 +122,7 @@ app.include_router(accumulation_route.router, prefix="/api")
 app.include_router(accumulation_route.quant_router, prefix="/api")
 app.include_router(papertrade_route.router, prefix="/api")
 app.include_router(kis_route.router, prefix="/api")
+app.include_router(signals_route.router, prefix="/api")
 
 
 @app.get("/api/health")

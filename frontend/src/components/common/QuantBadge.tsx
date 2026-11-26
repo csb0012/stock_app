@@ -2,6 +2,7 @@
 
 export const FACTOR_NAMES: Record<string, string> = {
   rs: "모멘텀(RS)", trend: "추세", updown: "거래량 매집", lowvol: "안정성", high52: "고점 근접",
+  value: "가치", quality: "수익성", flow: "수급",
 };
 
 export function gradeOf(p: number | null | undefined): string {

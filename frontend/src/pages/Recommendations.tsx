@@ -7,6 +7,7 @@ import PredictionReasons from "../components/common/PredictionReasons";
 import PriceLevels from "../components/common/PriceLevels";
 import DaytimePrice, { extPrice, SessionTag } from "../components/common/DaytimePrice";
 import QuantBadge, { TrackBadge } from "../components/common/QuantBadge";
+import SignalBadges from "../components/common/SignalBadges";
 import { RegimeWarning } from "../components/common/MarketRegime";
 import NewsLink, { NewsSource } from "../components/common/NewsLink";
 import { TrendingUp, Zap, AlertTriangle, RefreshCw, Newspaper, Star, Check } from "lucide-react";
@@ -89,6 +90,7 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
               <QuantBadge q={item.quant} /><TrackBadge t={item.track} />
             </div>
           )}
+          {item.signals && <div style={{ marginTop: 5 }}><SignalBadges s={item.signals} compact /></div>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <WatchButton item={item} inList={inWatchlist} />

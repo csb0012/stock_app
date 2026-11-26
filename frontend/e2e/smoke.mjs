@@ -8,6 +8,7 @@ import * as F from "./fixtures.mjs";
 import * as PF from "./paper_fixtures.mjs";
 import * as KF from "./kis_fixtures.mjs";
 import * as RF from "./pred_fixtures.mjs";
+import * as SF from "./signal_fixtures.mjs";
 
 const require = createRequire(import.meta.url);
 let chromium;
@@ -43,6 +44,13 @@ function makeApi(overrides = {}) {
     "GET /api/chat/status": { model: "규칙 기반", ready: true },
     "GET /api/market/regime": F.REGIME,
     "GET /api/quant": F.QUANT,
+    "GET /api/gurus": SF.GURUS,
+    "GET /api/gurus/stocks": SF.GURU_STOCKS,
+    "GET /api/gurus/buffett": SF.GURU_DETAIL,
+    "GET /api/value/screens": SF.VALUE_SCREENS,
+    "GET /api/value/KR/undervalued_growth": SF.VALUE_KR,
+    "GET /api/value/US/undervalued_growth": SF.VALUE_US,
+    "GET /api/flows/overview": SF.FLOWS,
     "GET /api/paper/config": PF.PAPER_CONFIG,
     "GET /api/paper/accounts": PF.PAPER_ACCOUNTS,
     "GET /api/paper/accounts/1": PF.PAPER_ACCOUNT,
@@ -273,6 +281,107 @@ async function run() {
     await shot(page, "quant");
     await page.getByText("삼성전자").first().click();
     await page.getByTestId("quote-card").waitFor();
+  });
+
+  await test("투자 대가: 목록(추정 수익률 순) · 상세(변화) · 대가들이 산 종목 · 따라 사기 검증", {}, async (page, api) => {
+    await page.goto(`${BASE}/gurus`);
+    const list = page.getByTestId("guru-list");
+    await list.waitFor();
+    const t = await list.innerText();
+    for (const s of ["데이비드 테퍼", "+26.8%", "워런 버핏", "최근 공시 없음", "신규 2", "MU 18%"]) expect(t.includes(s), `대가 목록에 '${s}' 없음`);
+    await shot(page, "gurus");
+    await page.getByText("워런 버핏").first().click();
+    const det = page.getByTestId("guru-detail");
+    await det.getByText("처브").waitFor();
+    const dt = await det.innerText();
+    for (const s of ["24.9%", "추가 매수 +31.5%", "신규 매수", "티커 변환 전", "전량 매도", "DVA(1.2%)"]) expect(dt.includes(s), `대가 상세에 '${s}' 없음`);
+    await det.getByText("애플").click();
+    await page.getByTestId("quote-card").waitFor();
+    await page.getByRole("button", { name: "대가들이 산 종목" }).click();
+    await page.getByTestId("guru-stocks").getByText("아마존닷컴").waitFor();
+    const st = await page.getByTestId("guru-stocks").innerText();
+    for (const s of ["아마존닷컴", "AMZN", "스티븐 맨델", "데이비드 테퍼", "+8.2%"]) expect(st.includes(s), `대가 종목 표에 '${s}' 없음`);
+    await page.getByRole("button", { name: "이번 분기 많이 산" }).click();
+    await page.waitForTimeout(200);
+    expect(api.calls.some((c) => c.key === "GET /api/gurus/stocks" && c.query.includes("sort=buyers")), "정렬 바꿔도 다시 안 물음");
+    await page.getByRole("button", { name: "따라 사기 검증" }).click();
+    const v = await page.getByTestId("guru-validation").innerText();
+    for (const s of ["다음 거래일 종가", "-1.9%p", "42.3%", "775건", "점수엔 안 넣음", "워런 버핏"]) expect(v.includes(s), `검증에 '${s}' 없음`);
+    await shot(page, "gurus-validation");
+  });
+
+  await test("가치주 찾기: 국내 조건·표(PER·ROE·성장·퀀트·수급) → 미국 탭 · 선택 기억", {}, async (page) => {
+    await page.goto(`${BASE}/value`);
+    const tbl = page.getByTestId("value-table");
+    await tbl.waitFor();
+    const t = await tbl.innerText();
+    for (const s of ["삼성전자", "5.4", "34.3%", "+126.9%", "쌍끌이 3일 연속", "A"]) expect(t.includes(s), `국내 가치 표에 '${s}' 없음`);
+    expect((await page.getByTestId("value-screen-list").innerText()).includes("아직 저렴한 가치주"), "조건 목록 없음");
+    await shot(page, "value-kr");
+    await page.getByRole("button", { name: "미국", exact: true }).click();
+    await page.getByText("엔비디아").waitFor();
+    const u = await page.getByTestId("value-table").innerText();
+    for (const s of ["16.0", "+42.1%", "$4.4T"]) expect(u.includes(s), `미국 가치 표에 '${s}' 없음`);
+    await page.reload();
+    await page.getByText("엔비디아").waitFor();      // 미국 탭 기억
+    await page.getByText("엔비디아").click();
+    await page.getByTestId("quote-card").waitFor();
+  });
+
+  await test("가치주 찾기: 국내 재무 아직 없음 문구 · 미국 Yahoo 실패 문구", { api: makeApi({
+    "GET /api/value/KR/undervalued_growth": { items: [], total: 0, message: "국내 재무 데이터가 아직 없습니다 — 테스트", status: {} },
+    "GET /api/value/US/undervalued_growth": { __status: 502, detail: "Yahoo 스크리너 실패: 테스트" } }) }, async (page) => {
+    await page.goto(`${BASE}/value`);
+    await page.getByText("국내 재무 데이터가 아직 없습니다 — 테스트").waitFor();
+    await page.getByRole("button", { name: "미국", exact: true }).click();
+    await page.getByText("Yahoo 스크리너 실패: 테스트").waitFor();
+  });
+
+  await test("수급 동향: 개미 동향 막대 · 쌍끌이/개미 순매수 목록", {}, async (page) => {
+    await page.goto(`${BASE}/flows`);
+    const d = page.getByTestId("flow-daily");
+    await d.waitFor();
+    const dt = await d.innerText();
+    for (const s of ["최근 5일 개인", "외국인", "쌍끌이 104종목"]) expect(dt.includes(s), `개미 동향에 '${s}' 없음`);
+    const t = await page.getByTestId("flow-table").innerText();
+    for (const s of ["삼성전자", "쌍끌이 3일 연속", "+3,200억", "−4,300억", "+4.12%"]) expect(t.includes(s), `쌍끌이 표에 '${s}' 없음`);
+    await shot(page, "flows");
+    await page.getByRole("button", { name: /개미 순매수/ }).click();
+    expect((await page.getByTestId("flow-table").innerText()).includes("개인만 순매수"), "개미 순매수 목록이 안 바뀜");
+  });
+
+  await test("AI 추천·종목 상세: 투자 대가·가치·쌍끌이 신호 배지", { api: makeApi({
+    "GET /api/stocks/recommendations/shortterm": { ...F.RECS, items: F.RECS.items.map((x, i) => ({ ...x, signals: i === 0 ? SF.SIGNALS_KR : SF.SIGNALS_US })) },
+    "GET /api/stocks/recommendations/longterm": { ...F.RECS, items: F.RECS.items.map((x, i) => ({ ...x, signals: i === 0 ? SF.SIGNALS_KR : SF.SIGNALS_US })) },
+    "GET /api/stocks/quote/US/AVGO": { ...F.QUOTE_AVGO, signals: SF.SIGNALS_US } }) }, async (page) => {
+    await page.goto(`${BASE}/recommendations`);
+    await page.getByTestId("signal-badges").first().waitFor();
+    const kr = await page.locator("body").innerText();
+    for (const s of ["쌍끌이 3일 연속", "PER 5.4", "ROE 34%", "장기 +3.2"]) expect(kr.includes(s), `국내 추천 카드에 '${s}' 없음`);
+    await page.getByRole("button", { name: /미국/ }).first().click();
+    await page.getByTestId("guru-badge").first().waitFor();
+    const us = await page.locator("body").innerText();
+    for (const s of ["대가 3명 보유", "리 루 매수"]) expect(us.includes(s), `미국 추천 카드에 '${s}' 없음`);
+    const tip = await page.getByTestId("guru-badge").first().getAttribute("title");
+    expect(tip.includes("점수엔 안 넣음") && tip.includes("워런 버핏"), `대가 배지 설명 이상: ${tip}`);
+    await shot(page, "recs-signals");
+    await page.goto(`${BASE}/screener`);
+    await page.locator("input").first().fill("브로드컴");
+    await page.getByText("브로드컴").first().click();
+    await page.getByTestId("quote-card").getByTestId("guru-badge").waitFor();
+  });
+
+  await test("퀀트 점수: 일봉 밖 요인(가치·수익성·수급) 쌓는 중 표시", { api: makeApi({ "GET /api/quant": { ...F.QUANT, quant: { ...F.QUANT.quant,
+    weights: { ...F.QUANT.quant.weights, value: 0.1, flow: 0 },
+    factors: [...F.QUANT.quant.factors,
+      { key: "value", name: "가치(저PER·저PBR)", about: "x", extra: true, dates: 40, need_dates: 15, coverage: 1800 },
+      { key: "flow", name: "수급(외국인+기관)", about: "x", extra: true, dates: 3, need_dates: 15, coverage: 1700 }] } } }) }, async (page) => {
+    await page.goto(`${BASE}/quant`);
+    await page.getByTestId("quant-validation").waitFor();
+    const ex = await page.getByTestId("quant-extra-factor").allInnerTexts();
+    expect(ex.some((x) => x.includes("가치(저PER·저PBR) 10%") && !x.includes("쌓는 중")), `가치 요인 표시 이상: ${ex}`);
+    expect(ex.some((x) => x.includes("수급(외국인+기관) 0%") && x.includes("쌓는 중 3/15일")), `수급 요인 쌓는 중 표시 없음: ${ex}`);
+    expect((await page.getByTestId("quant-table").innerText()).includes("가치"), "퀀트 표에 가치 열 없음");
   });
 
   await test("퀀트 점수 없음 / 계산 실패 문구", { api: makeApi({ "GET /api/quant": { quant: null, error: "퀀트 점수 계산 실패: 테스트", status: { running: false } } }) }, async (page) => {
@@ -1295,7 +1404,7 @@ async function run() {
   });
 
   // 나머지 화면: 가짜 응답이 없으면 502 → 오류 문구만 보이고 화면이 깨지지 않아야 함 (밝은·어두운 모드)
-  const pages = ["/", "/mypage", "/recommendations", "/screener", "/themes", "/quant", "/accumulation", "/watchlist", "/portfolio", "/paper", "/predictions", "/calendar"];
+  const pages = ["/", "/mypage", "/recommendations", "/screener", "/themes", "/quant", "/gurus", "/value", "/flows", "/accumulation", "/watchlist", "/portfolio", "/paper", "/predictions", "/calendar"];
   for (const theme of ["light", "dark"]) {
     await test(`모든 화면 열기 — 오류로 멈추지 않음 (${theme})`, { theme }, async (page) => {
       for (const p of pages) {
@@ -1359,7 +1468,7 @@ async function run() {
   });
 
   await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
-    for (const p of ["/", "/recommendations", "/screener", "/watchlist", "/portfolio", "/themes", "/quant", "/accumulation", "/paper", "/predictions",
+    for (const p of ["/", "/recommendations", "/screener", "/watchlist", "/portfolio", "/themes", "/quant", "/gurus", "/value", "/flows", "/accumulation", "/paper", "/predictions",
       "/calendar", "/mypage"]) {
       await page.goto(`${BASE}${p}`);
       await page.waitForLoadState("networkidle");

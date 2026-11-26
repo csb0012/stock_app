@@ -27,6 +27,7 @@ import pandas as pd
 from app.services import stock_master, quant
 
 _FILE = Path(__file__).resolve().parents[1] / "data" / "accumulation.json"
+_FRAMES = Path(__file__).resolve().parents[1] / "data" / "quant_frames.pkl"   # 퀀트 요인 원값 (재무·수급이 새로 들어오면 KIS 호출 없이 다시 계산)
 CANDLES = 200
 WINDOW, SHORT = 60, 20
 HIT_UP, HORIZON = 0.20, 20          # 20거래일 안에 +20% 도달 = 적중
@@ -206,14 +207,8 @@ async def scan(force: bool = False) -> dict:
             "rules": {"hit_up_pct": int(HIT_UP * 100), "horizon_days": HORIZON, "max_ret20_pct": int(MAX_RET20 * 100),
                       "min_tv_eok": MIN_TV / 1e8},
         }
-        try:
-            names = {s: (stock_master.get("KR", s) or {}).get("name", s) for s in qframes}
-            result["quant"] = await loop.run_in_executor(None, quant.build, qframes, names)
-            if result["quant"] is None:
-                result["quant_error"] = "퀀트 점수를 계산할 종목이 없음 (거래대금·데이터 기간 부족)"
-        except Exception as e:   # 퀀트 점수 실패가 매집 결과 저장을 막지 않게
-            result["quant"], result["quant_error"] = None, f"퀀트 점수 계산 실패: {e}"
-            print(f"[accumulation] {result['quant_error']}")
+        await loop.run_in_executor(None, _save_frames, qframes)
+        result.update(await _quant_from(qframes))
         _save(result)
         _status["message"] = f"{len(rows)}/{len(syms)}종목 계산, 후보 {len(cands)}개" + (
             f" · 실패 {_status['errors']}건" if _status["errors"] else "")
@@ -224,6 +219,85 @@ async def scan(force: bool = False) -> dict:
     finally:
         _status.update(running=False, finished_at=datetime.now().isoformat(timespec="seconds"))
     return status()
+
+
+def _save_frames(frames: dict):
+    import pickle
+    try:
+        _FRAMES.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _FRAMES.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump({k: v for k, v in frames.items() if v is not None and not v.empty}, f, protocol=4)
+        tmp.replace(_FRAMES)
+    except OSError as e:
+        print(f"[accumulation] 퀀트 요인 저장 실패: {e}")
+
+
+def load_frames() -> dict | None:
+    """마지막 스캔의 퀀트 요인 원값 (없거나 읽을 수 없으면 None — pandas 버전이 바뀐 경우 등)"""
+    import pickle
+    try:
+        with open(_FRAMES, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
+def _extra(frames: dict):
+    """일봉 밖 퀀트 요인 (재무 → 가치·수익성, 수급) — 실패해도 일봉 요인만으로 계산"""
+    from app.services import fundamentals, flows
+    parts = []
+    for fn in (fundamentals.kr_factor_frame, flows.factor_frame):
+        try:
+            x = fn(frames)
+            if x is not None and not x.empty:
+                parts.append(x)
+        except Exception as e:
+            print(f"[accumulation] 퀀트 추가 요인 계산 실패 ({fn.__module__}): {e}")
+    if not parts:
+        return None
+    out = parts[0]
+    for x in parts[1:]:
+        out = out.merge(x, on=["date", "symbol"], how="outer")
+    return out
+
+
+def _quant_sync(frames: dict) -> dict:
+    names = {s: (stock_master.get("KR", s) or {}).get("name", s) for s in frames}
+    q = quant.build(frames, names, _extra(frames))
+    out = {"quant": q, "quant_built_at": datetime.now().isoformat(timespec="seconds")}
+    if q is None:
+        out["quant_error"] = "퀀트 점수를 계산할 종목이 없음 (거래대금·데이터 기간 부족)"
+    return out
+
+
+async def _quant_from(frames: dict) -> dict:
+    try:
+        return await asyncio.get_event_loop().run_in_executor(None, _quant_sync, frames)
+    except Exception as e:   # 퀀트 점수 실패가 매집 결과 저장을 막지 않게
+        print(f"[accumulation] 퀀트 점수 계산 실패: {e}")
+        return {"quant": None, "quant_error": f"퀀트 점수 계산 실패: {e}"}
+
+
+_rebuild_lock = asyncio.Lock()
+
+
+async def rebuild_quant() -> bool:
+    """재무·수급이 새로 들어왔을 때 퀀트 점수만 다시 (KIS 호출 없음). 스캔 중이거나 요인 원값이 없으면 False"""
+    if _status["running"] or _rebuild_lock.locked():
+        return False
+    async with _rebuild_lock:
+        r = result()
+        frames = await asyncio.get_event_loop().run_in_executor(None, load_frames)
+        if not r or not frames:
+            return False
+        q = await _quant_from(frames)
+        if q.get("quant") is None:
+            return False
+        r = {k: v for k, v in r.items() if k != "quant_error"}
+        _save({**r, **q})
+        print("[accumulation] 퀀트 점수 다시 계산 (재무·수급 반영)")
+        return True
 
 
 def _save(result: dict):
@@ -274,6 +348,6 @@ async def startup():
     from app.services.market_calendar import is_market_open
     await asyncio.sleep(120)
     r = result()
-    # 퀀트 점수가 없는 예전 결과도 다시 계산 (업데이트 직후 한 번)
-    if r is None or "quant" not in r or (stale() and not is_market_open("KR")):
+    # 퀀트 점수가 없거나 요인 원값 파일이 없는 예전 결과도 다시 계산 (업데이트 직후 한 번)
+    if r is None or "quant" not in r or not _FRAMES.exists() or (stale() and not is_market_open("KR")):
         await scan()

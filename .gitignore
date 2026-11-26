@@ -35,3 +35,11 @@ backend/app/data/extras_cache.json
 backend/app/data/kr_en_names.json
 backend/app/data/themes.json
 backend/app/data/accumulation.json
+# 투자 대가(SEC 13F)·국내 재무·퀀트 요인 원값 — 서버가 받아서 만듦 (지우면 다시 받음)
+backend/app/data/guru_filings.json
+backend/app/data/cusip_map.json
+backend/app/data/gurus.json
+backend/app/data/sec_tickers.json
+backend/app/data/fundamentals_kr.json
+backend/app/data/quant_frames.pkl
+backend/app/data/*.tmp

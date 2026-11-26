@@ -23,6 +23,9 @@ import PaperTrading from "./pages/PaperTrading";
 import Setup2FA from "./pages/Setup2FA";
 import Admin from "./pages/Admin";
 import KisTrade from "./pages/KisTrade";
+import Gurus from "./pages/Gurus";
+import ValueScreens from "./pages/ValueScreens";
+import Flows from "./pages/Flows";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { token } = useAuthStore();
@@ -63,6 +66,9 @@ export default function App() {
           <Route path="/search" element={<Navigate to="/screener" replace />} />
           <Route path="/themes" element={<ProtectedRoute><Themes /></ProtectedRoute>} />
           <Route path="/quant" element={<ProtectedRoute><Quant /></ProtectedRoute>} />
+          <Route path="/gurus" element={<ProtectedRoute><Gurus /></ProtectedRoute>} />
+          <Route path="/value" element={<ProtectedRoute><ValueScreens /></ProtectedRoute>} />
+          <Route path="/flows" element={<ProtectedRoute><Flows /></ProtectedRoute>} />
           <Route path="/accumulation" element={<ProtectedRoute><Accumulation /></ProtectedRoute>} />
           <Route path="/paper" element={<ProtectedRoute><PaperTrading /></ProtectedRoute>} />
           <Route path="/admin" element={<AdminRoute><Admin /></AdminRoute>} />

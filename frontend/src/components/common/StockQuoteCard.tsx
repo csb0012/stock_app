@@ -8,6 +8,7 @@ import PredictionReasons from "./PredictionReasons";
 import PriceLevels from "./PriceLevels";
 import DaytimePrice, { extPrice, SessionTag } from "./DaytimePrice";
 import QuantBadge, { TrackBadge } from "./QuantBadge";
+import SignalBadges from "./SignalBadges";
 import NewsLink, { NewsSource } from "./NewsLink";
 import { fmtPrice, probColor, probLabel, sessionLabel } from "./format";
 
@@ -73,6 +74,7 @@ export default function StockQuoteCard({
                 <QuantBadge q={data.quant} /><TrackBadge t={data.track} />
               </div>
             )}
+            {data.signals && <div style={{ marginTop: 6 }}><SignalBadges s={data.signals} /></div>}
             <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
               {data.per > 0 && <span>PER {data.per.toFixed(1)}</span>}
               {data.pbr > 0 && <span>PBR {data.pbr.toFixed(2)}</span>}

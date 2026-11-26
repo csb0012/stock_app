@@ -172,6 +172,21 @@ export const quantApi = {
   list: (limit = 100) => api.get("/quant", { params: { limit } }),
 };
 
+// 투자 대가(SEC 13F) · 가치주 찾기 · 수급(쌍끌이·개미 동향)
+export const guruApi = {
+  list: () => api.get("/gurus"),
+  stocks: (sort = "holders") => api.get("/gurus/stocks", { params: { sort } }),
+  detail: (key: string) => api.get(`/gurus/${key}`),
+  refresh: () => api.post("/gurus/refresh"),
+};
+export const valueApi = {
+  screens: () => api.get("/value/screens"),
+  screen: (market: string, key: string) => api.get(`/value/${market}/${key}`),
+};
+export const flowApi = {
+  overview: () => api.get("/flows/overview"),
+};
+
 // 예측 검증
 export const predictionApi = {
   review: (days = 90, market = "ALL", kind = "all", outcome = "all", limit = 200) =>

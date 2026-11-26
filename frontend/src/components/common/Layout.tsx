@@ -6,7 +6,7 @@ import { marketApi, authApi } from "../../api/client";
 import ThemeToggle from "./ThemeToggle";
 import {
   LayoutDashboard, TrendingUp, Star, Calendar,
-  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge, Bot, Crown, Landmark,
+  LogOut, BarChart2, Briefcase, ClipboardCheck, UserCircle, Layers, Radar, Menu, X, Gauge, Bot, Crown, Landmark, Users, Gem, ArrowLeftRight,
 } from "lucide-react";
 import ChatWidget from "./ChatWidget";
 import Toaster from "./Toast";
@@ -18,6 +18,9 @@ const navItems = [
   { to: "/themes", icon: Layers, label: "테마별 주식" },
   { to: "/quant", icon: Gauge, label: "퀀트 점수" },
   { to: "/accumulation", icon: Radar, label: "매집 탐지" },
+  { to: "/gurus", icon: Users, label: "투자 대가" },
+  { to: "/value", icon: Gem, label: "가치주 찾기" },
+  { to: "/flows", icon: ArrowLeftRight, label: "수급 동향" },
   { to: "/watchlist", icon: Star, label: "관심종목" },
   { to: "/portfolio", icon: Briefcase, label: "투자종목" },
   { to: "/paper", icon: Bot, label: "AI 모의투자" },

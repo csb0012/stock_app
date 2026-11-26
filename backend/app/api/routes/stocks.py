@@ -14,7 +14,7 @@ from app.services.news import get_news_many, get_news_tone
 from app.services import prediction_log
 from app.services.extras import get_extra
 from app.core.swr import SWRCache
-from app.services import us_daytime
+from app.services import us_daytime, signals
 
 router = APIRouter(prefix="/stocks", tags=["stocks"])
 
@@ -194,7 +194,8 @@ def _rows_from(raw: dict, extra: dict, kind: str) -> dict:
         if "error" in r:
             errors.append({"market": r.get("market"), "symbol": sym, "error": r["error"]})
         elif r.get("category") != "spac":
-            rows.append(_rec_row(r, extra.get(sym, {})))
+            # 투자 대가·가치·수급 신호 + 검증된 신호만 장기 점수 보정 (signals.py)
+            rows.append(signals.apply_longterm(_rec_row(r, extra.get(sym, {}))))
     key = (lambda x: x["long_term_score"]) if kind == "longterm" else (lambda x: x["prediction"].get("probability", 0))
     rows.sort(key=key, reverse=True)
     return {"items": rows, "errors": errors}
@@ -392,6 +393,7 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
     if market == "KR":
         from app.services import accumulation
         r = {**r, "quant": accumulation.quant_of(symbol)}
+    r = {**r, "signals": signals.for_row(market, symbol, r.get("price"))}   # 투자 대가·가치·수급
     rows = await us_daytime.attach([strip_candles(r)])   # 미국이면 주간거래·프리·애프터마켓 가격 (표시 전용)
     return (await prediction_log.attach_tracks(rows))[0]
 

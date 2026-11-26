@@ -13,6 +13,29 @@ export function fmtShares(q: number | null | undefined): string {
   return a >= 10000 ? `${sign}${(a / 10000).toFixed(1)}만주` : `${sign}${Math.round(a).toLocaleString()}주`;
 }
 
+/** 원화 금액 (부호 포함): +1.2조 / −350억 / +3,000만 */
+export function fmtWon(v: number | null | undefined, signed = true): string {
+  if (v == null || Number.isNaN(v)) return "-";
+  const sign = !signed ? "" : v > 0 ? "+" : v < 0 ? "−" : "";
+  const a = Math.abs(v);
+  if (a >= 1e12) return `${sign}${(a / 1e12).toFixed(1)}조`;
+  if (a >= 1e8) return `${sign}${Math.round(a / 1e8).toLocaleString()}억`;
+  if (a >= 1e4) return `${sign}${Math.round(a / 1e4).toLocaleString()}만`;
+  return `${sign}${Math.round(a).toLocaleString()}`;
+}
+
+/** 달러 큰 금액: $1.2T / $350B / $40M */
+export function fmtUsdBig(v: number | null | undefined): string {
+  if (v == null || Number.isNaN(v)) return "-";
+  const a = Math.abs(v);
+  return a >= 1e12 ? `$${(v / 1e12).toFixed(1)}T` : a >= 1e9 ? `$${(v / 1e9).toFixed(1)}B` : `$${Math.round(v / 1e6).toLocaleString()}M`;
+}
+
+/** 소수 표시 (없으면 -): 12.3 / 12.3% */
+export function fmtNum(v: number | null | undefined, digits = 1, suffix = ""): string {
+  return v == null || Number.isNaN(v) ? "-" : `${v.toFixed(digits)}${suffix}`;
+}
+
 export function fmtSigned(v: number, digits = 2): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(digits)}`;
 }

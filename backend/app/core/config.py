@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     finnhub_api_key: str = ""
     dart_api_key: str = ""
     fred_api_key: str = ""
+    # 투자 대가(13F) — SEC 는 자동 요청에 '이름 연락처' 를 적으라고 권함 (예: "StockApp myname@example.com"). 비우면 앱 이름만
+    sec_user_agent: str = ""
 
     # 메일 발송 (회원가입·비밀번호 찾기 인증 코드) — 네이버: smtp.naver.com, 465 (SSL) 또는 587 (STARTTLS)
     smtp_host: str = ""

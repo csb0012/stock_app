@@ -47,7 +47,7 @@ def api_client(monkeypatch):
     from sqlalchemy.pool import StaticPool
 
     from app.core.database import Base, get_db
-    from app.api.routes import watchlist, portfolio, stocks, market
+    from app.api.routes import watchlist, portfolio, stocks, market, signals as signals_route
     from app.api.routes.auth import get_current_user
     from app.models import user as user_model, watchlist as _w, portfolio as _p, prediction as _pr, flow as _f  # noqa: F401
 
@@ -71,7 +71,7 @@ def api_client(monkeypatch):
             yield s
 
     app = FastAPI()
-    for r in (watchlist.router, portfolio.router, stocks.router, market.router):
+    for r in (watchlist.router, portfolio.router, stocks.router, market.router, signals_route.router):
         app.include_router(r, prefix="/api")
     app.dependency_overrides[get_db] = _db
     app.dependency_overrides[get_current_user] = lambda: user

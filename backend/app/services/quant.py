@@ -28,6 +28,14 @@ FACTORS = [
     ("high52", "고점 근접", "200일 최고가 대비 현재가 (52주 신고가 근접 효과)"),
 ]
 KEYS = [k for k, _, _ in FACTORS]
+# 일봉 밖에서 오는 요인 — 과거 값이 '그날 알려진 것'으로만 만들어짐 (fundamentals·flows). 검증 날짜가 모자라면 비중 0 (쌓는 중)
+EXTRA_FACTORS = [
+    ("value", "가치(저PER·저PBR)", "그날 알려진 최근 4분기 이익·순자산 대비 주가가 쌀수록 높음 (E/P·B/P 백분위 평균, 실적은 공시 기한 뒤부터 반영)"),
+    ("quality", "수익성(ROE·이익률)", "최근 4분기 ROE·영업이익률이 높을수록 높음"),
+    ("flow", "수급(외국인+기관)", "전날까지 5거래일 외국인+기관 순매수 금액 ÷ 거래대금 (쌍끌이일수록 높음)"),
+]
+EXTRA_KEYS = [k for k, _, _ in EXTRA_FACTORS]
+MIN_EXTRA_DATES = 15          # 일봉 밖 요인은 20거래일 뒤 결과가 나온 날짜가 이만큼 쌓여야 비중을 줌
 BUCKETS = [(80, 100), (60, 80), (40, 60), (20, 40), (0, 20)]
 GRADES = [(90, "A+"), (80, "A"), (65, "B+"), (50, "B"), (35, "C"), (20, "D"), (0, "F")]
 
@@ -83,17 +91,28 @@ def _ic(df: pd.DataFrame, col: str, min_n: int = 20) -> float:
     return float(np.mean(vals)) if vals else 0.0
 
 
-def _weights(df: pd.DataFrame, min_n: int = 20) -> tuple:
-    """요인별 IC → 가중치 (IC 가 0 이하면 0). 전부 0 이면 같은 가중치"""
-    ic = {k: _ic(df, f"p_{k}", min_n) for k in KEYS}
-    pos = {k: max(v, 0.0) for k, v in ic.items()}
+def _extra_dates(df: pd.DataFrame, k: str) -> int:
+    """일봉 밖 요인 k 의 값이 있는(종목 20개↑) 날짜 수"""
+    if f"p_{k}" not in df:
+        return 0
+    cnt = df.dropna(subset=[f"p_{k}"]).groupby("date").size()
+    return int((cnt >= 20).sum())
+
+
+def _weights(df: pd.DataFrame, min_n: int = 20, keys: list | None = None) -> tuple:
+    """요인별 IC → 가중치 (IC 가 0 이하면 0). 전부 0 이면 일봉 요인만 같은 가중치.
+    일봉 밖 요인은 검증 날짜가 MIN_EXTRA_DATES 미만이면 IC 를 계산해도 비중 0"""
+    keys = keys or KEYS
+    ic = {k: _ic(df, f"p_{k}", min_n) for k in keys}
+    ok = {k: (k not in EXTRA_KEYS or _extra_dates(df, k) >= MIN_EXTRA_DATES) for k in keys}
+    pos = {k: (max(v, 0.0) if ok[k] else 0.0) for k, v in ic.items()}
     s = sum(pos.values())
-    w = {k: (pos[k] / s if s > 0 else 1 / len(KEYS)) for k in KEYS}
+    w = {k: (pos[k] / s if s > 0 else (1 / len(KEYS) if k in KEYS else 0.0)) for k in keys}
     return w, ic, s > 0
 
 
 def _composite(df: pd.DataFrame, w: dict) -> pd.Series:
-    raw = sum(df[f"p_{k}"].fillna(50) * w[k] for k in KEYS)
+    raw = sum(df[f"p_{k}"].fillna(50) * w[k] for k in w)
     tmp = pd.DataFrame({"date": df["date"], "raw": raw})
     return tmp.groupby("date")["raw"].rank(pct=True).mul(98).add(1)
 
@@ -109,8 +128,9 @@ def _bucket_table(df: pd.DataFrame, col: str) -> list:
     return rows
 
 
-def build(frames: dict, names: dict | None = None) -> dict | None:
-    """{종목: factor_frame} → 오늘 점수 + 가중치 + 검증. 계산할 종목이 없으면 None"""
+def build(frames: dict, names: dict | None = None, extra: pd.DataFrame | None = None) -> dict | None:
+    """{종목: factor_frame} → 오늘 점수 + 가중치 + 검증. 계산할 종목이 없으면 None
+    extra: [date, symbol, value, quality, flow] (일봉 밖 요인, 그날 알려진 값만 — 없으면 일봉 요인만)"""
     parts = []
     for sym, f in frames.items():
         if f is None or f.empty:
@@ -124,7 +144,12 @@ def build(frames: dict, names: dict | None = None) -> dict | None:
     df = df.dropna(subset=["rs"])
     if df.empty:
         return None
-    for k in KEYS:
+    keys = list(KEYS)
+    if extra is not None and not extra.empty:
+        cols = [k for k in EXTRA_KEYS if k in extra.columns]
+        df = df.merge(extra[["date", "symbol"] + cols], on=["date", "symbol"], how="left")
+        keys += cols
+    for k in keys:
         df[f"p_{k}"] = _pct_rank(df, [k])[k]
 
     # 검증용: 20거래일 뒤 결과가 있는 날짜, 시장 대비 = 그날 전 종목 중간값과의 차이
@@ -138,7 +163,7 @@ def build(frames: dict, names: dict | None = None) -> dict | None:
         # 학습 구간 결과(20거래일)가 검증 시작 전에 끝나도록 앞쪽을 비움 (겹치면 미래를 본 셈)
         train_dates = dates[:max(0, half - HORIZON)] or dates[:half]
         train, test = lab[lab["date"].isin(train_dates)], lab[lab["date"].isin(test_dates)].copy()
-        w_tr, ic_tr, _ = _weights(train)
+        w_tr, ic_tr, _ = _weights(train, keys=keys)
         test["comp"] = _composite(test, w_tr)
         top, bottom = test[test["comp"] >= 80], test[test["comp"] < 20]
         validation = {
@@ -152,7 +177,8 @@ def build(frames: dict, names: dict | None = None) -> dict | None:
         }
 
     # 오늘 점수: 가중치는 결과가 나온 모든 날짜로
-    w, ic, useful = _weights(lab) if len(lab) else ({k: 1 / len(KEYS) for k in KEYS}, {k: 0.0 for k in KEYS}, False)
+    w, ic, useful = _weights(lab, keys=keys) if len(lab) else (
+        {k: (1 / len(KEYS) if k in KEYS else 0.0) for k in keys}, {k: 0.0 for k in keys}, False)
     last_date = df["date"].max()
     today = df[df["date"] == last_date].copy()
     today["comp"] = _composite(today, w)
@@ -170,9 +196,9 @@ def build(frames: dict, names: dict | None = None) -> dict | None:
         b = bucket_of(p)
         scores[r["symbol"]] = {
             "score": max(1, min(10, math.ceil(p / 10))), "pct": round(p), "grade": grade(p),
-            "factors": {k: round(float(r[f"p_{k}"])) if not pd.isna(r[f"p_{k}"]) else None for k in KEYS},
+            "factors": {k: round(float(r[f"p_{k}"])) if not pd.isna(r[f"p_{k}"]) else None for k in keys},
             "beat_rate": b["beat_rate"] if b else None, "bucket": b["range"] if b else None,
-            "price": float(r["close"]),
+            "price": float(r["close"]), "tv20": round(float(r["tv20"])) if not pd.isna(r["tv20"]) else None,
         }
     top = sorted(scores.items(), key=lambda kv: -kv[1]["pct"])[:150]
     return {
@@ -180,5 +206,8 @@ def build(frames: dict, names: dict | None = None) -> dict | None:
         "weights": {k: round(v, 3) for k, v in w.items()}, "ic": {k: round(v, 3) for k, v in ic.items()},
         "useful": useful, "validation": validation, "scores": scores,
         "top": [{"symbol": s, "name": (names or {}).get(s, s), **v} for s, v in top],
-        "factors": [{"key": k, "name": n, "about": a} for k, n, a in FACTORS],
+        "factors": [{"key": k, "name": n, "about": a} for k, n, a in FACTORS] + [
+            {"key": k, "name": n, "about": a, "extra": True, "dates": _extra_dates(lab, k) if len(lab) else 0,
+             "need_dates": MIN_EXTRA_DATES, "coverage": int(today[f"p_{k}"].notna().sum())}
+            for k, n, a in EXTRA_FACTORS if k in keys],
     }

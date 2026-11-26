@@ -117,6 +117,7 @@ def test_scan_stores_quant_and_api(monkeypatch, tmp_path):
     monkeypatch.setattr(stock_master, "_by_key", {("KR", s): {"name": f"종목{s}", "type": "stock"} for s in syms})
     monkeypatch.setattr(stock_master, "category", lambda i: "stock")
     monkeypatch.setattr(accumulation, "_FILE", tmp_path / "accumulation.json")
+    monkeypatch.setattr(accumulation, "_FRAMES", tmp_path / "quant_frames.pkl")   # 실제 app/data 를 건드리지 않게
     monkeypatch.setattr(accumulation, "_result", None)
     monkeypatch.setattr(themes, "themes_of", lambda s: [])
 
@@ -145,3 +146,42 @@ def test_scan_stores_quant_and_api(monkeypatch, tmp_path):
     r = accumulation.result()
     assert r["quant"] is None and "테스트 오류" in r["quant_error"] and r["scanned"] == 60
     assert TestClient(app).get("/api/quant").json()["error"].startswith("퀀트 점수 계산 실패")
+
+
+def test_rebuild_quant_from_saved_frames(monkeypatch, tmp_path):
+    """재무·수급이 새로 들어오면 저장해 둔 요인 원값으로 퀀트만 다시 (KIS 호출 없음) — 추가 요인이 점수표에 들어감"""
+    from tests.conftest import run
+    from app.services import accumulation, stock_master, kis_api, fundamentals, flows
+
+    syms = [f"{i:06d}" for i in range(40)]
+    monkeypatch.setattr(stock_master, "_items", [{"market": "KR", "symbol": s, "name": s, "type": "stock"} for s in syms])
+    monkeypatch.setattr(stock_master, "_by_key", {("KR", s): {"name": s, "type": "stock"} for s in syms})
+    monkeypatch.setattr(stock_master, "category", lambda i: "stock")
+    monkeypatch.setattr(accumulation, "_FILE", tmp_path / "accumulation.json")
+    monkeypatch.setattr(accumulation, "_FRAMES", tmp_path / "quant_frames.pkl")
+    monkeypatch.setattr(accumulation, "_result", None)
+    monkeypatch.setattr(flows, "_mem", {})
+    monkeypatch.setattr(fundamentals, "kr_factor_frame", lambda frames: None)
+
+    async def fake_chart(sym, count):
+        return {"candles": candles(walk(200, 0.0003 * (int(sym) % 3 - 1), int(sym) + 7))}
+    monkeypatch.setattr(kis_api.kis_client, "get_kr_chart", fake_chart)
+    run(accumulation.scan())
+    assert (tmp_path / "quant_frames.pkl").exists()
+    assert "value" not in accumulation.result()["quant"]["weights"]
+
+    async def no_kis(*a, **k):
+        raise AssertionError("다시 계산할 때 KIS 를 부르면 안 됨")
+    monkeypatch.setattr(kis_api.kis_client, "get_kr_chart", no_kis)
+
+    def fake_value(frames):
+        rows = [{"date": d, "symbol": s, "value": float(i), "quality": None}
+                for i, (s, f) in enumerate(frames.items()) for d in f["date"]]
+        return pd.DataFrame(rows)
+    monkeypatch.setattr(fundamentals, "kr_factor_frame", fake_value)
+    assert run(accumulation.rebuild_quant()) is True
+    q = accumulation.result()["quant"]
+    assert "value" in q["weights"] and any(f["key"] == "value" for f in q["factors"])
+    assert q["scores"]["000001"]["factors"]["value"] is not None
+    monkeypatch.setattr(accumulation, "_FRAMES", tmp_path / "없음.pkl")       # 원값 파일이 없으면 안 함
+    assert run(accumulation.rebuild_quant()) is False

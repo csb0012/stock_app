@@ -51,10 +51,14 @@ async def _run_job(name: str, market: str, source: str):
             raise RuntimeError(st["message"])
         return
     if name == "flow_kr":
-        stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == "KR"]
+        from app.services import signals, accumulation
+        # 추천 후보·관심·투자종목 먼저, 그다음 거래대금 1억↑ 전 종목 (쌍끌이·개미 동향·퀀트 수급 요인)
+        stocks = [s["symbol"] for s in await backtest._universe() if s["market"] == "KR"] + signals.liquid_universe()
+        stocks = list(dict.fromkeys(stocks))
         r = await flows.collect(stocks)
         _last[name] = f"수급 {len(stocks)}종목 수집, 새 날짜 {r['added']}건" + (f" · 실패 {len(r['errors'])}건" if r["errors"] else "")
         print(f"[scheduler] {name}: {_last[name]}")
+        await accumulation.rebuild_quant()   # 오늘 수급을 퀀트 수급 요인에 반영
         return
     if name == "preopen_kr":
         await ml_model.refresh_ctx()  # 간밤 미국장 마감 지수 반영

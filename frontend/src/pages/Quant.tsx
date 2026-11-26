@@ -104,8 +104,12 @@ export default function Quant() {
             <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10, fontSize: 11.5, color: "var(--text-secondary)" }}>
               <span style={{ color: "var(--text-muted)" }}>요인 비중{q.useful ? "" : " (맞는 요인이 없어 같은 비중)"}:</span>
               {(q.factors || []).map((f: any) => (
-                <span key={f.key} title={`${f.about}\n순위 상관(IC) ${q.ic?.[f.key]}`}>
+                <span key={f.key} data-testid={f.extra ? "quant-extra-factor" : undefined}
+                  title={`${f.about}\n순위 상관(IC) ${q.ic?.[f.key]}` + (f.extra ? `\n값이 있는 종목 ${f.coverage}개 · 검증 날짜 ${f.dates}/${f.need_dates}` : "")}>
                   {f.name} <strong>{Math.round((q.weights?.[f.key] || 0) * 100)}%</strong>
+                  {f.extra && f.dates < f.need_dates && (
+                    <span style={{ color: "var(--yellow)" }}> (쌓는 중 {f.dates}/{f.need_dates}일)</span>
+                  )}
                 </span>
               ))}
             </div>
