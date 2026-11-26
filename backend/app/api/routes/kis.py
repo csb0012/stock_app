@@ -79,9 +79,12 @@ async def log(limit: int = 100, admin: User = Depends(get_admin)):
 
 
 @router.post("/propose")
-async def propose(admin: User = Depends(get_admin)):
-    """지금 제안 만들기 (확정된 마지막 종가 기준, 예전 승인 대기 제안은 만료) — 제안만, 주문은 안 함"""
+async def propose(intraday: bool = False, admin: User = Depends(get_admin)):
+    """지금 제안 만들기 — 제안만, 주문은 안 함.
+    기본 = 확정된 마지막 종가 기준 (예전 승인 대기 제안은 만료) / intraday=true = 장중 판단 (오늘 지금 가격, 새 매수만, 기존 제안 그대로)"""
     try:
+        if intraday:
+            return await kis_trade.propose_intraday(user_id=admin.id)
         return await kis_trade.propose(user_id=admin.id)
     except Exception as e:
         _err(e)

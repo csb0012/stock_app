@@ -16,13 +16,13 @@ const STATUS_CLS: Record<string, string> = {
   cancelled: "badge-neutral", blocked: "badge-down", failed: "badge-down",
 };
 const WINDOW: Record<string, string> = { open: "장중 — 실시간 감시 중", closing: "마감 직전 — 새 주문 안 보냄", closed: "장 닫힘 — 승인하면 다음 장중에 조건이 맞을 때 주문" };
-const SOURCE: Record<string, [string, string]> = { stop: ["자동 손절", "var(--red)"], exit: ["장중 목표가", "var(--yellow)"] };
+const SOURCE: Record<string, [string, string]> = { stop: ["자동 손절", "var(--red)"], exit: ["장중 목표가", "var(--yellow)"], intraday: ["장중 AI", "var(--accent)"] };
 const PARAM_KEYS = ["max_positions", "buy_score", "sell_score", "stop_pct", "take_pct", "max_hold"] as const;
 const PARAM_LABEL: Record<string, string> = {
   max_positions: "최대 보유 종목 수", buy_score: "매수 기준 AI 점수", sell_score: "매도 기준 AI 점수", stop_pct: "손절 %", take_pct: "익절(목표) %", max_hold: "최대 보유 거래일",
 };
 const ACTION: Record<string, string> = {
-  propose: "제안", propose_exit: "목표가 매도 제안", auto_stop: "자동 손절", auto_cancel: "급변 자동 취소", wait: "조건 기다림", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
+  propose: "제안", propose_intraday: "장중 제안", propose_intraday_fail: "장중 제안 실패", propose_exit: "목표가 매도 제안", auto_stop: "자동 손절", auto_cancel: "급변 자동 취소", wait: "조건 기다림", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
   submit_fail: "KIS 거부·연결 실패", submit_unknown: "응답 못 받음 — 결과 모름", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
   cancel_fail: "취소 실패", fill_unknown: "체결 확인 안 됨", halt: "정지", resume: "다시 시작", baseline: "기준 맞추기", config: "설정 변경",
   expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름", account_ok: "계좌 확인됨",
@@ -117,8 +117,8 @@ export default function KisTrade() {
     } });
   const reject = useMutation({ mutationFn: (ids: number[]) => kisApi.reject(ids).then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); setPicked([]); refresh(); } });
   const cancel = useMutation({ mutationFn: (id: number) => kisApi.cancel(id).then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
-  const propose = useMutation({ mutationFn: () => kisApi.propose().then((r) => r.data),
-    onSuccess: (d) => { toast(`제안 ${d.proposed}건 (기준일 ${d.base_date})`, "info"); refresh(); } });
+  const propose = useMutation({ mutationFn: (intraday: boolean) => kisApi.propose(intraday).then((r) => r.data),
+    onSuccess: (d) => { toast(d.intraday ? `장중 판단 — 새 매수 제안 ${d.proposed}건` + (d.notes?.length ? ` (${d.notes[0]})` : "") : `제안 ${d.proposed}건 (기준일 ${d.base_date})`, "info"); refresh(); } });
   const ntest = useMutation({ mutationFn: () => kisApi.notifyTest().then((r) => r.data), onSuccess: (d) => toast(d.message, "info") });
   const halt = useMutation({ mutationFn: () => kisApi.halt("").then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
   const resume = useMutation({ mutationFn: () => kisApi.resume(resumeCode).then((r) => r.data), meta: { inlineError: true },
@@ -273,15 +273,18 @@ export default function KisTrade() {
 
       {s.configured && (
         <Card icon={ListChecks} title="AI 주문 제안 · 진행 중 주문" testid="kis-proposals"
-          desc="장 마감 15분 뒤 자동으로 제안 (장중엔 목표가에 닿으면 매도 제안). 제안은 다음 거래일 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
-          right={<button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={propose.isPending || s.halted} onClick={() => propose.mutate()}>
-            <Bot size={13} className={propose.isPending ? "spin" : undefined} /> {propose.isPending ? "판단 중 (몇 분)..." : "지금 제안 만들기"}</button>}>
+          desc="장 마감 15분 뒤 자동으로 제안 + 장중에도 정해진 시각에 AI 가 다시 판단해 좋은 종목이 보이면 매수 제안 (목표가에 닿으면 매도 제안). 장 마감 후 제안은 다음 거래일, 장중 제안은 오늘 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
+          right={<button className="btn btn-ghost" style={{ fontSize: 12 }} data-testid="kis-propose" disabled={propose.isPending || s.halted || s.intraday?.running}
+            onClick={() => propose.mutate(s.window === "open")}>
+            <Bot size={13} className={propose.isPending || s.intraday?.running ? "spin" : undefined} />
+            {propose.isPending || s.intraday?.running ? " 판단 중 (몇 분)..." : s.window === "open" ? " 지금 장중 판단" : " 지금 제안 만들기"}</button>}>
           {narrow ? (
             <details data-testid="kis-rules-fold" style={{ fontSize: 12 }}>
               <summary style={{ cursor: "pointer", color: "var(--text-secondary)" }}>자동 규칙 보기 (언제 사고 · 언제 자동 취소 · 자동 손절)</summary>
               <div style={{ marginTop: 8 }}><Rules s={s} /></div>
             </details>
           ) : <Rules s={s} />}
+          <IntradayLine s={s} />
           {open.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(open.error)}</p>}
           {orders.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>승인 대기·진행 중인 주문이 없습니다</p> : narrow ? (
             <div data-testid="kis-order-cards" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -446,6 +449,27 @@ export default function KisTrade() {
   );
 }
 
+function IntradayLine({ s }: { s: any }) {
+  const d = s.intraday;
+  if (!d) return null;
+  const done = new Set<string>(d.done || []);
+  return (
+    <div data-testid="kis-intraday" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+      <Bot size={13} style={{ color: d.slots?.length ? "var(--accent)" : "var(--text-muted)" }} />
+      {d.slots?.length ? (
+        <span><strong>장중 AI 제안</strong> 오늘{" "}
+          {d.slots.map((t: string, i: number) => (
+            <span key={t} style={{ color: done.has(t) ? "var(--text-muted)" : undefined, textDecoration: done.has(t) ? "line-through" : undefined }}>{i ? " · " : ""}{t}</span>
+          ))}
+          {" "}— 지금 가격으로 다시 판단해 새 매수만 제안 (보유·이미 제안한 종목·오늘 +{s.limits.max_gap_pct}% 넘게 오른 종목은 뺌)</span>
+      ) : <span style={{ color: "var(--text-muted)" }}>장중 AI 제안 꺼짐 (설정 '장중 AI 제안 횟수' 0) — 장 마감 후에만 제안</span>}
+      {d.running && <span style={{ color: "var(--accent)" }}>판단 중...</span>}
+      {!d.running && d.result && <span style={{ color: "var(--text-muted)" }}>마지막: {d.result}</span>}
+      {!d.running && d.error && <span style={{ color: "var(--red)" }}>장중 판단 실패: {d.error}</span>}
+    </div>
+  );
+}
+
 function WatchLine({ s }: { s: any }) {
   const w = s.watch;
   if (!w) return null;
@@ -474,6 +498,7 @@ function WatchLine({ s }: { s: any }) {
 const LIMIT_GROUPS: [string, string, string[]][] = [
   ["주문 한도", "넘으면 주문을 안 보내거나 멈춤", ["max_order_krw", "max_orders_day", "max_loss_krw"]],
   ["장중 감시 규칙", "승인한 매수를 언제 보내고, 언제 자동 취소할지", ["max_gap_pct", "fast_drop_pct", "index_drop_pct", "limit_slip_pct"]],
+  ["장중 AI 제안", "10:00~14:00 사이 고르게 나눈 시각에 다시 판단 (예: 3번 = 10:00 · 12:00 · 14:00)", ["intraday_runs"]],
 ];
 
 function Field({ label, range, value, onChange }: { label: string; range?: string; value: number; onChange: (n: number) => void }) {

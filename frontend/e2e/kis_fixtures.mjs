@@ -29,13 +29,15 @@ const LIMIT_META = {
   fast_drop_pct: { default: 3, min: 1, max: 15, label: "10분 급락 → 매수 취소 (%)" },
   index_drop_pct: { default: 2, min: 0.5, max: 10, label: "지수 하락 → 매수 보류 (%)" },
   limit_slip_pct: { default: 0.3, min: 0, max: 2, label: "매수 지정가 여유 (%)" },
+  intraday_runs: { default: 3, min: 0, max: 5, label: "장중 AI 제안 횟수 (0 = 끔)" },
 };
 
 export const KIS_STATUS = {
   configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", account_source: "KIS_MOCK_ACCOUNT_NO",
   notify: { configured: true, server: "ntfy.sh", token: false, link: "https://mystock.duckdns.org/kis", last: { ok: true, error: null, at: 1795000000 } }, halted: false, halted_reason: null, halted_at: null,
-  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3 },
+  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3, intraday_runs: 3 },
   limit_meta: LIMIT_META,
+  intraday: { slots: ["10:00", "12:00", "14:00"], done: ["10:00"], running: false, last: "2026-11-24T10:01:40+09:00", result: "10:00 새 매수 제안 1건", error: null },
   param_meta: { max_positions: { default: 5, min: 1, max: 15, label: "최대 보유 종목 수" }, buy_score: { default: 60, min: 50, max: 90, label: "매수 기준 AI 점수" },
     sell_score: { default: 45, min: 20, max: 60, label: "매도 기준 AI 점수" }, stop_pct: { default: 7, min: 2, max: 30, label: "손절 %" },
     take_pct: { default: 15, min: 3, max: 100, label: "익절(목표) %" }, max_hold: { default: 20, min: 2, max: 120, label: "최대 보유 거래일" } },
@@ -72,6 +74,9 @@ export const KIS_OPEN = { items: [
 
 export const KIS_ALL = { items: [
   { ...KIS_OPEN.items[2] },
+  { id: 15, created_at: 1795000100, base_date: "2026-11-24", source: "intraday", side: "buy", symbol: "051910", name: "LG화학", qty: null, budget: 2000000,
+    ref_price: 300000, reason: "장중 판단 10:00 — AI 점수 70 — 상승확률 62%", score: 70, status: "rejected", status_label: "거절", expires_at: 1795060000,
+    decided_at: 1795000200, submitted_at: null, order_price: null, limit_price: null, cancel_req: null, odno: null, filled_qty: 0, filled_price: null, message: null },
   { id: 13, created_at: 1794990000, base_date: "2026-11-24", source: "stop", side: "sell", symbol: "000270", name: "기아", qty: 5, budget: null,
     ref_price: 92000, reason: "손절가 도달 — 자동 매도 (장중 92,000원 · 손절 93,000원)", score: null, status: "filled", status_label: "체결",
     expires_at: 1795060000, decided_at: 1794990000, submitted_at: 1794990001, order_price: 92000, limit_price: null, cancel_req: null, odno: "0000000010",

@@ -387,15 +387,36 @@ async def _record_trade(db, acc_id: int, t: dict, ts: str):
                       reason=t["reason"]))
 
 
-async def analyze_live(market: str, user_id: int, positions: dict, params: dict) -> dict:
+def project_today(market: str, candles: list, now: datetime | None = None) -> list:
+    """장중 판단용: 오늘(미완성) 봉의 거래량을 하루치로 늘려 잡음 (지금까지 거래량 ÷ 지난 장 시간 비율, 최소 10%).
+    가격(시가·고가·저가·현재가)은 그대로. 오늘 봉이 없거나 장이 끝났으면 그대로 돌려줌 (원본은 안 바꿈)"""
+    if not candles:
+        return candles
+    now = now or datetime.now(_TZ[market])
+    if candles[-1]["date"][:10] != now.date().isoformat():
+        return candles
+    o, c = session_hours(market, now.date())
+    hm = now.hour * 60 + now.minute
+    if hm >= c:
+        return candles
+    frac = min(1.0, max(0.1, (hm - o) / max(1, c - o)))
+    last = dict(candles[-1])
+    if last.get("volume") is not None:
+        last["volume"] = int(round(float(last["volume"]) / frac))
+    return candles[:-1] + [last]
+
+
+async def analyze_live(market: str, user_id: int, positions: dict, params: dict, intraday: bool = False) -> dict:
     """실시간 판단에 쓰는 오늘 점수 — 확정된 마지막 종가 기준 (실시간 모의투자 계좌와 KIS 모의투자 주문 제안이 같이 씀).
-    → {rows: {종목: 그날 행}, regime, events(다음 거래일), aw(학습형 비중), last(기준일), errors, index}"""
+    intraday = 장중 판단 (KIS 모의투자 장중 제안): 오늘 미완성 봉을 '지금 가격으로 마감한다면'으로 넣어 판단 (거래량은 하루치로 환산).
+    AI 는 확정된 종가로 만들어지고 검증됐으므로 장중 판단은 그만큼 덜 검증된 근사 — 시장 상태(지수)는 확정된 종가로.
+    → {rows: {종목: 그날 행}, regime, events(다음 거래일), aw(학습형 비중), last(기준일), errors, index, prev_close: {종목: 전날 종가}}"""
     from app.services.quote import analyze_candles
     from app.services import events
     items, overrides = await _live_universe(market, user_id, positions)
     stocks, errors = await fetch_stocks(market, items, 320, "2y")
     for s in stocks.values():
-        s["candles"] = _closed_only(market, s["candles"])
+        s["candles"] = project_today(market, s["candles"]) if intraday else _closed_only(market, s["candles"])
     stocks = {k: v for k, v in stocks.items() if len(v["candles"]) >= 60}
     if not stocks:
         raise RuntimeError("일봉을 받은 종목이 없음 — " + " / ".join(errors[:3]))
@@ -419,7 +440,8 @@ async def analyze_live(market: str, user_id: int, positions: dict, params: dict)
     regime = pe.regime_on(pe.regime_map(index), last)
     nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
     ev = pe.event_labels(market, nxt, events._cache["events"])
-    return {"rows": rows, "regime": regime, "events": ev, "aw": aw, "last": last, "errors": errors, "index": index}
+    prev = {k: float(v["candles"][-2]["close"]) for k, v in stocks.items() if len(v["candles"]) >= 2}
+    return {"rows": rows, "regime": regime, "events": ev, "aw": aw, "last": last, "errors": errors, "index": index, "prev_close": prev}
 
 
 async def decide_account(acc_id: int, manual: bool = False) -> dict:

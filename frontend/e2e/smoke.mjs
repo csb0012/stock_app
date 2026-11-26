@@ -55,7 +55,7 @@ function makeApi(overrides = {}) {
     const url = new URL(req.url());
     const key = `${req.method()} ${url.pathname}`;
     const hd = req.headers();
-    calls.push({ key, body: req.postData(), token: hd["x-access-token"], authorization: hd["authorization"] });
+    calls.push({ key, query: url.search, body: req.postData(), token: hd["x-access-token"], authorization: hd["authorization"] });
     let body = table[key];
     if (typeof body === "function") body = body(req);
     if (body && body.__status) {   // 오류 응답 흉내: { __status: 401, detail: "...", __headers: {...} }
@@ -627,7 +627,8 @@ async function run() {
   await test("KIS 모의투자: 잔고 · 제안 선택 → 2단계 코드로 승인 · 거절 · 주문 취소 · 기록 · 감사 로그", { api: adminApi({
     "POST /api/kis/orders/approve": { results: [{ id: 11, status: "submitted", message: "주문번호 0000000008" }, { id: 12, status: "submitted", message: "주문번호 0000000009" }] },
     "POST /api/kis/orders/reject": { message: "1건 거절했습니다" },
-    "POST /api/kis/orders/9/cancel": { message: "취소 요청 — 모의투자 취소주문이 완료되었습니다" } }) }, async (page, api) => {
+    "POST /api/kis/orders/9/cancel": { message: "취소 요청 — 모의투자 취소주문이 완료되었습니다" },
+    "POST /api/kis/propose": { proposed: 1, base_date: "2026-11-24 장중 10:30", notes: [], intraday: true } }) }, async (page, api) => {
     page.on("dialog", (d) => d.accept());
     await page.goto(`${BASE}/kis`);
     const st = await page.getByTestId("kis-status").innerText();
@@ -641,9 +642,9 @@ async function run() {
       && wl.includes("실시간 체결가 연결 안 됨") && wl.includes("연결 거부"), `실시간 감시: ${wl}`);
     // 설정: 묶음 3개 · 같은 줄 입력칸 높이(위치) 같음
     const cfg = page.getByTestId("kis-config");
-    expect(await cfg.getByTestId("kis-config-group").count() === 3, "설정 묶음이 3개가 아님");
+    expect(await cfg.getByTestId("kis-config-group").count() === 4, "설정 묶음이 4개가 아님");
     const cfgText = await cfg.innerText();
-    expect(cfgText.includes("주문 한도") && cfgText.includes("장중 감시 규칙") && cfgText.includes("AI 매매 규칙") && cfgText.includes("1 ~ 15"), `설정: ${cfgText}`);
+    expect(cfgText.includes("주문 한도") && cfgText.includes("장중 감시 규칙") && cfgText.includes("장중 AI 제안 횟수") && cfgText.includes("AI 매매 규칙") && cfgText.includes("1 ~ 15"), `설정: ${cfgText}`);
     for (const g of await cfg.getByTestId("kis-config-group").all()) {
       const tops = await g.locator("input").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
       const firstRowTop = Math.min(...tops);
@@ -656,6 +657,12 @@ async function run() {
     const pr = page.getByTestId("kis-proposals");
     const prt = await pr.innerText();
     expect(prt.includes("비싸서 기다림") && prt.includes("조건 맞으면 주문") && prt.includes("지정가 191,600원"), `조건 대기·지정가: ${prt}`);
+    // 장중 AI 제안: 오늘 시각(지난 시각은 줄 긋기) · 장중이면 버튼이 '지금 장중 판단' → intraday=true
+    const it = await pr.getByTestId("kis-intraday").innerText();
+    expect(it.includes("10:00 · 12:00 · 14:00") && it.includes("마지막: 10:00 새 매수 제안 1건") && it.includes("+3%"), `장중 제안: ${it}`);
+    await pr.getByTestId("kis-propose").click();
+    await page.getByText(/장중 판단 — 새 매수 제안 1건/).waitFor();
+    expect(api.calls.find((c) => c.key === "POST /api/kis/propose").query === "?intraday=true", "장중인데 장중 판단으로 안 부름");
     const approve = pr.getByTestId("kis-approve");
     expect(await approve.isDisabled(), "아무것도 안 골랐는데 승인이 눌림");
     await pr.getByRole("button", { name: "모두 선택" }).click();
@@ -674,6 +681,7 @@ async function run() {
     const h = await page.getByTestId("kis-history").innerText();
     expect(h.includes("LG화학") && h.includes("안전장치로 안 보냄") && h.includes("비싸져서"), `주문 기록: ${h}`);
     expect(h.includes("자동 손절") && h.includes("시장가") && h.includes("급변으로 자동 취소"), `자동 손절·자동 취소 기록: ${h}`);
+    expect(h.includes("매수 장중 AI") && h.includes("LG화학"), `장중 제안 기록: ${h}`);
     const au = await page.getByTestId("kis-audit").innerText();
     expect(au.includes("승인") && au.includes("boss") && au.includes("안전장치로 막음") && au.includes("자동 손절") && au.includes("급변 자동 취소"), `감사 로그: ${au}`);
     await shot(page, "kis-trade");

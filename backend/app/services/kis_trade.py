@@ -3,7 +3,10 @@
 
 흐름
   1. 제안: 국내 장 마감 15분 뒤(15:45~) AI 모의투자와 같은 판단 함수로 'KIS 모의투자 계좌의 실제 잔고'를 놓고 판단
-     → 매수·매도 제안 (승인 대기). 새 제안이 생기면 관리자에게 알림. '무엇을 살지'는 하루 한 번 (AI 가 일봉으로 만들어지고 검증됨)
+     → 매수·매도 제안 (승인 대기). 새 제안이 생기면 관리자에게 알림.
+     장중 제안(사용자 결정 2026-11-26): 10:00~14:00 사이 하루 intraday_runs(3)번 같은 판단 함수를 '오늘 지금 가격이 종가라면'으로 다시 돌려
+     새 매수만 제안 (보유·직전 장 마감 뒤 제안·주문한 종목·오늘 +허용% 넘게 오른 종목 제외, 승인 대기 매수는 산 것으로 계산, 오늘 장 마감까지 유효).
+     AI 는 확정된 종가로 만들어지고 검증됐으므로 장중 판단은 덜 검증된 근사 — 그래서 자동 매수가 아니라 제안(승인 필요)
   2. 승인: 관리자가 2단계 코드를 넣고 승인 (선택한 여러 건을 한 번에) = '아래 조건 안에서 사도 된다'
   3. 장중 실시간 감시 watch() — WATCH_EVERY(5)초마다, KIS 실시간 체결가(웹소켓, 없으면 REST 시세 15초마다):
      - 승인한 매수: 개장 BUY_AFTER_OPEN(5)분 뒤부터, 제안 때보다 +허용%(3) 넘게 비싸지 않고 · 지수가 −2% 넘게 빠지지 않고 ·
@@ -51,11 +54,13 @@ LIMITS = {
     "fast_drop_pct": (3.0, 1.0, 15.0),
     "index_drop_pct": (2.0, 0.5, 10.0),
     "limit_slip_pct": (0.3, 0.0, 2.0),
+    "intraday_runs": (3, 0, 5),
 }
 LIMIT_LABELS = {
     "max_order_krw": "1회 매수 한도 (원)", "max_orders_day": "하루 주문 횟수", "max_loss_krw": "하루 손실 한도 (원)",
     "max_gap_pct": "제안 뒤 가격 상승 허용 (%)", "fast_drop_pct": "10분 급락 → 매수 취소 (%)",
     "index_drop_pct": "지수 하락 → 매수 보류 (%)", "limit_slip_pct": "매수 지정가 여유 (%)",
+    "intraday_runs": "장중 AI 제안 횟수 (0 = 끔)",
 }
 STATUS_LABELS = {
     "proposed": "승인 대기", "approved": "승인 — 조건 맞으면 주문", "submitting": "보내는 중", "submitted": "주문 접수",
@@ -76,6 +81,8 @@ INDEX_EVERY = 60          # 지수 확인 주기 (초)
 STOP_RETRY = 120          # 자동 손절이 안 나갔으면(막힘·실패) 이만큼(초) 뒤 다시
 STOP_TRIES = 3            # 하루 한 종목 자동 손절 시도 횟수
 WAIT_RETRY = 30           # 주문 직전 확인에서 '기다림'이 나온 매수는 이만큼(초) 뒤 다시 확인 (REST 호출 줄이기)
+INTRADAY_FROM = 10 * 60   # 장중 AI 제안 첫 시각 (10:00 — 개장 직후 출렁임이 지난 뒤)
+INTRADAY_TO = 14 * 60     # 마지막 시각 (14:00 — 승인하고 15:20 전에 살 시간이 남게)
 ACTIVE = ("submitting", "submitted")           # KIS 로 나갔고 아직 끝나지 않은 주문
 SENT = ("submitting", "submitted", "filled", "partial", "unfilled", "unknown")   # 하루 주문 횟수에 세는 것
 
@@ -88,6 +95,7 @@ _rest: dict = {"at": 0.0, "data": {}, "error": None}     # REST 시세 (실시�
 _index: dict = {"at": 0.0, "change": None, "error": None}
 _next_try: dict = {}      # 주문 id → 다시 확인할 시각
 _wait_kind: dict = {}     # 주문 id → 마지막 기다림 이유 종류 (감사 로그는 이유가 바뀔 때만)
+_intraday: dict = {"running": False, "last": None, "result": None, "error": None, "task": None}
 _watch: dict = {"last": None, "error": None, "symbols": 0, "realtime": 0, "rest": 0, "missing": 0}
 
 
@@ -352,6 +360,194 @@ async def propose(user_id: int | None = None) -> dict:
                       + "\n\n앱의 'KIS 모의투자 주문' 화면에서 2단계 코드로 승인하세요. 승인하지 않으면 주문하지 않습니다. (다음 거래일 15:30 까지)",
                       priority=4, tags=["chart_with_upwards_trend"])
     return {"proposed": len(made), "base_date": last, "notes": notes}
+
+
+# ---------------- 장중 AI 제안 ----------------
+
+def intraday_slots(n: int) -> list:
+    """하루 n 번 장중 제안 시각(분) — INTRADAY_FROM~INTRADAY_TO 를 고르게 나눔. 0 = 끔, 1 = 가운데(12:00)"""
+    n = int(n or 0)
+    if n <= 0:
+        return []
+    if n == 1:
+        return [(INTRADAY_FROM + INTRADAY_TO) // 2]
+    step = (INTRADAY_TO - INTRADAY_FROM) / (n - 1)
+    return [int(round(INTRADAY_FROM + i * step)) for i in range(n)]
+
+
+def _hhmm(m: int) -> str:
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def intraday_due(s: dict, limits: dict, now: datetime | None = None) -> list:
+    """지금 해야 할(아직 안 한) 장중 제안 시각 목록. 장중(주문 가능 시간)이 아니면 빈 목록"""
+    now = now or _kst()
+    if market_window(now) != "open":
+        return []
+    st = s.get("intraday") or {}
+    done = set(st.get("done") or []) if st.get("date") == now.date().isoformat() else set()
+    return [m for m in intraday_slots(limits.get("intraday_runs", 0)) if m <= _hm(now) and m not in done]
+
+
+def intraday_chase(r: dict, prev: float | None, limits: dict) -> str | None:
+    """장중 제안에서 뺄 종목인가 → 이유. 오늘 이미 +허용% 넘게 오름(쫓아가서 안 삼) / −허용×2% 넘게 빠짐(급락 중)"""
+    if not prev:
+        return None
+    chg = round((r["close"] / prev - 1) * 100, 6)
+    if chg > limits["max_gap_pct"]:
+        return f"{r['name']} 오늘 +{chg:.1f}% (허용 +{limits['max_gap_pct']:g}%) — 이미 올라 쫓아가서 안 삼"
+    if chg < -2 * limits["max_gap_pct"]:
+        return f"{r['name']} 오늘 {chg:.1f}% — 급락 중이라 안 삼"
+    return None
+
+
+def _since_prev_close() -> float:
+    """직전 거래일 장 마감 시각 — 그 뒤에 만든 제안·주문이 있는 종목은 장중 제안에서 뺌 (어제 저녁 거절한 종목을 다시 묻지 않게)"""
+    d = pe._prev_trading_day(MARKET, _kst().date())
+    c = session_hours(MARKET, d)[1]
+    return datetime(d.year, d.month, d.day, c // 60, c % 60, tzinfo=_TZ[MARKET]).timestamp()
+
+
+async def propose_intraday(user_id: int | None = None) -> dict:
+    """장중 AI 판단 → 새 매수 제안만 (사용자 결정 2026-11-26: 장중에도 좋은 종목이 보이면 제안).
+    오늘 지금 가격을 '오늘 종가라면'으로 넣어 장 마감 후 판단과 같은 함수로 점수를 냄 (거래량은 하루치로 환산).
+    - 승인 대기·진행 중 매수 = 이미 산 것으로 보고 자리·현금에서 뺌 / 장 마감 후 제안은 그대로 둠 (만료 안 함)
+    - 직전 장 마감 뒤 제안·주문이 있었던 종목(거절 포함)·보유 종목은 제안 안 함 · 오늘 많이 오른/빠진 종목은 뺌
+    - 판단(몇 분 걸림)은 잠금 밖에서 — 그동안에도 손절·급변 감시는 계속. 매도는 장중엔 손절(자동)·목표가(제안)만
+    - 제안은 오늘 장 마감까지만 유효, 승인하면 기존 매수와 같은 장중 조건으로 지정가 주문"""
+    from app.services import papertrade
+    if not configured():
+        raise TradeError("KIS 모의투자 키가 없음")
+    if market_window() != "open":
+        raise TradeError("장중(09:01~15:20)에만 장중 판단을 합니다")
+    if _intraday["running"]:
+        raise TradeError("장중 판단이 이미 진행 중 — 끝나면 결과가 보입니다")
+    _intraday.update(running=True, error=None)
+    started = time.time()
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await _row(db)
+            await db.commit()
+            if row.halted:
+                raise TradeError(f"정지 중이라 제안을 만들지 않음 — {row.halted_reason}")
+            params, s, limits = json.loads(row.params), _state(row), _limits(row)
+            owner = user_id or await _owner_id(db)
+            since = _since_prev_close()
+            recent = (await db.execute(select(KisOrder).where(
+                KisOrder.status.in_(("proposed", "approved") + ACTIVE) | (KisOrder.created_at >= since)))).scalars().all()
+        bal = await fetch_balance()
+        positions = _positions_for_decide(s, bal, params)
+        skip = {k.symbol for k in recent}
+        pending = [k for k in recent if k.side == "buy" and k.status in ("proposed", "approved") + ACTIVE and k.symbol not in positions]
+        reserved = sum(float(k.budget or 0) for k in pending)
+        for k in pending:   # 승인 대기·진행 중 매수 = 산 것으로 (자리·비중 계산)
+            px = float(k.ref_price or 0) or 1.0
+            positions.setdefault(k.symbol, {"name": k.name, "qty": max(1, int(float(k.budget or 0) // px)), "avg": px, "last": px,
+                                            "hold_days": 0, "peak": px, "stop": 0, "target": 0, "buy_fee": 0.0, "pending": True})
+        a = await papertrade.analyze_live(MARKET, owner, positions, params, intraday=True)
+        rows, prev = a["rows"], a.get("prev_close") or {}
+        notes, out = [], {}
+        for sym, r in rows.items():
+            if sym in positions:
+                out[sym] = r
+                continue
+            if sym in skip:
+                continue
+            why = intraday_chase(r, prev.get(sym), limits)
+            if why:
+                if r["score"] >= params["buy_score"]:
+                    notes.append(why)
+                continue
+            out[sym] = r
+        state = {"cash": float(max(0.0, bal["d2_cash"] - reserved)), "positions": positions}
+        orders, n2 = pe.decide(state, out, a["regime"], a["events"], params, MARKET)
+        orders = [o for o in orders if o["side"] == "buy"]
+        notes += n2
+        if reserved:
+            notes.insert(0, f"승인 대기·진행 중 매수 {len(pending)}건({reserved:,.0f}원)은 이미 산 것으로 계산")
+        hm = _hhmm(_hm(_kst()))
+        made = []
+        async with _lock:
+            async with AsyncSessionLocal() as db:
+                row = await _row(db)
+                if row.halted:
+                    raise TradeError(f"정지 중이라 제안을 만들지 않음 — {row.halted_reason}")
+                if market_window() != "open":
+                    raise TradeError("판단하는 사이 장중 주문 시간이 끝남 — 제안 안 함")
+                s = _state(row)
+                again = set((await db.execute(select(KisOrder.symbol).where(KisOrder.created_at >= started))).scalars().all())
+                close_today = expiry_for((_kst().date() - timedelta(days=1)).isoformat())
+                now = time.time()
+                for o in orders:
+                    if o["symbol"] in again:   # 판단하는 사이 같은 종목 제안·주문이 생김
+                        continue
+                    r = out[o["symbol"]]
+                    k = KisOrder(created_at=now, base_date=_kst().date().isoformat(), source="intraday", side="buy", symbol=o["symbol"],
+                                 name=o["name"], budget=o.get("budget"), ref_price=r["close"], score=o.get("score") or r.get("score"),
+                                 reason=f"장중 판단 {hm} — {o['reason']}", status="proposed", expires_at=close_today)
+                    db.add(k)
+                    made.append(k)
+                top = [{"symbol": sym, "name": r["name"], "score": r["score"], "prob": r["prob"]}
+                       for sym, r in sorted(((x, y) for x, y in rows.items() if x not in positions or not positions[x].get("pending")),
+                                            key=lambda kv: -kv[1]["score"])[:5]]
+                s["log"].append({"ts": _kst().isoformat(timespec="seconds"), "base_date": f"{a['last']} 장중 {hm}", "intraday": True,
+                                 "regime": a["regime"], "events": a["events"], "manual": bool(user_id),
+                                 "notes": notes + ([f"일봉 못 받은 종목 {len(a['errors'])}개"] if a["errors"] else []),
+                                 "orders": [f"매수 {k.name} — {k.reason}" for k in made], "top": top, "universe": len(rows)})
+                _save(row, s)
+                await db.flush()
+                await audit(db, "propose_intraday", f"장중 {hm} · 새 매수 제안 {len(made)}건" + (" (손으로 실행)" if user_id else ""), user_id)
+                await db.commit()
+        if made:
+            _alert_admins(f"[StockApp] 장중 AI 매수 제안 {len(made)}건 — 승인 대기",
+                          "\n".join(f"- 매수 {k.name}({k.symbol})" + (f" {k.budget:,.0f}원어치" if k.budget else "") + f" · 지금 {k.ref_price:,.0f}원"
+                                    for k in made)
+                          + "\n\n장중 판단(오늘 지금 가격 기준)입니다. 승인하지 않으면 주문하지 않습니다. (오늘 15:20 까지)",
+                          priority=4, tags=["chart_with_upwards_trend"])
+        res = f"{hm} 새 매수 제안 {len(made)}건"
+        _intraday.update(last=_kst().isoformat(timespec="seconds"), result=res, error=None)
+        return {"proposed": len(made), "base_date": f"{a['last']} 장중 {hm}", "notes": notes, "intraday": True}
+    except Exception as e:
+        why = str(e)[:300] or type(e).__name__
+        _intraday.update(last=_kst().isoformat(timespec="seconds"), error=why)
+        if not isinstance(e, TradeError):
+            async with AsyncSessionLocal() as db:
+                await audit(db, "propose_intraday_fail", why, user_id, ok=False)
+                await db.commit()
+        raise
+    finally:
+        _intraday["running"] = False
+
+
+async def schedule_intraday() -> bool:
+    """장중 제안 시각이 됐으면 뒤에서 판단 시작 (loop 가 5초마다 부름 — 판단이 몇 분 걸려도 감시는 안 멈춤).
+    놓친 시각(서버를 늦게 켬)은 한 번으로 합침. 실패해도 그 시각은 다시 안 함 (다음 시각에 다시)"""
+    if not configured() or _intraday["running"]:
+        return False
+    async with AsyncSessionLocal() as db:
+        row = await _row(db)
+        if row.halted:
+            await db.commit()
+            return False
+        s = _state(row)
+        due = intraday_due(s, _limits(row))
+        if not due:
+            await db.commit()
+            return False
+        today = _kst().date().isoformat()
+        st = s.get("intraday") or {}
+        done = (st.get("done") or []) if st.get("date") == today else []
+        s["intraday"] = {"date": today, "done": sorted(set(done) | set(due))}
+        _save(row, s)
+        await db.commit()
+
+    async def go():
+        try:
+            await propose_intraday()
+        except Exception as e:   # noqa: BLE001 — _intraday['error'] 로 화면에 보임
+            print(f"[kis] 장중 제안 실패: {e}")
+    _intraday["task"] = asyncio.get_running_loop().create_task(go())
+    return True
 
 
 # ---------------- 장중 가격 · 급변 판단 ----------------
@@ -969,7 +1165,11 @@ async def overview(with_balance: bool = True) -> dict:
             "params": json.loads(row.params),
             "param_meta": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
             "orders_today": int(sent_today), "window": market_window(),
-            "last_proposal_day": row.last_proposal_day, "last_error": row.last_error, "loop": dict(_status),
+            "last_proposal_day": row.last_proposal_day,
+            "intraday": {"slots": [_hhmm(m) for m in intraday_slots(limits["intraday_runs"])],
+                         "done": [_hhmm(m) for m in ((s.get("intraday") or {}).get("done") or [])]
+                         if (s.get("intraday") or {}).get("date") == _kst().date().isoformat() else [],
+                         **{k: _intraday[k] for k in ("running", "last", "result", "error")}}, "last_error": row.last_error, "loop": dict(_status),
             "watch": {**_watch, "every": WATCH_EVERY, "index_change": _index["change"], "index_error": _index["error"],
                       "buy_after_open": BUY_AFTER_OPEN, "stops_ok": _stops_ok(row), "ws": _ws_status()},
             "baseline": s["expected"] is not None, "log": list(reversed(s["log"][-10:])),
@@ -1220,6 +1420,11 @@ async def loop():
             except Exception as e:
                 _status["last_error"] = f"{datetime.now().isoformat(timespec='seconds')} {str(e)[:200]}"
                 print(f"[kis] 자동 운영 실패: {e}")
+        try:   # 장중 AI 제안 시각이면 뒤에서 판단 시작 (감시는 안 멈춤)
+            await schedule_intraday()
+        except Exception as e:   # noqa: BLE001
+            _intraday["error"] = str(e)[:200]
+            print(f"[kis] 장중 제안 예약 실패: {e}")
         try:   # 5초마다: 장중 실시간 감시
             await watch()
         except Exception as e:   # noqa: BLE001

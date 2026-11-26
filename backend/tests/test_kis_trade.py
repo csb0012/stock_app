@@ -127,6 +127,7 @@ def kenv(monkeypatch):
     kis_trade._balance_cache.update(at=0.0, data=None, error=None)
     for d in (kis_trade._hist, kis_trade._next_try, kis_trade._wait_kind):
         d.clear()
+    kis_trade._intraday.update(running=False, last=None, result=None, error=None, task=None)
 
     async def _db():
         async with Session() as s:
@@ -1089,3 +1090,159 @@ def test_overview_shows_ws_status_and_param_ranges(kenv, monkeypatch):
     st = kenv.c.get("/api/kis/status").json()
     assert st["watch"]["ws"] == {"connected": False, "subscribed": 0, "last_error": "연결 거부", "last_message": None, "reconnects": 2}
     assert st["param_meta"]["max_positions"] == {"default": 5, "min": 1, "max": 15, "label": "최대 보유 종목 수"}
+
+
+# ---------------- 장중 AI 제안 (사용자 결정 2026-11-26) ----------------
+
+def test_intraday_slots_and_due():
+    assert kis_trade.intraday_slots(0) == []
+    assert kis_trade.intraday_slots(1) == [720]
+    assert kis_trade.intraday_slots(3) == [600, 720, 840]
+    assert kis_trade.intraday_slots(5) == [600, 660, 720, 780, 840]
+    lim = kis_trade.clean_limits({})
+    assert lim["intraday_runs"] == 3
+    at = lambda h, m, d=24: dt.datetime(2026, 11, d, h, m, tzinfo=KST)   # noqa: E731
+    assert kis_trade.intraday_due({}, lim, at(9, 59)) == []
+    assert kis_trade.intraday_due({}, lim, at(10, 0)) == [600]
+    assert kis_trade.intraday_due({}, lim, at(13, 0)) == [600, 720]       # 놓친 시각은 같이 (한 번으로 합침)
+    done = {"intraday": {"date": "2026-11-24", "done": [600]}}
+    assert kis_trade.intraday_due(done, lim, at(11, 0)) == []
+    assert kis_trade.intraday_due(done, lim, at(12, 0)) == [720]
+    assert kis_trade.intraday_due({"intraday": {"date": "2026-11-23", "done": [600, 720, 840]}}, lim, at(10, 0)) == [600]   # 어제 기록은 무시
+    assert kis_trade.intraday_due({}, lim, at(15, 25)) == []               # 마감 직전·장 후
+    assert kis_trade.intraday_due({}, lim, at(10, 0, d=28)) == []          # 토요일
+    assert kis_trade.intraday_due({}, {**lim, "intraday_runs": 0}, at(14, 0)) == []
+
+
+def test_intraday_chase_bounds():
+    lim = kis_trade.clean_limits({})   # 허용 3%
+    r = lambda c: {"name": "A", "close": c}   # noqa: E731
+    assert kis_trade.intraday_chase(r(103), 100, lim) is None              # 딱 +3% 는 괜찮음
+    assert "쫓아가서" in kis_trade.intraday_chase(r(103.5), 100, lim)
+    assert kis_trade.intraday_chase(r(94), 100, lim) is None               # −6% 까지
+    assert "급락" in kis_trade.intraday_chase(r(93.9), 100, lim)
+    assert kis_trade.intraday_chase(r(150), None, lim) is None             # 전날 종가 모름 → 막지 않음 (decide 가 판단)
+
+
+def test_project_today_scales_partial_volume():
+    from app.services import papertrade
+    cs = [{"date": "2026-11-23", "close": 100, "volume": 1000}, {"date": "2026-11-24", "close": 101, "volume": 300}]
+    noon = dt.datetime(2026, 11, 24, 12, 15, tzinfo=KST)    # 09:00~15:30 중 195/390 분 = 절반
+    out = papertrade.project_today("KR", cs, noon)
+    assert out[-1]["volume"] == 600 and out[-1]["close"] == 101 and out[0] == cs[0]
+    assert cs[-1]["volume"] == 300                                         # 원본은 그대로
+    early = papertrade.project_today("KR", cs, dt.datetime(2026, 11, 24, 9, 5, tzinfo=KST))
+    assert early[-1]["volume"] == 3000                                     # 최소 10% 로 (개장 직후 몇 분으로 부풀리지 않게)
+    assert papertrade.project_today("KR", cs, dt.datetime(2026, 11, 24, 15, 40, tzinfo=KST)) == cs   # 장 끝남 → 그대로
+    assert papertrade.project_today("KR", cs, dt.datetime(2026, 11, 25, 10, 0, tzinfo=KST)) == cs    # 오늘 봉 없음
+    assert papertrade.project_today("KR", [], noon) == []
+
+
+def _intraday_env(kenv, monkeypatch):
+    """보유 005930 · 어제 저녁 제안(승인 대기) 000660 · 어제 저녁 거절한 068270 + 장중 판단 결과 5종목"""
+    from app.services import papertrade
+    kenv.b.holdings["005930"] = [10, 65_000]
+    kenv.clock["t"] = dt.datetime(2026, 11, 23, 15, 50, tzinfo=KST)        # 월요일 장 마감 뒤
+    pend = buy(kenv, sym="000660", budget=2_000_000, ref=200_000)
+    rej = buy(kenv, sym="068270", budget=1_000_000, ref=150_000)
+    kenv.c.post("/api/kis/orders/reject", json={"ids": [rej]})
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 0, tzinfo=KST)          # 화요일 장중
+    seen = {}
+
+    def row(name, score, prob, close):
+        return {"name": name, "score": score, "prob": prob, "close": close, "quant": 80, "grade": "A", "accum": 30,
+                "accum_ok": False, "ma50": close * 0.9}
+
+    async def fake(market, user_id, positions, params, intraday=False):
+        seen.update(intraday=intraday, positions=dict(positions))
+        rows = {"005930": row("삼성", 80, 65, 70_000), "000660": row("하이닉스", 80, 65, 200_000),
+                "068270": row("셀트리온", 80, 65, 150_000), "035420": row("네이버", 75, 62, 101_000),
+                "051910": row("LG화학", 90, 70, 105_000), "035720": row("카카오", 40, 50, 40_000)}
+        prev = {"005930": 69_000, "000660": 199_000, "068270": 150_000, "035420": 100_000, "051910": 100_000, "035720": 40_000}
+        return {"rows": rows, "regime": "상승 추세", "events": [], "aw": None, "last": "2026-11-24", "errors": [], "index": [],
+                "prev_close": prev}
+    monkeypatch.setattr(papertrade, "analyze_live", fake)
+    return SimpleNamespace(pend=pend, rej=rej, seen=seen)
+
+
+def test_propose_intraday_new_buys_only(kenv, monkeypatch):
+    e = _intraday_env(kenv, monkeypatch)
+    alerts = []
+    monkeypatch.setattr(kis_trade, "_alert_admins", lambda *a, **k: alerts.append(a[0]))
+    r = run(kis_trade.propose_intraday())
+    assert r["intraday"] and r["proposed"] == 1
+    assert e.seen["intraday"] is True
+    assert e.seen["positions"]["000660"].get("pending") and e.seen["positions"]["005930"]["qty"] == 10   # 승인 대기 매수 = 산 것으로
+    items = run(kis_trade.list_orders())
+    new = [i for i in items if i["source"] == "intraday"]
+    assert [i["symbol"] for i in new] == ["035420"]                      # 보유·제안 중·거절·+5%·점수 낮음은 제외
+    k = new[0]
+    assert k["side"] == "buy" and k["status"] == "proposed" and k["ref_price"] == 101_000 and k["reason"].startswith("장중 판단 10:00")
+    assert k["expires_at"] == dt.datetime(2026, 11, 24, 15, 30, tzinfo=KST).timestamp()   # 오늘 장 마감까지
+    assert order(kenv, e.pend).status == "proposed"                      # 장 마감 후 제안은 그대로 (만료 안 함)
+    assert kenv.b.orders == [] and alerts and "장중" in alerts[0]       # 제안만 — 주문 없음
+    st = run(kis_trade.overview())
+    lg = st["log"][0]
+    assert lg["intraday"] and any("LG화학" in n and "쫓아가서" in n for n in lg["notes"])
+    assert any("승인 대기·진행 중 매수 1건" in n for n in lg["notes"])
+    assert st["intraday"]["slots"] == ["10:00", "12:00", "14:00"] and "새 매수 제안 1건" in st["intraday"]["result"]
+    assert any(l["action"] == "propose_intraday" for l in run(kis_trade.list_log()))
+    # 다음 장중 판단 — 방금 제안한 종목은 다시 안 묻음
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 12, 0, tzinfo=KST)
+    assert run(kis_trade.propose_intraday())["proposed"] == 0
+    # 승인 → 장중 조건이 맞으면 지정가 매수 (기존 매수와 같은 흐름)
+    kenv.b.prices["035420"] = 101_000
+    res = approve(kenv, k["id"]).json()["results"][0]
+    assert res["status"] == "submitted" and kenv.b.orders[-1]["symbol"] == "035420" and kenv.b.orders[-1]["limit"]
+
+
+def test_propose_intraday_reserves_cash(kenv, monkeypatch):
+    """현금이 승인 대기 매수 몫밖에 없으면 장중 제안 안 함 (같은 돈을 두 번 쓰지 않게)"""
+    _intraday_env(kenv, monkeypatch)
+    kenv.b.cash = 2_000_000                                              # = 000660 승인 대기 매수 예산
+    r = run(kis_trade.propose_intraday())
+    assert r["proposed"] == 0 and any("더 못 삼" in n for n in r["notes"])
+
+
+def test_propose_intraday_refuses_outside_market_and_halted(kenv, monkeypatch):
+    _intraday_env(kenv, monkeypatch)
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 15, 25, tzinfo=KST)
+    with pytest.raises(kis_trade.TradeError):
+        run(kis_trade.propose_intraday())
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 0, tzinfo=KST)
+    kenv.c.post("/api/kis/halt", json={"reason": ""})
+    r = kenv.c.post("/api/kis/propose?intraday=true")
+    assert r.status_code == 400 and "정지" in r.json()["detail"]
+    assert kis_trade._intraday["running"] is False                       # 실패해도 '진행 중'이 남지 않음
+
+
+def test_propose_route_intraday(kenv, monkeypatch):
+    _intraday_env(kenv, monkeypatch)
+    r = kenv.c.post("/api/kis/propose?intraday=true")
+    assert r.status_code == 200, r.text
+    assert r.json()["intraday"] is True and r.json()["proposed"] == 1
+
+
+def test_schedule_intraday_runs_once_per_slot(kenv, monkeypatch):
+    calls = []
+
+    async def fake(user_id=None):
+        calls.append(kis_trade._kst())
+        return {"proposed": 0}
+    monkeypatch.setattr(kis_trade, "propose_intraday", fake)
+
+    async def go():
+        a = await kis_trade.schedule_intraday()
+        await kis_trade._intraday["task"]
+        b = await kis_trade.schedule_intraday()     # 같은 시각은 한 번만
+        return a, b
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 30, tzinfo=KST)
+    assert run(kis_trade.schedule_intraday()) is False
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 12, 1, tzinfo=KST)        # 10:00 을 놓침 → 10:00·12:00 을 한 번으로
+    assert run(go()) == (True, False) and len(calls) == 1
+    assert run(kis_trade.overview(with_balance=False))["intraday"]["done"] == ["10:00", "12:00"]
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 14, 0, tzinfo=KST)
+    assert run(go())[0] is True and len(calls) == 2
+    kenv.c.put("/api/kis/config", json={"limits": {"intraday_runs": 0}, "totp_code": kenv.code()})
+    kenv.clock["t"] = dt.datetime(2026, 11, 25, 14, 0, tzinfo=KST)
+    assert run(kis_trade.schedule_intraday()) is False                   # 0 = 끔

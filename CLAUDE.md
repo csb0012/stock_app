@@ -105,6 +105,9 @@ services/
                    TR 은 새 번호 → '없는 TR' 응답일 때만 예전 번호 (주문은 그 외 오류면 다시 안 보냄). KISClient 를 키·주소를 받아 따로 만듦
   kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 장중 조건 맞으면 주문, 위험 줄이는 일은 자동 — 사용자 결정 2026-11-26):
                    propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단, 이전 제안 만료, 다음 거래일 15:30 까지 유효) ·
+                   propose_intraday(장중 AI 제안 — 사용자 결정 2026-11-26: 10:00~14:00 하루 intraday_runs(기본 3)번 schedule_intraday 가 뒤에서(감시 안 멈춤),
+                     analyze_live(intraday=True) = 오늘 미완성 봉을 지금 가격 종가로·거래량 하루치 환산(project_today) → 새 매수만 source='intraday',
+                     보유·직전 장 마감 뒤 제안·주문 종목·오늘 +허용%↑/−허용×2%↓(intraday_chase) 제외, 승인 대기 매수는 산 것으로(현금·자리), 오늘 15:30 까지. 판단은 잠금 밖) ·
                    watch(장중 5초, loop 안): _fetch_prices(kis_ws 실시간 체결가 → 없으면 REST 멀티종목 15초, 못 받은 종목은 판단 안 함)·_hist(10분 가격) →
                      check_exits(prices) 손절가 이하 = 승인 없이 source='stop' 시장가 매도(긴급 정지 중엔 안 함, 손실 한도 정지 중엔 함 — _stops_ok, 2분 뒤 재시도·하루 3번) / 목표가 = 매도 제안 ·
                      shock_reason(제안가 −허용×2% · 10분 안 −fast_drop%) → 승인 대기·조건 대기 _auto_cancel, 접수된 매수 cancel_sent(why) ·
@@ -223,7 +226,7 @@ api/routes/
                    /admin/users (GET 회원 목록: 2단계 등록·초대한 사람·최근 로그인), PUT /admin/users/{id}/active {active, totp_code} (차단 = 모든 기기 끊김, 나·관리자는 불가).
                    만들기·차단은 2단계 코드를 다시 받음(_step_up)
   kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
-                   POST /kis/propose · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
+                   POST /kis/propose (?intraday=true = 장중 판단) · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
                    POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403). 기준 맞추기(baseline)는 주문 없이 앱 기록만 바꿔서 코드 없음(사용자 결정 2026-11-26)
   stocks.py      — /live?symbols= (국내 실시간 현재가 — kis_ws 메모리 값, KIS 호출 없음, 물은 종목은 구독), /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
@@ -326,7 +329,8 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
   CSP 를 바꾸면 화면 테스트(`smoke.mjs` 가 Caddyfile 의 CSP 를 그대로 걸고 화면을 엶)로 확인.
 - **관리자 페이지와 일반 화면 분리** (사용자 결정 2026-11-25): 관리 기능은 /admin · /kis (사이드바 '관리자 전용', AdminRoute + 서버 get_admin). 마이페이지엔 링크만.
 - **KIS 모의투자 주문은 'AI 제안 → 내가 승인할 때만 주문'** (사용자 결정 2026-11-25, 자동 매수 아님). 모의투자 서버 전용, 승인마다 2단계 코드 — `docs/kis-mock-trading.md`.
-  승인한 매수는 장중에 조건이 맞을 때 지정가로, **손절가 도달 매도·급변 때 매수 취소는 승인 없이 자동 + 휴대폰 알림** (사용자 결정 2026-11-26). 목표가 매도는 제안(승인 필요)
+  승인한 매수는 장중에 조건이 맞을 때 지정가로, **손절가 도달 매도·급변 때 매수 취소는 승인 없이 자동 + 휴대폰 알림** (사용자 결정 2026-11-26). 목표가 매도는 제안(승인 필요).
+  **장중에도 AI 가 정해진 시각에 다시 판단해 새 매수를 제안** (사용자 결정 2026-11-26 — 제안만, 승인해야 삼. 종가로 검증된 AI 의 장중 근사라 덜 검증됨)
 - 회원가입은 **관리자가 준 초대 코드 + 이메일 또는 휴대폰 6자리 인증** (사용자 결정, 2026-11-25 — 믿는 사람만. 예전 '누구나'는 `INVITE_ONLY=false`).
   초대 코드가 틀리면 메일·문자를 안 보내고 IP 실패 횟수에 넣음(5번 → 15분 차단). 관리자 = 처음 만든 계정. `SIGNUP_OPEN=false` 로 초대 가입까지 막을 수 있음.
 - **2단계 인증 필수** (`REQUIRE_TOTP`, 사용자 결정 2026-11-25): `get_current_user` = `get_user_before_totp` + 2단계 확인. 등록 전 토큰으로는 /me·setup/enable-totp·비밀번호 변경·logout-all 만.

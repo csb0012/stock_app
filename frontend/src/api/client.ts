@@ -100,7 +100,7 @@ export const kisApi = {
   status: () => api.get("/kis/status"),
   orders: (kind: "open" | "all") => api.get("/kis/orders", { params: { kind } }),
   log: () => api.get("/kis/log"),
-  propose: () => api.post("/kis/propose", {}, { timeout: 600_000 }),
+  propose: (intraday = false) => api.post("/kis/propose", {}, { timeout: 600_000, params: intraday ? { intraday: true } : undefined }),
   approve: (ids: number[], totp_code: string) => api.post("/kis/orders/approve", { ids, totp_code }, { timeout: 120_000 }),
   reject: (ids: number[]) => api.post("/kis/orders/reject", { ids }),
   cancel: (id: number) => api.post(`/kis/orders/${id}/cancel`),
