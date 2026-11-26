@@ -1,3 +1,4 @@
+import { useNarrow } from "../components/common/useNarrow";
 import { Fragment, useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { ChevronDown, ChevronUp, ClipboardCheck, History, RefreshCw } from "lucide-react";
@@ -361,6 +362,7 @@ const VARIANT_LABEL: Record<string, string> = {
 function MethodCard({ methods, model, flows }: { methods: any[]; model: any; flows?: any }) {
   const pct = (v: any) => (v == null ? "-" : `${v}%`);
   const color = (v: any) => (v == null ? "var(--text-muted)" : v >= 55 ? "var(--green)" : v >= 50 ? "var(--yellow)" : "var(--red)");
+  const narrow = useNarrow();
   return (
     <div className="card" style={{ marginBottom: 20 }}>
       <p style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>예측 방식별 적중률</p>
@@ -368,6 +370,22 @@ function MethodCard({ methods, model, flows }: { methods: any[]; model: any; flo
         같은 기록을 방식별로 채점한 결과 · 전체 방향 적중률 = 50% 기준으로 전부 상승/하락 채점 (위 카드와 같은 기준) ·
         확신 예측 = 55% 이상·45% 이하로 강하게 말한 것만 · 확신 예측 비율 = 전체 중 그 비율
       </p>
+      {narrow ? (   // 휴대폰: 방식 하나 = 한 칸 (6칸 표는 제목이 한 글자씩 세로로 쪼개졌음)
+        <div data-testid="method-cards" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {methods.map((m) => (
+            <div key={m.key} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", fontSize: 12 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>{m.label}<span style={{ color: "var(--text-muted)", fontWeight: 400 }}> ({m.n}건)</span></div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px" }}>
+                <span style={{ color: "var(--text-muted)" }}>확신 예측 적중 <strong style={{ color: color(m.accuracy) }}>{pct(m.accuracy)}</strong> ({m.hit}/{m.calls})</span>
+                <span style={{ color: "var(--text-muted)" }}>전체 방향 <strong style={{ color: color(m.dir_accuracy) }}>{pct(m.dir_accuracy)}</strong></span>
+                <span style={{ color: "var(--text-muted)" }}>확신 상승 <strong style={{ color: color(m.up_accuracy) }}>{pct(m.up_accuracy)}</strong></span>
+                <span style={{ color: "var(--text-muted)" }}>확신 하락 <strong style={{ color: color(m.down_accuracy) }}>{pct(m.down_accuracy)}</strong></span>
+                <span style={{ color: "var(--text-muted)" }}>확신 예측 비율 {pct(m.coverage)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
       <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 2fr) repeat(5, 1fr)", gap: "8px 12px", fontSize: 12, alignItems: "center" }}>
         {["방식", "확신 예측 적중률", "확신 상승", "확신 하락", "전체 방향 적중률", "확신 예측 비율"].map((h) => (
           <span key={h} style={{ color: "var(--text-muted)" }}>{h}</span>
@@ -383,6 +401,7 @@ function MethodCard({ methods, model, flows }: { methods: any[]; model: any; flo
           </Fragment>
         ))}
       </div>
+      )}
       {model && (
         <div style={{ marginTop: 14, borderTop: "1px solid var(--border)", paddingTop: 10, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
           <p style={{ color: "var(--text-muted)" }}>실시간 화면에 쓰는 방식 — ① 결합(모델+규칙을 백테스트 성적만큼 섞고 보정: 방향 50% 초과 + 판정이 50%·규칙보다 좋을 때) → ② 모델 단독(우연 수준을 넘을 때) → ③ 규칙 점수</p>

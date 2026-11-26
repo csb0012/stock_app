@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bot, History, Play, RefreshCw, Trash2, Pause, Info, ChevronDown, ChevronUp, Square } from "lucide-react";
 import { paperApi, errMsg, type PaperParams } from "../api/client";
 import { fmtPrice } from "../components/common/format";
+import { useNarrow } from "../components/common/useNarrow";
 
 type Market = "KR" | "US";
 const TAB_KEY = "paper-tab";
@@ -149,9 +150,33 @@ function HowItWorks({ cfg }: { cfg: any }) {
   );
 }
 
+const rowSub: React.CSSProperties = { fontSize: 11.5, color: "var(--text-muted)" };
+
 function TradesTable({ trades, market, testid }: { trades: any[]; market: Market; testid: string }) {
   const [n, setN] = useState(30);
+  const narrow = useNarrow();
   if (!trades?.length) return <p style={{ fontSize: 12, color: "var(--text-muted)" }}>아직 거래가 없습니다</p>;
+  if (narrow) {   // 휴대폰: 거래 1건 = 한 칸 (표는 '매/수'가 세로로 쪼개지고 사유가 잘렸음)
+    return (
+      <div data-testid={testid}>
+        {trades.slice(0, n).map((t, i) => (
+          <div key={i} style={{ borderBottom: "1px solid var(--border)", padding: "8px 2px", display: "flex", flexDirection: "column", gap: 3 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 13, minWidth: 0 }}>
+                <strong style={{ color: t.side === "buy" ? "var(--accent)" : "var(--text-primary)", marginRight: 6 }}>{t.side === "buy" ? "매수" : "매도"}</strong>
+                <strong>{t.name}</strong> <span style={rowSub}>{t.symbol}</span>
+              </span>
+              {t.pnl != null && <strong style={{ fontSize: 12.5, color: pctColor(t.pnl), whiteSpace: "nowrap" }}>{pct(t.pnl_pct, 1)}</strong>}
+            </div>
+            <div style={rowSub}>{String(t.date || t.ts).slice(0, 16).replace("T", " ")} · {t.qty.toLocaleString()}주 × {fmtPrice(t.price, market)}
+              {t.pnl != null && ` · 손익 ${fmtPrice(t.pnl, market)}`}</div>
+            {t.reason && <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>{t.reason}</div>}
+          </div>
+        ))}
+        {trades.length > n && <button className="btn btn-ghost" style={{ fontSize: 12, marginTop: 6 }} onClick={() => setN(n + 50)}>더 보기 ({trades.length - n}건 남음)</button>}
+      </div>
+    );
+  }
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 640 }} data-testid={testid}>
@@ -181,7 +206,25 @@ function TradesTable({ trades, market, testid }: { trades: any[]; market: Market
 }
 
 function PositionsTable({ positions, market, testid }: { positions: any[]; market: Market; testid: string }) {
+  const narrow = useNarrow();
   if (!positions?.length) return <p style={{ fontSize: 12, color: "var(--text-muted)" }}>보유 종목 없음 (전부 현금)</p>;
+  if (narrow) {   // 휴대폰: 보유 종목 1개 = 한 칸 (표는 현재가 이후가 잘렸음)
+    return (
+      <div data-testid={testid} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {positions.map((p) => (
+          <div key={p.symbol} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <strong style={{ fontSize: 13.5 }}>{p.name} <span style={{ ...rowSub, fontWeight: 400 }}>{p.symbol}</span></strong>
+              <strong style={{ color: pctColor(p.ret_pct) }}>{pct(p.ret_pct)}</strong>
+            </div>
+            <div style={rowSub}>{p.qty.toLocaleString()}주 · 매입 {fmtPrice(p.avg_price, market)} → 현재 {fmtPrice(p.last, market)}</div>
+            <div style={rowSub}>손절 <span style={{ color: "var(--red)" }}>{fmtPrice(p.stop, market)}</span> · 목표 <span style={{ color: "var(--green)" }}>{fmtPrice(p.target, market)}</span> · 보유 {p.hold_days}일</div>
+            {p.reason && <div style={{ fontSize: 11.5, color: "var(--text-secondary)", lineHeight: 1.5 }}>{p.reason}</div>}
+          </div>
+        ))}
+      </div>
+    );
+  }
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 640 }} data-testid={testid}>

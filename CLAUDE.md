@@ -290,6 +290,8 @@ components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관�
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
                      LongTermPanel (장기 보유 분석 표·지수 카드), format.ts,
+                     useNarrow (640px 이하 = 휴대폰 — KIS·캘린더·AI 모의투자·예측 검증은 표 대신 카드), 챗봇 버튼·창 위치는 index.css .chat-fab/.chat-panel (휴대폰 작게),
+                     종목탐색 표 .scr-table 휴대폰 여백·한 줄,
                      useLivePrices (국내 장중에만 2초마다 /stocks/live — 관심종목·종목 상세 카드 현재가 덮어쓰기, withLive) · LiveBadge ('● 실시간 HH:MM:SS')
 index.css          — CSS 변수 테마: 다크(:root 기본) / 화이트(:root[data-theme="light"]: #F5F5F5·#FFFFFF 바탕, 파랑 #006CE1, 사이드바 #4F4F4F)
                      색은 직접 쓰지 말고 var(--accent) 등 변수, 옅은 배경은 color-mix(in srgb, var(--green) 7%, transparent)

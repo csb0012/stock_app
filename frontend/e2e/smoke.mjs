@@ -1297,11 +1297,65 @@ async function run() {
       }
     });
   }
+  await test("휴대폰 390px: 캘린더·AI 모의투자는 카드 · 투자종목 칸 안 잘림 · 브리핑 새로고침 한 줄 · 예측 검증·종목탐색", { width: 390, height: 844, api: makeApi({
+    "GET /api/predictions/review": RF.REVIEW, "GET /api/predictions/backtest/status": RF.BACKTEST_STATUS,
+    "GET /api/stocks/screener/kr/trading_value": [
+      { symbol: "005930", name: "삼성전자", market: "KR", price: 177800, change_rate: -2.89, volume: 1, trading_value_display: "1.2조" },
+      { symbol: "000660", name: "SK하이닉스", market: "KR", price: 200000, change_rate: 1.2, volume: 1, trading_value_display: "8,400억" }] }) }, async (page) => {
+    await page.goto(`${BASE}/calendar`);
+    const cards = page.getByTestId("cal-card");
+    await cards.first().waitFor();
+    expect(await page.locator("main table, .page-body table").count() === 0, "휴대폰 캘린더에 표가 남음");
+    const c0 = cards.first();
+    const ev = await c0.locator("strong").first().evaluate((e) => e.getBoundingClientRect().width);
+    expect(ev > 120, `이벤트 이름 칸이 너무 좁음(${ev}px)`);
+    await c0.getByRole("button").click();
+    expect((await c0.getAttribute("data-testid")) === "cal-card" && (await c0.getByRole("button").getAttribute("aria-expanded")) === "true", "눌러도 해설이 안 펼쳐짐");
+    await noHScroll(page);
+    await shot(page, "m2-calendar");
+    await page.goto(`${BASE}/`);
+    await page.getByRole("button", { name: "새로고침" }).first().waitFor();
+    await page.getByText("브로드컴").first().waitFor();
+    const nmText = await page.getByText("브로드컴").first().evaluate((e) => [e.scrollWidth, e.clientWidth]);
+    expect(nmText[0] <= nmText[1] + 1, `대시보드 빅테크 이름이 잘림: ${nmText}`);
+    const rb = await page.getByRole("button", { name: "새로고침" }).first().boundingBox();
+    expect(rb && rb.height < 48, `새로고침 버튼이 세로로 쪼개짐 (높이 ${rb?.height})`);
+    await page.goto(`${BASE}/portfolio`);
+    await page.getByText("오늘 손익 · 비중").first().waitFor();
+    const today = await page.getByText("오늘 손익 · 비중").first().boundingBox();
+    expect(today && today.x + today.width <= 390, `투자종목 '오늘 손익' 칸이 화면 밖: ${JSON.stringify(today)}`);
+    await shot(page, "m2-portfolio");
+    await page.goto(`${BASE}/paper`);
+    await page.getByTestId("account-detail").waitFor().catch(() => {});
+    expect(await page.locator(".page-body table").count() === 0, "휴대폰 AI 모의투자에 표가 남음");
+    const fab = await page.locator(".chat-fab").boundingBox();
+    expect(fab && fab.width <= 46, `챗봇 버튼이 큼 (${fab?.width}px)`);
+    await noHScroll(page);
+    await shot(page, "m2-paper");
+    await page.goto(`${BASE}/predictions`);
+    await page.getByTestId("fw-KR").waitFor();
+    expect(await page.getByTestId("method-cards").count() === 1, "휴대폰 예측 방식별 적중률이 카드가 아님");
+    await noHScroll(page);
+    await shot(page, "m2-predictions");
+    await page.goto(`${BASE}/screener`);
+    await page.getByText("SK하이닉스").first().waitFor();
+    for (const nm of ["삼성전자", "SK하이닉스"]) {   // 이름이 두 줄로 쪼개지지 않음
+      const h = await page.locator(".scr-name", { hasText: nm }).first().evaluate((e) => e.getBoundingClientRect().height);
+      expect(h < 24, `종목탐색 표 '${nm}' 이 두 줄 (${h}px)`);
+    }
+    const tbl = await page.locator(".scr-table").evaluate((e) => [e.scrollWidth, e.parentElement.clientWidth]);
+    expect(tbl[0] <= tbl[1] + 1, `종목탐색 표가 카드보다 넓음: ${tbl}`);
+    await noHScroll(page);
+    await shot(page, "m2-screener");
+  });
+
   await test("모든 화면 — 모바일 가로 스크롤 없음", { width: 390, height: 844 }, async (page) => {
-    for (const p of ["/", "/watchlist", "/calendar", "/screener", "/portfolio", "/quant", "/paper", "/mypage"]) {
+    for (const p of ["/", "/recommendations", "/screener", "/watchlist", "/portfolio", "/themes", "/quant", "/accumulation", "/paper", "/predictions",
+      "/calendar", "/mypage"]) {
       await page.goto(`${BASE}${p}`);
       await page.waitForLoadState("networkidle");
       await noHScroll(page);
+      await shot(page, `m${p === "/" ? "-dashboard" : p.replace("/", "-")}`);
     }
   });
 }

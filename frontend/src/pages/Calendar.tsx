@@ -2,6 +2,7 @@ import { useState } from "react";
 import type React from "react";
 import { useQuery } from "@tanstack/react-query";
 import FetchStatus from "../components/common/FetchStatus";
+import { useNarrow } from "../components/common/useNarrow";
 import { marketApi, errMsg } from "../api/client";
 import { AlertCircle, ChevronDown, ChevronUp } from "lucide-react";
 
@@ -110,8 +111,53 @@ function EventRow({ e, past }: { e: any; past: boolean }) {
   );
 }
 
+/** 휴대폰: 한 일정 = 한 칸 (표는 이벤트 이름이 한 글자씩 세로로 쪼개졌음) — 누르면 해설 */
+function EventCard({ e, past }: { e: any; past: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid="cal-card" style={{ borderBottom: "1px solid var(--border)" }}>
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        style={{ all: "unset", boxSizing: "border-box", width: "100%", cursor: "pointer", padding: "11px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
+          <strong style={{ fontSize: 13.5, flex: 1, minWidth: 0 }}>{e.event}</strong>
+          <span style={{ fontSize: 11.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{e.date?.slice(5, 10).replace("-", "/")}</span>
+          {open ? <ChevronUp size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />}
+        </div>
+        {e.period && <div style={{ fontSize: 11.5, color: "var(--text-muted)", paddingLeft: 15 }}>{e.period} · {e.explain?.metric}</div>}
+        {past ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", paddingLeft: 15, fontSize: 12.5 }}>
+            {e.released
+              ? <span>실제 <strong>{e.actual}</strong></span>
+              : <span style={{ color: "var(--text-muted)" }}>{e.note ? "값 없음" : "발표 전"}</span>}
+            {e.released && <span style={{ color: "var(--text-muted)" }}>이전 {e.prev}</span>}
+            <ChangeBadge e={e} />
+          </div>
+        ) : !e.period && e.explain?.metric ? <div style={{ fontSize: 11.5, color: "var(--text-muted)", paddingLeft: 15 }}>{e.explain.metric}</div> : null}
+      </button>
+      {open && (
+        <div style={{ padding: "2px 14px 12px 29px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
+          {e.note && <p style={{ fontSize: 12, color: "var(--yellow)", margin: "8px 0" }}>⚠ {e.note}</p>}
+          <div style={{ paddingTop: 8 }}><Explain e={e} /></div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EventTable({ title, events, past }: { title: string; events: any[]; past: boolean }) {
   const heads = past ? ["날짜", "이벤트", "실제", "이전", "변화", ""] : ["날짜", "이벤트", "발표 내용", ""];
+  const narrow = useNarrow();
+  if (narrow) {
+    return (
+      <section style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 10, letterSpacing: 1 }}>{title}</h2>
+        <div className="card" style={{ padding: 0 }}>
+          {events.map((e: any) => <EventCard key={`${e.key}-${e.date}`} e={e} past={past} />)}
+        </div>
+      </section>
+    );
+  }
   return (
     <section style={{ marginBottom: 32 }}>
       <h2 style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 12, letterSpacing: 1 }}>{title}</h2>

@@ -80,9 +80,10 @@ function UsRow({ item }: { item: any }) {
       display: "flex", alignItems: "center", justifyContent: "space-between",
       padding: "10px 0", borderBottom: "1px solid var(--border)", gap: 12,
     }}>
-      <div>
+      <div style={{ minWidth: 0, flexShrink: 0, maxWidth: "38%", display: "flex", flexDirection: "column" }}>
         <span style={{ fontWeight: 600, fontSize: 13 }}>{item.symbol}</span>
-        <span style={{ color: "var(--text-muted)", fontSize: 12, marginLeft: 8 }}>{item.name}</span>
+        {/* 이름은 한 줄 (휴대폰에서 '브/로드컴'처럼 쪼개지던 것) */}
+        <span style={{ color: "var(--text-muted)", fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={item.name}>{item.name}</span>
       </div>
       {item.error ? (
         <span style={{ color: "var(--red)", fontSize: 12 }}>조회 실패 — {item.error.slice(0, 60)}</span>
@@ -176,15 +177,16 @@ export default function Dashboard() {
   return (
     <div>
       {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 }}>
-        <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 28 }}>
+        <div style={{ minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>오늘의 시장 브리핑</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>{dateStr} {timeStr} 기준</p>
           <p style={{ color: "var(--text-muted)", fontSize: 11, marginTop: 2 }}>
             국내 지수: KIS 실시간 · 해외 지수·종목·환율: Yahoo Finance (정규장 종가 기준, 미국 종목은 시간외 가격 따로 표시, 장중 최대 15분 지연) · 한국 낮 시간엔 미국 주간거래 가격(KIS) 함께 표시
           </p>
         </div>
-        <button className="btn btn-ghost" onClick={() => all.forEach((q) => q.refetch())} disabled={anyFetching}>
+        <button className="btn btn-ghost" onClick={() => all.forEach((q) => q.refetch())} disabled={anyFetching}
+          style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
           <RefreshCw size={14} style={{ animation: anyFetching ? "spin 1s linear infinite" : "none" }} />
           새로고침
         </button>

@@ -74,9 +74,8 @@ export default function ChatWidget() {
   return (
     <>
       {open && (
-        <div role="dialog" aria-label="챗봇" style={{
-          position: "fixed", right: 24, bottom: 90, zIndex: 1000, width: "min(440px, calc(100vw - 32px))",
-          height: "min(640px, calc(100vh - 120px))", display: "flex", flexDirection: "column",
+        <div role="dialog" aria-label="챗봇" className="chat-panel" style={{
+          display: "flex", flexDirection: "column",
           background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 14,
           boxShadow: "0 12px 40px rgba(0,0,0,0.25)", overflow: "hidden",
         }}>
@@ -160,8 +159,8 @@ export default function ChatWidget() {
         onClick={() => setOpen((o) => !o)}
         title={open ? "챗봇 닫기" : "챗봇 열기"}
         aria-label={open ? "챗봇 닫기" : "챗봇 열기"}
+        className="chat-fab"
         style={{
-          position: "fixed", right: 24, bottom: 24, zIndex: 1000, width: 54, height: 54, borderRadius: 27,
           border: "none", cursor: "pointer", background: "var(--accent)", color: "var(--on-accent)",
           display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 20px rgba(0,0,0,0.25)",
         }}

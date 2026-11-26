@@ -374,7 +374,8 @@ export default function Portfolio() {
                 )}
 
                 {/* 보유 정보 + 수익 */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 12 }}>
+                {/* 넓으면 5칸 한 줄, 휴대폰은 3칸씩 (예전엔 5칸 고정이라 오른쪽이 잘렸음) */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8, marginBottom: 12 }}>
                   <div style={{ background: "var(--bg-secondary)", borderRadius: 7, padding: "8px 12px" }}>
                     <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 2 }}>수량</p>
                     {isEditing ? (

@@ -146,8 +146,8 @@ export default function Screener() {
         </div>
       ) : (
         <>
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+          <table className="scr-table" style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)" }}>
                 {[
@@ -158,7 +158,7 @@ export default function Screener() {
                   mode === "volume_surge" ? "거래량 증가율" : "",
                   "",
                 ].map((h, i) => (
-                  <th key={i} style={{ padding: "12px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  <th key={i} className={i === 4 && mode !== "volume_surge" ? "scr-empty" : undefined} style={{ padding: "12px 16px", textAlign: "left", fontSize: 11, color: "var(--text-muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
                     {h}
                   </th>
                 ))}
@@ -181,10 +181,10 @@ export default function Screener() {
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         {chg >= 0
-                          ? <TrendingUp size={14} style={{ color: "var(--green)" }} />
-                          : <TrendingDown size={14} style={{ color: "var(--red)" }} />}
-                        <div>
-                          <p style={{ fontWeight: 600, fontSize: 13 }}>{item.name}</p>
+                          ? <TrendingUp size={14} className="scr-icon" style={{ color: "var(--green)" }} />
+                          : <TrendingDown size={14} className="scr-icon" style={{ color: "var(--red)" }} />}
+                        <div style={{ minWidth: 0 }}>
+                          <p className="scr-name" style={{ fontWeight: 600, fontSize: 13 }} title={item.name}>{item.name}</p>
                           <p style={{ color: "var(--text-muted)", fontSize: 11 }}>{item.symbol}</p>
                         </div>
                       </div>
@@ -203,7 +203,7 @@ export default function Screener() {
                             ? `${((item.volume || 0) / 1_000_000).toFixed(1)}M`
                             : `${((item.volume || 0) / 1_000).toFixed(0)}K`)}
                     </td>
-                    <td style={{ padding: "12px 16px" }}>
+                    <td className={mode !== "volume_surge" ? "scr-empty" : undefined} style={{ padding: "12px 16px" }}>
                       {mode === "volume_surge" && item.volume_ratio !== undefined && (
                         <span style={{
                           color: item.volume_ratio > 500 ? "var(--red)" : item.volume_ratio > 200 ? "var(--yellow)" : "var(--text-secondary)",
@@ -226,7 +226,7 @@ export default function Screener() {
                         }}
                       >
                         {isInWatchlist ? <Check size={13} /> : <Star size={13} />}
-                        {isInWatchlist ? "추가됨" : "관심"}
+                        <span className="scr-btn-label">{isInWatchlist ? "추가됨" : "관심"}</span>
                       </button>
                     </td>
                   </tr>

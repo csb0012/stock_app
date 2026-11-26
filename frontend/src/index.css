@@ -166,6 +166,24 @@ body {
   .page-body { padding: 8px 16px 24px; }
 }
 
+/* 챗봇 버튼·창 — 휴대폰에선 버튼을 작게·가장자리로 (내용 오른쪽을 덜 가리게), 창은 화면 폭에 맞춤 */
+.chat-fab { position: fixed; right: 24px; bottom: 24px; z-index: 1000; width: 54px; height: 54px; border-radius: 27px; }
+.chat-panel { position: fixed; right: 24px; bottom: 90px; z-index: 1000; width: min(440px, calc(100vw - 32px)); height: min(640px, calc(100vh - 120px)); }
+@media (max-width: 640px) {
+  .chat-fab { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); width: 44px; height: 44px; border-radius: 22px; opacity: 0.92; }
+  .chat-fab svg { width: 19px; height: 19px; }
+  .chat-panel { right: 8px; left: 8px; width: auto; bottom: calc(64px + env(safe-area-inset-bottom)); height: calc(100dvh - 120px); }
+  .page-body { padding-bottom: 72px; }   /* 맨 아래 내용이 챗봇 버튼에 가리지 않게 */
+}
+
+/* 종목탐색 표 — 휴대폰에선 칸 여백을 줄이고 한 줄로 (이름이 '삼성전/자'처럼 쪼개지던 것), 빈 칸·아이콘·버튼 글자는 숨김 */
+@media (max-width: 640px) {
+  .scr-table th, .scr-table td { padding: 10px 5px !important; white-space: nowrap; font-size: 12px !important; }
+  .scr-table th:first-child, .scr-table td:first-child { padding-left: 12px !important; }
+  .scr-table .scr-icon, .scr-table .scr-empty, .scr-table .scr-btn-label { display: none; }
+  .scr-table .scr-name { max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
 /* 숫자·글자 입력칸 (AI 모의투자 등) */
 .input {
   padding: 7px 10px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 7px;
