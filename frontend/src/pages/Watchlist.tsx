@@ -547,8 +547,8 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                     <td className="num">
                       <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /> <PriceSource src={r.price_source} /></div>
                       {r.daytime && !r.daytime.error && (
-                        <div style={{ fontSize: 10.5, color: "var(--accent)" }} title={`주간거래 ${r.daytime.time} 조회`}>
-                          주간 {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)
+                        <div data-testid="daytime-short" style={{ fontSize: 10.5, color: "var(--accent)" }} title={`${r.daytime.label || "주간거래"} ${r.daytime.time}`}>
+                          {{ 프리마켓: "프리", 애프터마켓: "애프터" }[r.daytime.label as string] || "주간"} {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)
                         </div>
                       )}
                     </td>

@@ -389,7 +389,7 @@ async def get_quote(market: str, symbol: str, current_user: User = Depends(get_c
     if market == "KR":
         from app.services import accumulation
         r = {**r, "quant": accumulation.quant_of(symbol)}
-    rows = await us_daytime.attach([strip_candles(r)])   # 미국이면 주간거래 가격 (표시 전용)
+    rows = await us_daytime.attach([strip_candles(r)])   # 미국이면 주간거래·프리·애프터마켓 가격 (표시 전용)
     return (await prediction_log.attach_tracks(rows))[0]
 
 
@@ -441,7 +441,7 @@ async def get_recommendations(kind: str, current_user: User = Depends(get_curren
         raise HTTPException(status_code=404, detail="kind 는 longterm 또는 shortterm")
     try:
         data = await _live(kind)
-        items = await us_daytime.attach(data.get("items") or [])   # 미국 주간거래 (표시 전용)
+        items = await us_daytime.attach(data.get("items") or [])   # 미국 주간거래·프리·애프터마켓 (표시 전용)
         return {**data, "items": await prediction_log.attach_tracks(items)}   # 종목별 예측 적중 기록
     except HTTPException:
         raise

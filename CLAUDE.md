@@ -108,9 +108,12 @@ services/
                    submit(직전 확인: 정지·기한·장 시간(09:01~15:20)·하루 횟수·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·가격(+3%/−6%)·1회 한도 →
                    'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) · refresh_fills(체결 내역 → expected/meta) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
                    loop(1분, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
-  us_daytime.py  — 미국 주간거래 가격 (한국 10:00~18:00, 서머타임 ~17:00 · 블루오션): 주간거래 시간에만 KIS 조회, 종목별 30초 캐시,
-                   attach(rows) 가 미국 행에 daytime{price,base,change_rate,time} 을 붙인 **새 목록** 반환 (캐시된 원본 안 바꿈).
-                   표시 전용 — 예측 확률·매입가 계산엔 안 씀. 관심종목·투자종목·AI 추천·종목 조회·대시보드 빅테크/ETF 응답에 붙음
+  us_daytime.py  — 미국 정규장 밖 가격 → 행의 daytime{label,price,base,change_rate,time} (label 주간거래/프리마켓/애프터마켓, 시간대는 겹치지 않음):
+                   주간거래(한국 10:00~18:00, 서머타임 ~17:00 · 블루오션) = KIS, 종목별 30초 캐시 /
+                   프리마켓(04:00~09:30 ET)·애프터마켓(16:00~20:00 ET, market_calendar.us_ext_session) = Yahoo 5분봉 prepost 의 오늘 그 시간대 마지막 체결,
+                   행의 현재가(KIS 정규장 종가) 대비 등락률, 60초 캐시, 빈 응답·봉 없는 종목은 error (KIS 해외 현재가는 정규장 가격만 줘서).
+                   attach(rows, extended) 가 **새 목록** 반환 (캐시된 원본 안 바꿈). 표시 전용 — 예측 확률·매입가 계산엔 안 씀.
+                   관심종목·투자종목·AI 추천·종목 조회 응답에 붙음. 대시보드 빅테크/ETF 는 주간거래만(extended=False — 시간외는 market_data 의 ext)
   invites.py     — 초대 코드: 헷갈리는 글자 뺀 12글자(XXXX-XXXX-XXXX, 약 60비트), HMAC(SECRET_KEY) 해시만 저장, 1회용·기본 3일(1~14)·관리자당 사용 가능 10개,
                    consume = 조건부 UPDATE (같은 코드 동시 가입은 한 명만)
   pwned.py       — 유출 비밀번호 확인 (Have I Been Pwned range API, SHA-1 앞 5글자만 전송 + Add-Padding, 앞자리 캐시). 확인 못 하면 None(막지 않음)
@@ -264,7 +267,7 @@ pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검�
                      Login(회원가입·비밀번호 찾기 링크, 아이디·이메일·휴대폰 번호), Signup·ForgotPassword(이메일/휴대폰 탭 → 코드),
                      MyPage(관리자면 관리자 페이지 링크·프로필 카드·닉네임·본인인증(이메일/휴대폰)·비밀번호·2단계 인증·로그인 기기/최근 활동·모든 기기 로그아웃·CSV 내려받기·탈퇴)
                      (챗봇은 페이지가 아니라 모든 화면 오른쪽 아래 ChatWidget)
-components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관리자 전용': 관리자 · KIS 모의투자 주문)·장 운영 상태(미국 주간거래 중 표시) + 페이지 오른쪽 위 상단 바(닉네임(없으면 아이디) = 마이페이지 링크, 이메일·휴대폰 둘 다 미인증이면 노란 점·화이트/다크 모드·로그아웃) + ChatWidget.
+components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관리자 전용': 관리자 · KIS 모의투자 주문)·장 운영 상태(미국 주간거래·프리마켓·애프터마켓 중 표시) + 페이지 오른쪽 위 상단 바(닉네임(없으면 아이디) = 마이페이지 링크, 이메일·휴대폰 둘 다 미인증이면 노란 점·화이트/다크 모드·로그아웃) + ChatWidget.
                      폭 860px 이하(휴대폰)는 사이드바가 ☰ 버튼으로 여닫는 메뉴 — index.css .app-shell/.sidebar/.page-body),
                      ChatWidget (챗봇, Esc 로 닫기), Markdown (챗봇 답변 표·목록), ThemeToggle, FetchStatus (기준 시각·갱신 중),
                      Toast (버튼 요청 실패 알림), TotpSection (마이페이지 2단계 인증 켜기/끄기), AuthForm (로그인류 화면 틀·비밀번호 규칙 안내·
@@ -272,7 +275,7 @@ components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관�
                      AdminPanels (관리자 페이지: InvitePanel 초대 코드 만들기(코드는 한 번만 보임)·목록·취소 / MemberPanel 회원 목록·상세·차단 — 2단계 코드 입력),
                      accountEvents.ts (활동 기록 종류 이름·기기 이름 — 마이페이지·관리자 공통),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
-                     PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래 가격 배지),
+                     PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래·프리마켓·애프터마켓 가격 배지 — label 대로),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
                      LongTermPanel (장기 보유 분석 표·지수 카드), format.ts,

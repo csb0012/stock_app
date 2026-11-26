@@ -142,7 +142,7 @@ async def analyze_watchlist(
     items = [_to_dict(i) for i in result.scalars().all()]
     key = (current_user.id, tuple((i["id"], i["symbol"], i["market"], i["memo"], i["target_price"]) for i in items))
     rows = await _analysis_cache.get(key, lambda: _analyze(items), wrap=False)
-    rows = await us_daytime.attach(rows)   # 미국 주간거래 가격 (한국 낮 시간만, 표시 전용)
+    rows = await us_daytime.attach(rows)   # 미국 정규장 밖 가격 (주간거래·프리마켓·애프터마켓, 표시 전용)
     return await prediction_log.attach_tracks(rows)   # 종목별 최근 90일 예측 적중 기록
 
 

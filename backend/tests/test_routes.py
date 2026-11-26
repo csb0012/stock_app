@@ -25,7 +25,7 @@ def analyzed(symbol, market, price):
 
 @pytest.fixture
 def daytime_on(monkeypatch):
-    async def fake_many(symbols):
+    async def fake_many(symbols, extended=True):
         return {s: dict(DAY) for s in symbols if s == "AVGO"}
     monkeypatch.setattr(us_daytime, "get_many", fake_many)
 
@@ -130,6 +130,26 @@ def test_market_status_daytime_field(api_client):
     st = client.get("/api/market/status").json()
     assert set(st["US"]["daytime"]) >= {"open", "session_date", "hours_kst", "end_kst"}
     assert "daytime" not in st["KR"]
+    assert set(st["US"]["extended"]) >= {"open", "label", "hours_kst"} and "extended" not in st["KR"]
+
+
+def test_market_bigtech_skips_extended(api_client, monkeypatch):
+    """대시보드 빅테크·ETF 는 시간외 가격(ext)이 따로 있어서 프리·애프터마켓을 daytime 으로 또 붙이지 않음"""
+    client, _, _ = api_client
+    from app.api.routes import market
+    seen = []
+
+    async def fake_many(symbols, extended=True):
+        seen.append(extended)
+        return {}
+    monkeypatch.setattr(us_daytime, "get_many", fake_many)
+
+    async def fake_bigtech():
+        return {"items": [{"symbol": "AVGO", "name": "브로드컴", "price": 304.41}]}
+    monkeypatch.setitem(market._SECTIONS, "bigtech", fake_bigtech)
+    market._overview.invalidate()
+    client.get("/api/market/overview/bigtech")
+    assert seen == [False]
 
 
 def test_quote_us_daytime(api_client, monkeypatch, daytime_on):

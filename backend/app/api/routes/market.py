@@ -46,8 +46,8 @@ async def get_overview_section(section: str, current_user: User = Depends(get_cu
         raise HTTPException(status_code=404, detail=f"section 은 {list(_SECTIONS)} 중 하나")
     try:
         data = await overview_section(section)
-        if section in ("bigtech", "etfs"):   # 미국 주간거래 가격 (한국 낮 시간만, 캐시와 별개로 30초마다)
-            data = {**data, "items": await us_daytime.attach(data.get("items") or [], market_key=None)}
+        if section in ("bigtech", "etfs"):   # 미국 주간거래 가격 (한국 낮 시간만, 캐시와 별개로 30초마다). 프리·애프터마켓은 이 구역의 ext 가 따로 있음
+            data = {**data, "items": await us_daytime.attach(data.get("items") or [], market_key=None, extended=False)}
         return data
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"{section} 조회 실패 — {e}")

@@ -48,6 +48,12 @@ for (let i = 0; i < 4; i++) WATCHLIST.push(wl(10 + i, `00${i}660`, "KR", `테스
 export const WATCH_LIST_BASIC = WATCHLIST.map(({ id, symbol, market, name, memo, target_price, added_at }) =>
   ({ id, symbol, market, name, memo, target_price, added_at }));
 
+// 애프터마켓 (Yahoo 5분봉) — 관심종목 등의 daytime 자리에 label 만 다르게 옴
+export const AFTER = {
+  label: "애프터마켓", price: 307.5, base: 304.41, change: 3.09, change_rate: 1.02, volume: 0,
+  time: "09:15", et_time: "19:15 ET", hours_kst: "06:00~10:00", source: "Yahoo 시간외",
+};
+
 export const MARKET_STATUS = {
   KR: { market: "KR", state: "장 마감", open: false, local_time: "17:31", next_open: "2026-11-24", next_open_label: "내일", next_open_kst: "화 11/24 09:00" },
   US: { market: "US", state: "개장 전", open: false, local_time: "03:31", next_open: "2026-11-23", next_open_label: "월요일(11/23)", next_open_kst: "월 11/23 23:30",

@@ -90,7 +90,7 @@ def market_status(market: str) -> dict:
         # 다음 개장 시각을 한국시간으로 (미국장은 날짜가 하루 어긋나 보이므로)
         "next_open_kst": _kst_open(market, nxt) if nxt else None,
         # 미국: 한국 낮 시간 주간거래 (정규장과 별개)
-        **({"daytime": us_daytime_session()} if market == "US" else {}),
+        **({"daytime": us_daytime_session(), "extended": us_ext_session()} if market == "US" else {}),
     }
 
 
@@ -109,6 +109,32 @@ def us_daytime_session(now: datetime | None = None) -> dict:
         "hours_kst": f"10:00~{end:%H:%M}",
         "end_kst": f"{end:%H:%M}",
     }
+
+
+EXT_PRE = (4 * 60, 9 * 60 + 30)        # 프리마켓 04:00~09:30 ET
+EXT_AFTER = (16 * 60, 20 * 60)         # 애프터마켓 16:00~20:00 ET
+
+
+def us_ext_session(now: datetime | None = None) -> dict:
+    """미국 시간외(프리마켓·애프터마켓) 시간인지 — 미국 날짜가 거래일일 때만.
+    → {open, label('프리마켓'|'애프터마켓'|None), session_date(미국 날짜), start_et·end_et(분), hours_kst}"""
+    us, kr = _TZ["US"], _TZ["KR"]
+    n = (now or datetime.now(us)).astimezone(us)
+    d = n.date()
+    hm = n.hour * 60 + n.minute
+    label, win = None, None
+    if is_trading_day("US", d):
+        open_hm, close_hm = session_hours("US", d)
+        if EXT_PRE[0] <= hm < open_hm:
+            label, win = "프리마켓", (EXT_PRE[0], open_hm)
+        elif close_hm <= hm < EXT_AFTER[1]:
+            label, win = "애프터마켓", (close_hm, EXT_AFTER[1])
+    hours = None
+    if win:
+        a, b = (datetime(d.year, d.month, d.day, m // 60, m % 60, tzinfo=us).astimezone(kr) for m in win)
+        hours = f"{a:%H:%M}~{b:%H:%M}"
+    return {"open": label is not None, "label": label, "session_date": d.isoformat(),
+            "start_et": win[0] if win else None, "end_et": win[1] if win else None, "hours_kst": hours}
 
 
 def _kst_open(market: str, d: date) -> str:

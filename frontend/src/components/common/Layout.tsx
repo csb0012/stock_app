@@ -160,6 +160,11 @@ function MarketStatus() {
                 주간거래 중 (~{st.daytime.end_kst})
               </div>
             )}
+            {st.extended?.open && (
+              <div style={{ color: "var(--accent)", paddingLeft: 12 }} title="미국 정규장 밖 거래 — 관심종목·투자종목·AI 추천에 그 가격을 따로 표시 (Yahoo 5분봉)">
+                {st.extended.label} 중 (~{st.extended.hours_kst?.split("~")[1]})
+              </div>
+            )}
           </div>
         );
       })}

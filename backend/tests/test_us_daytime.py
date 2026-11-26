@@ -120,6 +120,8 @@ def fake_kis(monkeypatch):
         return {"price": p, "base": b, "change": 0, "change_rate": 0, "volume": 10}
     monkeypatch.setattr(kis_client, "get_us_daytime_price", fake_price)
     monkeypatch.setattr(us_daytime, "us_daytime_session", lambda: SESSION)
+    # 실제 시각이 프리·애프터마켓이어도 Yahoo 를 부르지 않게 (주간거래만 보는 테스트)
+    monkeypatch.setattr(us_daytime, "us_ext_session", lambda: {"open": False, "label": None})
     yield state
     us_daytime._cache.clear()
 
@@ -168,3 +170,137 @@ def test_attach_market_key_none_for_dashboard_rows(fake_kis):
 
 def test_attach_empty():
     assert run(us_daytime.attach([])) == []
+
+
+# ---------------- 프리마켓 · 애프터마켓 (Yahoo 5분봉) ----------------
+import pandas as pd
+
+NY = ZoneInfo("America/New_York")
+
+
+def et(y, m, d, hh, mm):
+    return datetime(y, m, d, hh, mm, tzinfo=NY)
+
+
+@pytest.mark.parametrize("when, label, hours", [
+    (et(2026, 11, 25, 19, 20), "애프터마켓", "06:00~10:00"),   # 사용자가 본 시각 (한국 11/26 09:20)
+    (et(2026, 11, 25, 16, 0), "애프터마켓", "06:00~10:00"),
+    (et(2026, 11, 25, 15, 59), None, None),                    # 정규장
+    (et(2026, 11, 25, 20, 0), None, None),                     # 애프터마켓 끝
+    (et(2026, 11, 25, 3, 59), None, None),
+    (et(2026, 11, 25, 4, 0), "프리마켓", "18:00~23:30"),
+    (et(2026, 11, 25, 9, 29), "프리마켓", "18:00~23:30"),
+    (et(2026, 11, 26, 17, 0), None, None),                     # 추수감사절 휴장
+    (et(2026, 11, 28, 17, 0), None, None),                     # 토요일
+    (et(2026, 7, 6, 17, 0), "애프터마켓", "05:00~09:00"),       # 서머타임
+])
+def test_ext_session(when, label, hours):
+    s = market_calendar.us_ext_session(when)
+    assert s["open"] == (label is not None) and s["label"] == label and s["hours_kst"] == hours
+
+
+def test_market_status_has_extended_only_for_us():
+    assert "extended" in market_calendar.market_status("US")
+    assert "extended" not in market_calendar.market_status("KR")
+
+
+def _bars(rows):
+    """[(ET 시각, {종목: 종가})] → yf.download(여러 종목) 모양"""
+    idx = pd.DatetimeIndex([t for t, _ in rows]).tz_convert(NY)
+    syms = sorted({s for _, d in rows for s in d})
+    close = pd.DataFrame([[d.get(s) for s in syms] for _, d in rows], index=idx, columns=syms, dtype=float)
+    return pd.concat({"Close": close}, axis=1)
+
+
+AFTER = market_calendar.us_ext_session(et(2026, 11, 25, 19, 20))
+PRE = market_calendar.us_ext_session(et(2026, 11, 25, 5, 0))
+BARS = [
+    (et(2026, 11, 24, 15, 55), {"AVGO": 300.0, "NVDA": 170.0}),
+    (et(2026, 11, 24, 19, 55), {"AVGO": 299.0}),                 # 전날 애프터마켓 — 오늘 프리마켓 값으로 쓰면 안 됨
+    (et(2026, 11, 25, 4, 30), {"AVGO": 301.0}),
+    (et(2026, 11, 25, 15, 55), {"AVGO": 304.0, "NVDA": 176.0}),
+    (et(2026, 11, 25, 16, 5), {"AVGO": 306.0}),
+    (et(2026, 11, 25, 19, 15), {"AVGO": 307.5}),
+]
+
+
+def test_yf_ext_sync_after_and_pre(monkeypatch):
+    import yfinance as yf
+    calls = []
+
+    def fake_download(symbols, **kw):
+        calls.append(kw)
+        return _bars(BARS)
+    monkeypatch.setattr(yf, "download", fake_download)
+    got = us_daytime._yf_ext_sync(["AVGO", "NVDA"], AFTER)
+    assert calls[0]["prepost"] is True and calls[0]["interval"] == "5m"
+    assert got["AVGO"]["price"] == 307.5 and got["AVGO"]["base"] == 304.0
+    assert got["AVGO"]["at"].strftime("%H:%M") == "19:15"
+    assert "NVDA" not in got                     # 애프터마켓 체결 없음 → 빠짐 (종가를 시간외 가격처럼 안 보임)
+    pre = us_daytime._yf_ext_sync(["AVGO"], PRE)
+    assert pre["AVGO"]["price"] == 301.0 and pre["AVGO"]["base"] == 300.0   # 전날 정규장 대비
+
+
+def test_yf_ext_sync_failures_are_errors(monkeypatch):
+    """yfinance 는 접속 실패에도 예외 없이 빈 표를 줌 → 조용히 사라지지 않고 오류. 봉이 하나도 없는 종목도 오류 (체결 없음과 구분)"""
+    import yfinance as yf
+    monkeypatch.setattr(yf, "download", lambda symbols, **kw: pd.DataFrame())
+    with pytest.raises(RuntimeError, match="응답 없음"):
+        us_daytime._yf_ext_sync(["AVGO"], AFTER)
+    monkeypatch.setattr(yf, "download", lambda symbols, **kw: _bars(BARS))
+    got = us_daytime._yf_ext_sync(["AVGO", "NVDA", "GONE"], AFTER)
+    assert "error" in got["GONE"] and "NVDA" not in got and got["AVGO"]["price"] == 307.5
+
+
+def test_build_ext_uses_row_close():
+    raw = {"price": 307.5, "base": 304.0, "at": et(2026, 11, 25, 19, 15)}
+    v = us_daytime.build_ext(raw, AFTER, 304.41)   # 행의 현재가 = KIS 정규장 종가
+    assert v["label"] == "애프터마켓" and v["price"] == 307.5 and v["base"] == 304.41
+    assert v["change_rate"] == pytest.approx(1.02, abs=0.01)
+    assert v["time"] == "09:15" and v["et_time"] == "19:15 ET" and v["source"] == "Yahoo 시간외"
+    assert us_daytime.build_ext(raw, AFTER)["change_rate"] == pytest.approx(1.15, abs=0.01)   # 행 가격 없으면 Yahoo 정규장 마지막 봉
+
+
+@pytest.fixture
+def after_hours(monkeypatch):
+    us_daytime._ext_cache.clear()
+    state = {"calls": 0, "fail": False}
+
+    def fake_sync(symbols, session):
+        state["calls"] += 1
+        if state["fail"]:
+            raise RuntimeError("Yahoo 막힘")
+        out = {s: {"price": 307.5, "base": 304.0, "at": et(2026, 11, 25, 19, 15)} for s in symbols if s == "AVGO"}
+        out.update({s: {"error": "Yahoo 5분봉 없음 (이 종목 조회 실패)"} for s in symbols if s == "GONE"})
+        return out
+    monkeypatch.setattr(us_daytime, "_yf_ext_sync", fake_sync)
+    monkeypatch.setattr(us_daytime, "us_daytime_session", lambda: {**SESSION, "open": False})
+    monkeypatch.setattr(us_daytime, "us_ext_session", lambda: AFTER)
+    yield state
+    us_daytime._ext_cache.clear()
+
+
+def test_attach_after_hours(after_hours):
+    rows = [{"symbol": "AVGO", "market": "US", "current_price": 304.41},
+            {"symbol": "NVDA", "market": "US", "current_price": 176.0},
+            {"symbol": "005930", "market": "KR", "current_price": 177800}]
+    out = run(us_daytime.attach(rows))
+    d = out[0]["daytime"]
+    assert d["label"] == "애프터마켓" and d["price"] == 307.5 and d["base"] == 304.41
+    assert "daytime" not in out[1] and "daytime" not in out[2]
+    run(us_daytime.attach(rows))                 # 60초 캐시 (체결 없음도)
+    assert after_hours["calls"] == 1
+    assert run(us_daytime.attach(rows, extended=False))[0].get("daytime") is None
+
+
+def test_attach_after_hours_error_not_cached(after_hours):
+    after_hours["fail"] = True
+    out = run(us_daytime.attach([{"symbol": "AVGO", "market": "US", "price": 304.41}]))
+    assert out[0]["daytime"]["label"] == "애프터마켓" and "Yahoo 막힘" in out[0]["daytime"]["error"]
+    after_hours["fail"] = False
+    out = run(us_daytime.attach([{"symbol": "AVGO", "market": "US", "price": 304.41}]))
+    assert out[0]["daytime"]["price"] == 307.5 and after_hours["calls"] == 2
+    out = run(us_daytime.attach([{"symbol": "GONE", "market": "US", "price": 1.0}]))
+    assert out[0]["daytime"]["label"] == "애프터마켓" and "조회 실패" in out[0]["daytime"]["error"]
+    run(us_daytime.attach([{"symbol": "GONE", "market": "US", "price": 1.0}]))
+    assert after_hours["calls"] == 4                # 종목 실패도 캐시 안 함

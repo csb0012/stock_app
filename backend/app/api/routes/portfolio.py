@@ -246,7 +246,7 @@ async def analyze_portfolio(
     ]
     key = (current_user.id, tuple(tuple(i.values()) for i in items))
     data = await _analysis_cache.get(key, lambda: _analyze(items))
-    return {**data, "items": await us_daytime.attach(data.get("items") or [])}   # 미국 주간거래 (표시 전용)
+    return {**data, "items": await us_daytime.attach(data.get("items") or [])}   # 미국 주간거래·프리·애프터마켓 (표시 전용)
 
 
 async def _analyze(items: list) -> dict:
