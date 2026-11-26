@@ -6,7 +6,7 @@ import { stockApi, errMsg } from "../../api/client";
 import ChangeTag from "./ChangeTag";
 import PredictionReasons from "./PredictionReasons";
 import PriceLevels from "./PriceLevels";
-import DaytimePrice from "./DaytimePrice";
+import DaytimePrice, { extPrice, SessionTag } from "./DaytimePrice";
 import QuantBadge, { TrackBadge } from "./QuantBadge";
 import NewsLink, { NewsSource } from "./NewsLink";
 import { fmtPrice, probColor, probLabel, sessionLabel } from "./format";
@@ -62,11 +62,12 @@ export default function StockQuoteCard({
           {/* 시세 + 지표 */}
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 22, fontWeight: 700 }}>{fmtPrice(live?.price ?? data.price, m)}</span>
-              <ChangeTag value={live?.change_rate ?? data.change_rate} />
+              {extPrice(data.daytime) && <SessionTag d={data.daytime} close={data.price} closeRate={data.change_rate} size={12} />}
+              <span data-testid="main-price" style={{ fontSize: 22, fontWeight: 700 }}>{fmtPrice(extPrice(data.daytime)?.price ?? live?.price ?? data.price, m)}</span>
+              <ChangeTag value={extPrice(data.daytime)?.change_rate ?? live?.change_rate ?? data.change_rate} />
               <LiveBadge t={live?.time} />
             </div>
-            {data.daytime && <div style={{ marginTop: 4 }}><DaytimePrice d={data.daytime} /></div>}
+            {data.daytime && !extPrice(data.daytime) && <div style={{ marginTop: 4 }}><DaytimePrice d={data.daytime} /></div>}
             {(data.quant || data.track) && (
               <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <QuantBadge q={data.quant} /><TrackBadge t={data.track} />

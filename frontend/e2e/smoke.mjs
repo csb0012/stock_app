@@ -491,20 +491,41 @@ async function run() {
     expect(await page.getByTestId("price-source").count() === 1, "KIS 가격인 종목에도 Yahoo 표시");
   });
 
-  await test("미국 애프터마켓: 관심종목 카드·표·사이드바에 애프터마켓 가격 (정규장 종가와 따로)", { api: makeApi({
+  await test("미국 애프터마켓: 관심종목 카드·표·종목탐색·AI 추천은 현재가 자리에 '애프터마켓' + 그 가격 (종가는 안 보임)", { api: makeApi({
     "GET /api/market/status": { ...F.MARKET_STATUS, US: { ...F.MARKET_STATUS.US, state: "장 마감", daytime: { ...F.MARKET_STATUS.US.daytime, open: false },
       extended: { open: true, label: "애프터마켓", session_date: "2026-11-25", hours_kst: "06:00~10:00" } } },
-    "GET /api/watchlist/analysis": F.WATCHLIST.map((w) => w.symbol === "AVGO" ? { ...w, daytime: F.AFTER } : w) }) }, async (page) => {
+    "GET /api/watchlist/analysis": F.WATCHLIST.map((w) => w.symbol === "AVGO" ? { ...w, daytime: F.AFTER } : w),
+    "GET /api/stocks/quote/US/AVGO": { ...F.QUOTE_AVGO, daytime: F.AFTER },
+    "GET /api/stocks/recommendations/shortterm": { ...F.RECS, items: F.RECS.items.map((r) => r.symbol === "AVGO" ? { ...r, daytime: F.AFTER } : r) },
+    "GET /api/stocks/recommendations/longterm": { ...F.RECS, items: F.RECS.items.map((r) => r.symbol === "AVGO" ? { ...r, daytime: F.AFTER } : r) } }) }, async (page) => {
     await page.goto(`${BASE}/watchlist`);
     await page.getByTestId("tab-US").click();
     const avgo = page.getByTestId("watch-card").filter({ hasText: "브로드컴" }).first();
-    const d = await avgo.getByTestId("daytime-price").innerText();
-    expect(d.includes("애프터마켓") && d.includes("$307.50") && d.includes("+1.02%") && !d.includes("주간거래"), `애프터마켓 배지: ${d}`);
-    expect((await avgo.innerText()).includes("$304.41"), "정규장 종가가 사라짐");
+    await avgo.getByTestId("session-tag").waitFor();
+    expect((await avgo.getByTestId("session-tag").innerText()) === "애프터마켓", "애프터마켓 표시 없음");
+    expect((await avgo.getByTestId("main-price").innerText()) === "$307.50", "현재가 자리가 애프터마켓 가격이 아님");
+    const c = await avgo.innerText();
+    expect(c.includes("+1.02%") && !c.includes("$304.41") && !c.includes("-12.19%"), `카드에 종가가 남음: ${c}`);
+    expect((await avgo.getByTestId("session-tag").getAttribute("title")).includes("정규장 종가 $304.41"), "종가 안내(마우스 올림) 없음");
     expect((await text(page)).includes("애프터마켓 중 (~10:00)"), "사이드바에 애프터마켓 중 표시 없음");
     await page.getByRole("button", { name: "표", exact: true }).click();
-    const short = await page.getByTestId("daytime-short").first().innerText();
-    expect(short.startsWith("애프터 $307.50"), `표 보기 애프터마켓: ${short}`);
+    const row = await page.locator("tr").filter({ hasText: "브로드컴" }).first().innerText();
+    expect(row.includes("애프터마켓") && row.includes("$307.50") && row.includes("+1.02%") && !row.includes("$304.41"), `표 보기: ${row}`);
+    // 종목탐색 (엔비디아 같은 종목 상세 카드)
+    await page.goto(`${BASE}/screener`);
+    await page.locator("input").first().fill("브로드컴");
+    await page.getByText("브로드컴").first().click();
+    const card = page.getByTestId("quote-card");
+    await card.getByTestId("session-tag").waitFor();
+    expect((await card.getByTestId("main-price").innerText()) === "$307.50", "종목탐색 현재가 자리가 애프터마켓 가격이 아님");
+    expect(!(await card.locator("div").filter({ has: page.getByTestId("main-price") }).first().innerText()).includes("$304.41"), "종목탐색에 종가가 남음");
+    // AI 추천 카드
+    await page.goto(`${BASE}/recommendations`);
+    await page.getByRole("button", { name: /미국/ }).first().click();
+    const rc = page.locator(".card").filter({ hasText: "브로드컴" }).filter({ has: page.getByTestId("session-tag") }).first();
+    await rc.waitFor();
+    expect((await rc.innerText()).includes("$307.50"), "AI 추천 카드에 애프터마켓 가격 없음");
+    await shot(page, "after-market");
   });
 
   await test("관심종목: 장 마감이면 실시간 요청 안 함", {}, async (page, api) => {

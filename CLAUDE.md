@@ -275,7 +275,7 @@ components/common/ — Layout (사이드바 메뉴(관리자면 아래에 '관�
                      AdminPanels (관리자 페이지: InvitePanel 초대 코드 만들기(코드는 한 번만 보임)·목록·취소 / MemberPanel 회원 목록·상세·차단 — 2단계 코드 입력),
                      accountEvents.ts (활동 기록 종류 이름·기기 이름 — 마이페이지·관리자 공통),
                      ChangeTag, WatchButton (관심 추가), AccumBadge (매집 점수), PredictionReasons (전망 근거, compact = 좁은 카드용), BuyPrice (추천 매입가),
-                     PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래·프리마켓·애프터마켓 가격 배지 — label 대로),
+                     PriceLevels (추천 매입가·목표가·손절가 3칸 — AI 추천·관심종목·종목탐색 공통), DaytimePrice (미국 주간거래·프리마켓·애프터마켓 가격 배지 — label 대로. extPrice()·SessionTag: 프리·애프터마켓이면 관심종목·종목탐색·AI 추천은 현재가 자리에 그 가격(종가는 마우스 올림), 투자종목은 손익 때문에 배지),
                      QuantBadge·TrackBadge (퀀트 등급·종목별 예측 적중), MarketRegime (대시보드 시장 상태 패널 + RegimeWarning 경고 줄),
                      NewsLink (원문 기사 링크, http/https 만), StockSearchBox (자동완성), StockQuoteCard (종목 상세: 시세·주간거래·전망·가격대·지표·뉴스),
                      LongTermPanel (장기 보유 분석 표·지수 카드), format.ts,

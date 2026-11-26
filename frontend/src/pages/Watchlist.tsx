@@ -9,7 +9,7 @@ import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import PriceLevels from "../components/common/PriceLevels";
-import DaytimePrice from "../components/common/DaytimePrice";
+import DaytimePrice, { extPrice, SessionTag } from "../components/common/DaytimePrice";
 import QuantBadge, { TrackBadge } from "../components/common/QuantBadge";
 import { RegimeWarning } from "../components/common/MarketRegime";
 import { fmtPrice, fmtSigned, probColor, probLabel, sessionLabel } from "../components/common/format";
@@ -431,6 +431,7 @@ function WatchCard({ item, analyzing, editing, onEdit, editor, onRemove }: {
   item: any; analyzing: boolean; editing: boolean; onEdit: () => void; editor: (item: any) => React.ReactNode; onRemove: () => void;
 }) {
   const pred = item.prediction;
+  const ext = extPrice(item.daytime);   // 미국 프리·애프터마켓이면 현재가 자리에 그 가격
   return (
     <div className="card" data-testid="watch-card" style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 9, minWidth: 0,
       borderColor: item.target_reached ? "color-mix(in srgb, var(--green) 50%, transparent)" : undefined }}>
@@ -462,11 +463,12 @@ function WatchCard({ item, analyzing, editing, onEdit, editor, onRemove }: {
       ) : item.current_price !== undefined ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <strong style={{ fontSize: 17, fontVariantNumeric: "tabular-nums" }}>{fmtPrice(item.current_price, item.market)}</strong>
-            <ChangeTag value={item.change_rate} />
+            {ext && <SessionTag d={ext} close={item.current_price} closeRate={item.change_rate} />}
+            <strong data-testid="main-price" style={{ fontSize: 17, fontVariantNumeric: "tabular-nums" }}>{fmtPrice(ext ? ext.price : item.current_price, item.market)}</strong>
+            <ChangeTag value={ext ? ext.change_rate : item.change_rate} />
             <LiveBadge t={item.live_time} />
-            <PriceSource src={item.price_source} />
-            <DaytimePrice d={item.daytime} size={11.5} />
+            {!ext && <PriceSource src={item.price_source} />}
+            {!ext && <DaytimePrice d={item.daytime} size={11.5} />}
           </div>
           <div style={{ display: "flex", gap: 10, fontSize: 11.5, color: "var(--text-secondary)", flexWrap: "wrap" }}>
             <span>5일 <span style={{ color: tone(item.change_5d) }}>{pct(item.change_5d)}</span></span>
@@ -545,14 +547,18 @@ function WatchTable({ rows, analyzing, editId, setEditId, editor, onRemove }: {
                 ) : (
                   <>
                     <td className="num">
-                      <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /> <PriceSource src={r.price_source} /></div>
-                      {r.daytime && !r.daytime.error && (
+                      {extPrice(r.daytime) ? (
+                        <div style={{ fontWeight: 600 }}><SessionTag d={r.daytime} close={r.current_price} closeRate={r.change_rate} size={10} /> {fmtPrice(r.daytime.price, m)}</div>
+                      ) : (
+                        <div style={{ fontWeight: 600 }}>{fmtPrice(r.current_price, m)} <LiveBadge t={r.live_time} /> <PriceSource src={r.price_source} /></div>
+                      )}
+                      {r.daytime && !r.daytime.error && !extPrice(r.daytime) && (
                         <div data-testid="daytime-short" style={{ fontSize: 10.5, color: "var(--accent)" }} title={`${r.daytime.label || "주간거래"} ${r.daytime.time}`}>
-                          {{ 프리마켓: "프리", 애프터마켓: "애프터" }[r.daytime.label as string] || "주간"} {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)
+                          주간 {fmtPrice(r.daytime.price, m)} ({fmtSigned(r.daytime.change_rate)}%)
                         </div>
                       )}
                     </td>
-                    <td className="num" style={{ color: tone(r.change_rate) }}>{pct(r.change_rate)}</td>
+                    <td className="num" style={{ color: tone(extPrice(r.daytime)?.change_rate ?? r.change_rate) }}>{pct(extPrice(r.daytime)?.change_rate ?? r.change_rate)}</td>
                     <td className="num" style={{ color: tone(r.change_5d) }}>{pct(r.change_5d)}</td>
                     <td className="num" style={{ color: tone(r.change_20d) }}>{pct(r.change_20d)}</td>
                     <td>

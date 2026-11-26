@@ -5,7 +5,7 @@ import FetchStatus from "../components/common/FetchStatus";
 import ChangeTag from "../components/common/ChangeTag";
 import PredictionReasons from "../components/common/PredictionReasons";
 import PriceLevels from "../components/common/PriceLevels";
-import DaytimePrice from "../components/common/DaytimePrice";
+import DaytimePrice, { extPrice, SessionTag } from "../components/common/DaytimePrice";
 import QuantBadge, { TrackBadge } from "../components/common/QuantBadge";
 import { RegimeWarning } from "../components/common/MarketRegime";
 import NewsLink, { NewsSource } from "../components/common/NewsLink";
@@ -66,6 +66,7 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
   const pred = item.prediction || {};
   const isKR = item.market === "KR";
   const isLong = type === "long";
+  const ext = extPrice(item.daytime);   // 미국 프리·애프터마켓이면 현재가 자리에 그 가격
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -78,10 +79,11 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
             <span className="badge badge-neutral">{isKR ? "국내" : "미국"}</span>
           </div>
           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-            {fmtPrice(item.price, item.market)}
+            {ext && <><SessionTag d={ext} close={item.price} closeRate={item.change_rate} size={10.5} />{" "}</>}
+            {fmtPrice(ext ? ext.price : item.price, item.market)}
             {isLong && item.per > 0 && <span> · PER {item.per.toFixed(1)} · PBR {item.pbr?.toFixed(1)}</span>}
           </span>
-          {item.daytime && <div style={{ marginTop: 3 }}><DaytimePrice d={item.daytime} size={11.5} /></div>}
+          {item.daytime && !ext && <div style={{ marginTop: 3 }}><DaytimePrice d={item.daytime} size={11.5} /></div>}
           {(item.quant || item.track) && (
             <div style={{ marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <QuantBadge q={item.quant} /><TrackBadge t={item.track} />
@@ -90,7 +92,7 @@ function StockCard({ item, type, inWatchlist, downView = false, horizon, horizon
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <WatchButton item={item} inList={inWatchlist} />
-          {item.change_rate !== undefined && <ChangeTag value={item.change_rate} />}
+          {item.change_rate !== undefined && <ChangeTag value={ext ? ext.change_rate : item.change_rate} />}
         </div>
       </div>
 
