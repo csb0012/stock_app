@@ -1053,3 +1053,39 @@ def test_buy_wait_reason_boundaries():
     kis_trade._hist.clear()
     assert kis_trade.shock_reason(k, 65_800, lim) is None                       # −6.0% 는 아직
     assert "급락" in kis_trade.shock_reason(k, 65_700, lim)
+
+
+def test_ledger_rate_limit_retried_for_reads_not_orders(monkeypatch):
+    """EGW00215(원장 초당 건수 초과 — 모의투자 잔고 조회에서 실제로 나옴, 2026-11-26 화면) → 조회는 기다렸다 다시, 주문은 다시 안 보냄"""
+    import httpx
+    from app.services import kis_api
+    cl = KISClient(app_key="k", app_secret="s", base_url=KIS_MOCK_BASE)
+    cl._access_token, cl._token_expires = "t", dt.datetime.now() + dt.timedelta(hours=1)
+    waits = []
+
+    async def no_wait(attempt):
+        waits.append(attempt)
+    monkeypatch.setattr(cl, "_rate_limited", no_wait)
+    n = {"calls": 0}
+
+    def handler(req):
+        n["calls"] += 1
+        if n["calls"] == 1:
+            return httpx.Response(500, json={"rt_cd": "1", "msg_cd": "EGW00215", "msg1": "원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})
+        return httpx.Response(200, json={"rt_cd": "0", "output1": []})
+    cl._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    assert run(cl._get("/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", {}))["rt_cd"] == "0"
+    assert n["calls"] == 2 and waits == [0]
+    n["calls"] = 0
+    with pytest.raises(KISError) as e:
+        run(cl._post("/uapi/domestic-stock/v1/trading/order-cash", "VTTC0012U", {}))
+    assert "EGW00215" in str(e.value) and n["calls"] == 1
+
+
+def test_overview_shows_ws_status_and_param_ranges(kenv, monkeypatch):
+    from app.services import kis_ws
+    monkeypatch.setattr(kis_ws, "status", lambda: {"connected": False, "subscribed": 0, "last_error": "연결 거부", "last_message": None,
+                                                   "reconnects": 2, "watching": 3, "session": True})
+    st = kenv.c.get("/api/kis/status").json()
+    assert st["watch"]["ws"] == {"connected": False, "subscribed": 0, "last_error": "연결 거부", "last_message": None, "reconnects": 2}
+    assert st["param_meta"]["max_positions"] == {"default": 5, "min": 1, "max": 15, "label": "최대 보유 종목 수"}

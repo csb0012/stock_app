@@ -254,6 +254,13 @@ async def _halt(db, row: KisTrade, reason: str, user_id: int | None):
                   priority=5, tags=["rotating_light"])
 
 
+def _ws_status() -> dict:
+    """실시간 체결가 웹소켓 상태 (화면 — 실시간 0 · REST 만이면 이유를 보여 줌)"""
+    from app.services import kis_ws
+    st = kis_ws.status()
+    return {k: st.get(k) for k in ("connected", "subscribed", "last_error", "last_message", "reconnects")}
+
+
 async def check_loss(db, row: KisTrade, s: dict, bal: dict, limits: dict) -> float:
     loss = day_loss(s, bal)
     if loss >= limits["max_loss_krw"] and not row.halted:
@@ -958,10 +965,12 @@ async def overview(with_balance: bool = True) -> dict:
             "halted": bool(row.halted), "halted_reason": row.halted_reason, "halted_at": row.halted_at,
             "limits": limits, "limit_meta": {k: {"default": d, "min": lo, "max": hi, "label": LIMIT_LABELS[k]}
                                              for k, (d, lo, hi) in LIMITS.items()},
-            "params": json.loads(row.params), "orders_today": int(sent_today), "window": market_window(),
+            "params": json.loads(row.params),
+            "param_meta": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
+            "orders_today": int(sent_today), "window": market_window(),
             "last_proposal_day": row.last_proposal_day, "last_error": row.last_error, "loop": dict(_status),
             "watch": {**_watch, "every": WATCH_EVERY, "index_change": _index["change"], "index_error": _index["error"],
-                      "buy_after_open": BUY_AFTER_OPEN, "stops_ok": _stops_ok(row)},
+                      "buy_after_open": BUY_AFTER_OPEN, "stops_ok": _stops_ok(row), "ws": _ws_status()},
             "baseline": s["expected"] is not None, "log": list(reversed(s["log"][-10:])),
             "balance": None, "balance_error": None, "mismatches": [], "day_loss": None,
         }

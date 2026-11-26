@@ -635,7 +635,19 @@ async function run() {
     const bal = await page.getByTestId("kis-balance").innerText();
     expect(bal.includes("SK하이닉스") && bal.includes("8,150,000원") && bal.includes("176,700원"), `잔고: ${bal}`);
     const wl = await page.getByTestId("kis-watch").innerText();
-    expect(wl.includes("5초마다") && wl.includes("4종목") && wl.includes("실시간 체결가 3") && wl.includes("지수 -0.4%"), `실시간 감시: ${wl}`);
+    expect(wl.includes("5초마다") && wl.includes("4종목") && wl.includes("REST 4") && wl.includes("지수 -0.4%")
+      && wl.includes("실시간 체결가 연결 안 됨") && wl.includes("연결 거부"), `실시간 감시: ${wl}`);
+    // 설정: 묶음 3개 · 같은 줄 입력칸 높이(위치) 같음
+    const cfg = page.getByTestId("kis-config");
+    expect(await cfg.getByTestId("kis-config-group").count() === 3, "설정 묶음이 3개가 아님");
+    const cfgText = await cfg.innerText();
+    expect(cfgText.includes("주문 한도") && cfgText.includes("장중 감시 규칙") && cfgText.includes("AI 매매 규칙") && cfgText.includes("1 ~ 15"), `설정: ${cfgText}`);
+    for (const g of await cfg.getByTestId("kis-config-group").all()) {
+      const tops = await g.locator("input").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+      const firstRowTop = Math.min(...tops);
+      const firstRowLefts = await g.locator("input").evaluateAll((els, top) => els.filter((e) => Math.round(e.getBoundingClientRect().top) === top).length, firstRowTop);
+      expect(firstRowLefts >= Math.min(3, tops.length), `설정 입력칸 높이가 들쭉날쭉: ${JSON.stringify(tops)}`);
+    }
     const rules = await page.getByTestId("kis-rules").innerText();
     expect(rules.includes("+3% 이하") && rules.includes("−6%") && rules.includes("−3%") && rules.includes("지정가") && rules.includes("자동 매도") && rules.includes("승인 없이"),
       `자동 규칙: ${rules}`);

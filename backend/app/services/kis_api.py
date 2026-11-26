@@ -242,6 +242,11 @@ class KISClient:
                     f"KIS {tr_id} 실패 (HTTP {resp.status_code}, EGW00201): "
                     f"{data.get('msg1') or '초당 거래건수를 초과하였습니다.'} ({_RATE_RETRIES - 1}회 재시도 후)"
                 )
+            # 원장 초당 건수 초과(EGW00215 — 모의투자 잔고·체결 조회에서 나옴)는 조회만 기다렸다가 재시도.
+            # 주문(POST)은 다시 보내지 않음 (원장에서 거절된 것이라도 두 번 들어갈 가능성을 남기지 않게)
+            if data.get("msg_cd") == "EGW00215" and method == "GET" and attempt < _RATE_RETRIES - 1:
+                await self._rate_limited(attempt)
+                continue
             # 토큰 만료/무효(EGW00123, EGW00121)는 토큰을 새로 받아 재시도
             if data.get("msg_cd") in ("EGW00123", "EGW00121") and attempt < _RATE_RETRIES - 1:
                 self._access_token = None

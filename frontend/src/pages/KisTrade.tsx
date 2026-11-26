@@ -369,9 +369,40 @@ function WatchLine({ s }: { s: any }) {
           <span>실시간 감시 {w.every}초마다{t ? ` · 마지막 ${t}` : ""} · {w.symbols}종목 (실시간 체결가 {w.realtime} · REST {w.rest}{w.missing ? ` · 가격 못 받음 ${w.missing}` : ""})</span>
           {w.index_change != null && <span>지수 {pct(w.index_change)}</span>}
           {w.index_error && <span style={{ color: "var(--yellow)" }}>지수 못 받음 — 매수 기다림</span>}
+          {w.ws && !w.ws.connected && (
+            <span data-testid="kis-ws-off" style={{ color: "var(--text-muted)" }}>
+              실시간 체결가 연결 안 됨{w.ws.last_error ? ` (${w.ws.last_error})` : ""} — REST 시세(15초)로 감시 중
+            </span>
+          )}
           {w.error && <span style={{ color: "var(--red)" }}>{w.error}</span>}
         </>
       ) : <span style={{ color: "var(--text-muted)" }}>실시간 감시는 장중(09:01~15:20)에만 — {w.every}초마다 손절·급변·매수 조건 확인</span>}
+    </div>
+  );
+}
+
+// 설정 묶음 — 이름·범위를 두 줄로 나눠 칸 높이를 맞춤 (라벨 길이가 달라 입력칸이 들쭉날쭉하던 것)
+const LIMIT_GROUPS: [string, string, string[]][] = [
+  ["주문 한도", "넘으면 주문을 안 보내거나 멈춤", ["max_order_krw", "max_orders_day", "max_loss_krw"]],
+  ["장중 감시 규칙", "승인한 매수를 언제 보내고, 언제 자동 취소할지", ["max_gap_pct", "fast_drop_pct", "index_drop_pct", "limit_slip_pct"]],
+];
+
+function Field({ label, range, value, onChange }: { label: string; range?: string; value: number; onChange: (n: number) => void }) {
+  return (
+    <label style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+      <span style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={label}>{label}</span>
+      <span style={{ fontSize: 10.5, color: "var(--text-muted)", minHeight: 14 }}>{range || ""}</span>
+      <input type="number" value={Number.isFinite(value) ? value : ""} aria-label={label} onChange={(e) => onChange(Number(e.target.value))}
+        style={{ ...inputStyle, width: "100%" }} />
+    </label>
+  );
+}
+
+function Group({ title, desc, children, testid }: { title: string; desc: string; children: React.ReactNode; testid?: string }) {
+  return (
+    <div data-testid={testid} style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+      <div style={{ fontSize: 12.5 }}><strong>{title}</strong> <span style={{ color: "var(--text-muted)", fontSize: 11.5 }}>— {desc}</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 10 }}>{children}</div>
     </div>
   );
 }
@@ -383,20 +414,18 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
   useEffect(() => { setLim(s.limits); setPar(s.params); }, [JSON.stringify(s.limits), JSON.stringify(s.params)]);   // eslint-disable-line react-hooks/exhaustive-deps
   const save = useMutation({ mutationFn: () => kisApi.config(lim, Object.fromEntries(PARAM_KEYS.map((k) => [k, par[k]])), code).then((r) => r.data),
     meta: { inlineError: true }, onSuccess: (d) => { toast(d.message, "info"); setCode(""); onSaved(); } });
-  const num = (label: string, v: number, set: (n: number) => void, aria: string) => (
-    <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11.5, color: "var(--text-secondary)", minWidth: 0 }}>
-      {label}
-      <input type="number" value={Number.isFinite(v) ? v : ""} aria-label={aria} onChange={(e) => set(Number(e.target.value))} style={{ ...inputStyle, width: "100%" }} />
-    </label>
+  const meta = s.limit_meta as Record<string, any>;
+  const grouped = new Set(LIMIT_GROUPS.flatMap((g) => g[2]));
+  const groups = LIMIT_GROUPS.map(([t, d, keys], i) => [t, d, [...keys, ...(i === LIMIT_GROUPS.length - 1 ? Object.keys(meta).filter((k) => !grouped.has(k)) : [])]] as const);
+  const limitField = (k: string) => meta[k] && (
+    <Field key={k} label={meta[k].label} range={`${meta[k].min.toLocaleString()} ~ ${meta[k].max.toLocaleString()}`} value={lim[k]} onChange={(n) => setLim({ ...lim, [k]: n })} />
   );
   return (
     <Card icon={Settings2} title="안전장치 · 매매 규칙" testid="kis-config" desc="바꾸려면 2단계 코드가 필요합니다. 매매 규칙은 AI 모의투자와 같은 항목입니다">
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-        {Object.entries(s.limit_meta).map(([k, m]: any) => num(`${m.label} (${m.min.toLocaleString()}~${m.max.toLocaleString()})`, lim[k], (n) => setLim({ ...lim, [k]: n }), m.label))}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
-        {PARAM_KEYS.map((k) => num(PARAM_LABEL[k], par[k], (n) => setPar({ ...par, [k]: n }), PARAM_LABEL[k]))}
-      </div>
+      {groups.map(([t, d, keys]) => <Group key={t} title={t} desc={d} testid="kis-config-group">{keys.map(limitField)}</Group>)}
+      <Group title="AI 매매 규칙" desc="무엇을 살지·언제 팔지 (AI 모의투자와 같은 항목)" testid="kis-config-group">
+        {PARAM_KEYS.map((k) => <Field key={k} label={PARAM_LABEL[k]} range={s.param_meta?.[k] ? `${s.param_meta[k].min.toLocaleString()} ~ ${s.param_meta[k].max.toLocaleString()}` : undefined} value={par[k]} onChange={(n) => setPar({ ...par, [k]: n })} />)}
+      </Group>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
         {codeInput(code, setCode, "설정 2단계 코드")}
         <button className="btn btn-primary" disabled={!/^\d{6}$/.test(code) || save.isPending} onClick={() => save.mutate()}>저장</button>
