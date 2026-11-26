@@ -294,13 +294,81 @@ def test_mismatch_blocks_buy_until_rebaseline(kenv):
     kenv.b.holdings["000660"] = [3, 190_000]      # HTS 에서 직접 삼
     kis_trade._balance_cache["data"] = None       # (화면 잔고는 20초 캐시)
     st = run(kis_trade.overview())
-    assert st["mismatches"] == [{"symbol": "000660", "name": "종목000660", "app": 0, "kis": 3}]
+    assert st["mismatches"] == [{"symbol": "000660", "name": "종목000660", "app": 0, "kis": 3, "pending": False}]
     r = approve(kenv, buy(kenv)).json()["results"][0]
     assert r["status"] == "blocked" and "기록이 다름" in r["message"]
-    assert kenv.c.post("/api/kis/baseline", json={"totp_code": kenv.code()}).status_code == 200
+    assert kenv.c.post("/api/kis/baseline").status_code == 200   # 주문을 안 보내는 일이라 2단계 코드 없음 (사용자 결정 2026-11-26)
     kis_trade._balance_cache["data"] = None
     assert run(kis_trade.overview())["mismatches"] == []
     assert approve(kenv, buy(kenv)).json()["results"][0]["status"] == "submitted"
+
+
+def _part_fill(b, o, n):
+    """보낸 주문 o 를 n 주까지 체결된 것으로 (KIS 잔고·체결 내역 둘 다)"""
+    add = n - o["filled"]
+    q, _a = b.holdings.get(o["symbol"], [0, 0])
+    b.holdings[o["symbol"]] = [q + add, o["px"]]
+    b.cash -= add * o["px"]
+    o["filled"] = n
+
+
+def test_rebaseline_during_fill_does_not_double_count(kenv):
+    """사용자 화면: 삼립 앱 36 / KIS 24, 인크로스 앱 185 / KIS 183 — 체결 중에 '기준 다시 맞추기'를 누르면
+    이미 잔고에 들어간 체결이 다음 체결 확인 때 또 더해졌음 (36 = 12 + 24)"""
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    assert approve(kenv, buy(kenv)).json()["results"][0]["status"] == "submitted"
+    o = kenv.b.orders[0]
+    qty = o["qty"]
+    _part_fill(kenv.b, o, qty // 2)                    # 일부만 체결된 사이에
+    kis_trade._balance_cache["data"] = None
+    run(kis_trade.rebaseline(kenv.uid))                # 기준 다시 맞추기
+    _part_fill(kenv.b, o, qty)                         # 나머지 체결
+    run(kis_trade.refresh_fills())
+    kis_trade._balance_cache["data"] = None
+    st = run(kis_trade.overview())
+    assert st["mismatches"] == [], st["mismatches"]
+    assert {h["symbol"]: h["qty"] for h in st["balance"]["holdings"]} == {"005930": qty}
+
+
+def test_overview_applies_fills_before_comparing(kenv):
+    """체결 직후 1분 체결 확인 전에 화면을 열어도 '다름' 경고가 안 뜸 (전엔 떠서 기준 맞추기를 누르게 됐음)"""
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    approve(kenv, buy(kenv))
+    o = kenv.b.orders[0]
+    _part_fill(kenv.b, o, o["qty"])
+    kis_trade._balance_cache["data"] = None
+    assert run(kis_trade.overview())["mismatches"] == []
+    assert order(kenv, 1).status == "filled"
+
+
+def test_mismatch_while_order_in_flight_is_pending(kenv):
+    """KIS 잔고엔 들어왔는데 체결 내역엔 아직 없음 → '체결 중'(pending) 으로 표시, 매수는 그래도 막음"""
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    approve(kenv, buy(kenv))
+    o = kenv.b.orders[0]
+    kenv.b.holdings["005930"] = [5, 70_000]       # 잔고만 먼저 바뀜
+    kis_trade._balance_cache["data"] = None
+    mm = run(kis_trade.overview())["mismatches"]
+    assert mm == [{"symbol": "005930", "name": "종목005930", "app": 0, "kis": 5, "pending": True}]
+    kenv.b.holdings["000660"] = [1, 200_000]      # 직접 산 종목은 pending 아님
+    kis_trade._balance_cache["data"] = None
+    mm = {m["symbol"]: m["pending"] for m in run(kis_trade.overview())["mismatches"]}
+    assert mm == {"005930": True, "000660": False}
+    assert o["filled"] == 0
+
+
+def test_submit_applies_previous_fills_before_mismatch_check(kenv):
+    """앞 주문이 막 체결됐는데 체결 확인(1분) 전이라도 다음 매수가 '기록 다름'으로 막히지 않음"""
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    approve(kenv, buy(kenv))
+    _part_fill(kenv.b, kenv.b.orders[0], kenv.b.orders[0]["qty"])
+    kis_trade._balance_cache["data"] = None
+    r = approve(kenv, buy(kenv, sym="000660", ref=200_000)).json()["results"][0]
+    assert r["status"] == "submitted", r
 
 
 def test_sell_only_sellable_quantity(kenv):

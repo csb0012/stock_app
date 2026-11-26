@@ -477,6 +477,8 @@ async def submit(order_id: int) -> dict:
             if px <= 0:
                 return await _block(db, k, "현재가 0 (거래 정지 종목?)")
             if k.side == "buy":
+                if await _sync_fills(db, row, s):   # 앞 주문의 체결을 먼저 기록에 반영 (반영 전이면 잔고와 달라 보임)
+                    bal = await fetch_balance()
                 mm = mismatches(s, bal)
                 if mm:
                     return await _block(db, k, "KIS 잔고와 앱 기록이 다름 — " + ", ".join(
@@ -567,44 +569,53 @@ async def refresh_fills(final: bool = False) -> int:
     """오늘 접수한 주문을 KIS 체결 내역과 맞춤. final = 장 마감 뒤 (안 체결 확정)"""
     async with _lock:
         async with AsyncSessionLocal() as db:
-            ks = (await db.execute(select(KisOrder).where(KisOrder.status == "submitted",
-                                                          KisOrder.submitted_at >= _today_start()))).scalars().all()
-            if not ks:
-                return 0
-            ex = {e["odno"]: e for e in await kis_order.executions(_kst().date())}
             row = await _row(db)
-            s, params = _state(row), json.loads(row.params)
-            if s["expected"] is None:
-                s["expected"] = {}
-            changed = 0
-            for k in ks:
-                e = ex.get(k.odno)
-                if e is None:
-                    if final:
-                        k.status, k.message = "unknown", "KIS 체결 내역에 이 주문번호가 없음 — KIS 앱에서 확인"
-                        await audit(db, "fill_unknown", k.message, order_id=k.id, ok=False)
-                        _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"])
-                        changed += 1
-                    continue
-                delta = int(e["filled"]) - int(k.filled_qty or 0)
-                if delta > 0:
-                    _apply_fill(s, k, delta, float(e["avg_price"] or k.order_price or 0), params)
-                    k.filled_qty, k.filled_price = int(e["filled"]), float(e["avg_price"] or 0) or None
-                    changed += 1
-                if k.filled_qty >= (k.qty or 0) and k.filled_qty > 0:
-                    k.status = "filled"
-                    await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {k.filled_price or 0:,.0f}원", order_id=k.id)
-                    _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {k.filled_price or 0:,.0f}원 (모의투자)",
-                          3, ["white_check_mark"])
-                elif e["cancelled"] or (final and e["remain"] >= 0):
-                    k.status = "partial" if k.filled_qty else "unfilled" if not e["cancelled"] else "cancelled"
-                    await audit(db, k.status, f"{k.name} {k.filled_qty}/{k.qty}주", order_id=k.id, ok=bool(k.filled_qty))
-                    changed += 1
-            _save(row, s)
+            s = _state(row)
+            changed = await _sync_fills(db, row, s, final)
             await db.commit()
-            if changed:
-                _balance_cache["data"] = None
             return changed
+
+
+async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True) -> int:
+    """(_lock 안에서) 오늘 접수한 주문의 새 체결을 앱 기록(expected)에 더하고 s 를 row 에 저장 (commit 은 부르는 쪽).
+    apply=False = 기록에 더하지 않고 '이미 반영됨'으로만 표시 — 기준 다시 맞추기 때 (KIS 잔고에 이미 들어간 체결을 나중에 또 더하지 않게)"""
+    ks = (await db.execute(select(KisOrder).where(KisOrder.status == "submitted",
+                                                  KisOrder.submitted_at >= _today_start()))).scalars().all()
+    if not ks:
+        return 0
+    ex = {e["odno"]: e for e in await kis_order.executions(_kst().date())}
+    params = json.loads(row.params)
+    if s["expected"] is None:
+        s["expected"] = {}
+    changed = 0
+    for k in ks:
+        e = ex.get(k.odno)
+        if e is None:
+            if final:
+                k.status, k.message = "unknown", "KIS 체결 내역에 이 주문번호가 없음 — KIS 앱에서 확인"
+                await audit(db, "fill_unknown", k.message, order_id=k.id, ok=False)
+                _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"])
+                changed += 1
+            continue
+        delta = int(e["filled"]) - int(k.filled_qty or 0)
+        if delta > 0:
+            if apply:
+                _apply_fill(s, k, delta, float(e["avg_price"] or k.order_price or 0), params)
+            k.filled_qty, k.filled_price = int(e["filled"]), float(e["avg_price"] or 0) or None
+            changed += 1
+        if k.filled_qty >= (k.qty or 0) and k.filled_qty > 0:
+            k.status = "filled"
+            await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {k.filled_price or 0:,.0f}원", order_id=k.id)
+            _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {k.filled_price or 0:,.0f}원 (모의투자)",
+                  3, ["white_check_mark"])
+        elif e["cancelled"] or (final and e["remain"] >= 0):
+            k.status = "partial" if k.filled_qty else "unfilled" if not e["cancelled"] else "cancelled"
+            await audit(db, k.status, f"{k.name} {k.filled_qty}/{k.qty}주", order_id=k.id, ok=bool(k.filled_qty))
+            changed += 1
+    _save(row, s)
+    if changed:
+        _balance_cache["data"] = None
+    return changed
 
 
 # ---------------- 정지 · 다시 시작 · 기준 · 설정 ----------------
@@ -644,6 +655,8 @@ async def rebaseline(user_id: int) -> dict:
         async with AsyncSessionLocal() as db:
             row = await _row(db)
             s = _state(row)
+            # 체결 중인 주문: KIS 잔고에 이미 들어간 체결은 '반영됨'으로 표시 (안 하면 다음 체결 확인 때 한 번 더 더해져 앱 기록이 KIS 보다 많아짐)
+            await _sync_fills(db, row, s, apply=False)
             bal = await fetch_balance()
             before = mismatches(s, bal)
             baseline(s, bal, json.loads(row.params))
@@ -679,6 +692,11 @@ def order_row(k: KisOrder) -> dict:
 
 
 async def overview(with_balance: bool = True) -> dict:
+    if with_balance and configured():
+        try:   # 체결된 주문을 먼저 앱 기록에 반영 — 반영 전이면 잔고와 달라 보여 '기준 다시 맞추기'를 누르게 됨
+            await refresh_fills()
+        except Exception as e:   # noqa: BLE001 — 잔고 칸이 오류를 따로 보여줌
+            print(f"[kis_trade] 화면용 체결 확인 실패: {str(e)[:150]}")
     async with AsyncSessionLocal() as db:
         row = await _row(db)
         await db.commit()
@@ -712,7 +730,14 @@ async def overview(with_balance: bool = True) -> dict:
                         await audit(db2, "account_ok", "계좌 확인됨 — 계좌번호 오류로 실패한 제안을 다시 합니다")
                         await db2.commit()
                         out["last_error"], out["last_proposal_day"] = None, r2.last_proposal_day
-                out["mismatches"] = mismatches(s, bal)
+                mm = mismatches(s, bal)
+                if mm:   # 아직 체결 중인 주문이 있는 종목 = 곧 맞춰짐 (기준 맞추기 필요 없음)
+                    async with AsyncSessionLocal() as db3:
+                        busy = set((await db3.execute(select(KisOrder.symbol).where(
+                            KisOrder.status.in_(("submitting", "submitted")), KisOrder.submitted_at >= _today_start()))).scalars().all())
+                    for m in mm:
+                        m["pending"] = m["symbol"] in busy
+                out["mismatches"] = mm
                 out["day_loss"] = day_loss(s, bal)
                 meta = s["meta"]
                 for h in bal["holdings"]:

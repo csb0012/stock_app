@@ -106,7 +106,7 @@ services/
   kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 주문): propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단,
                    이전 제안 만료, 다음 거래일 15:30 까지 유효) · check_exits(장중 5분, 손절/목표 → 매도 제안) · approve(조건부 UPDATE 로 한 번만, 장중이면 바로 submit) ·
                    submit(직전 확인: 정지·기한·장 시간(09:01~15:20)·하루 횟수·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·가격(+3%/−6%)·1회 한도 →
-                   'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) · refresh_fills(체결 내역 → expected/meta) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
+                   'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) · refresh_fills(체결 내역 → expected/meta, _sync_fills — 화면 대조·매수 직전 대조 전에 먼저 반영, 기준 맞추기 땐 apply=False 로 '반영됨'만 표시해 두 번 안 더함) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
                    loop(1분, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
   us_daytime.py  — 미국 정규장 밖 가격 → 행의 daytime{label,price,base,change_rate,time} (label 주간거래/프리마켓/애프터마켓, 시간대는 겹치지 않음):
                    주간거래(한국 10:00~18:00, 서머타임 ~17:00 · 블루오션) = KIS, 종목별 30초 캐시 /
@@ -214,7 +214,7 @@ api/routes/
                    만들기·차단은 2단계 코드를 다시 받음(_step_up)
   kis.py         — KIS 모의투자 주문 (모두 get_admin): GET /kis/status (연결·정지·한도·오늘 주문 수·잔고·대조·판단 기록) · GET /kis/orders?kind=open|all · GET /kis/log ·
                    POST /kis/propose · POST /kis/orders/approve {ids, totp_code} · POST /kis/orders/reject · POST /kis/orders/{id}/cancel · POST /kis/halt (코드 없음) ·
-                   POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·기준·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403)
+                   POST /kis/resume · POST /kis/baseline · PUT /kis/config {limits, params} · POST /kis/notify-test (휴대폰 알림 시험). 승인·다시 시작·설정은 2단계 필수(_step_up, 2단계 안 켠 관리자는 403). 기준 맞추기(baseline)는 주문 없이 앱 기록만 바꿔서 코드 없음(사용자 결정 2026-11-26)
   stocks.py      — /live?symbols= (국내 실시간 현재가 — kis_ws 메모리 값, KIS 호출 없음, 물은 종목은 구독), /search, /test/kis (인증 불필요 — 그래서 토큰 일부도 안 보여줌, ok/오류만), /quote/{market}/{symbol}, /kr/{symbol}, /us/{symbol}, /volume-surge,
                    /recommendations/{longterm,shortterm} ({items, errors, updated_at} — 호출마다 현재가·뉴스로 재계산),
                    /recommendations/longterm/horizon (장기 보유 분석 — 장기 탭은 내일 확률 대신 이것을 표시),

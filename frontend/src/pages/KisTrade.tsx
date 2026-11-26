@@ -71,7 +71,6 @@ export default function KisTrade() {
   const [picked, setPicked] = useState<number[]>([]);
   const [code, setCode] = useState("");
   const [resumeCode, setResumeCode] = useState("");
-  const [baseCode, setBaseCode] = useState("");
 
   const approve = useMutation({ mutationFn: () => kisApi.approve(picked, code).then((r) => r.data), meta: { inlineError: true },
     onSuccess: (d) => {
@@ -89,8 +88,8 @@ export default function KisTrade() {
   const halt = useMutation({ mutationFn: () => kisApi.halt("").then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
   const resume = useMutation({ mutationFn: () => kisApi.resume(resumeCode).then((r) => r.data), meta: { inlineError: true },
     onSuccess: (d) => { toast(d.message, "info"); setResumeCode(""); refresh(); } });
-  const baseline = useMutation({ mutationFn: () => kisApi.baseline(baseCode).then((r) => r.data), meta: { inlineError: true },
-    onSuccess: (d) => { toast(d.message, "info"); setBaseCode(""); refresh(); } });
+  const baseline = useMutation({ mutationFn: () => kisApi.baseline().then((r) => r.data), meta: { inlineError: true },
+    onSuccess: (d) => { toast(d.message, "info"); refresh(); } });
 
   const s = st.data;
   if (st.error) return <p style={{ color: "var(--red)" }}>{errMsg(st.error)}</p>;
@@ -176,11 +175,15 @@ export default function KisTrade() {
             <div data-testid="kis-mismatch" style={{ border: "1px solid var(--yellow)", borderRadius: 8, padding: 10, display: "flex", flexDirection: "column", gap: 6,
               background: "color-mix(in srgb, var(--yellow) 8%, transparent)" }}>
               <strong style={{ fontSize: 12.5, display: "flex", gap: 6, alignItems: "center" }}><AlertTriangle size={14} /> KIS 잔고와 앱 기록이 다릅니다 — 다를 때는 매수 주문을 보내지 않습니다</strong>
-              <span style={{ fontSize: 12 }}>{s.mismatches.map((m: any) => `${m.name}: 앱 ${m.app}주 / KIS ${m.kis}주`).join(" · ")}</span>
-              <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>KIS 앱·HTS 에서 직접 사고팔았다면 아래 버튼으로 지금 KIS 잔고를 기준으로 맞추세요. 모르는 거래라면 먼저 긴급 정지하고 KIS 에서 확인하세요.</span>
+              <span style={{ fontSize: 12 }}>{s.mismatches.map((m: any) => `${m.name}: 앱 ${m.app}주 / KIS ${m.kis}주${m.pending ? " (체결 중)" : ""}`).join(" · ")}</span>
+              {s.mismatches.every((m: any) => m.pending) ? (
+                <span data-testid="kis-mismatch-pending" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>앱이 보낸 주문이 아직 체결되는 중입니다 — 체결이 끝나면 1분 안에 저절로 맞춰집니다 (기준 맞추기 필요 없음).</span>
+              ) : (
+                <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>KIS 앱·HTS 에서 직접 사고팔았다면 아래 버튼으로 지금 KIS 잔고를 기준으로 맞추세요 (주문은 안 나감 · 앱 기록만 바꿈). 모르는 거래라면 먼저 긴급 정지하고 KIS 에서 확인하세요.</span>
+              )}
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                {codeInput(baseCode, setBaseCode, "기준 맞추기 2단계 코드")}
-                <button className="btn btn-ghost" disabled={!/^\d{6}$/.test(baseCode) || baseline.isPending} onClick={() => baseline.mutate()}>기준 다시 맞추기</button>
+                <button className="btn btn-ghost" disabled={baseline.isPending}
+                  onClick={() => window.confirm("지금 KIS 잔고를 앱 기록으로 삼을까요? (주문은 나가지 않습니다)") && baseline.mutate()}>기준 다시 맞추기</button>
               </div>
               {baseline.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(baseline.error)}</p>}
             </div>

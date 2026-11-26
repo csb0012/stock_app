@@ -138,9 +138,9 @@ async def resume(req: CodeRequest, admin: User = Depends(get_admin), db: AsyncSe
 
 
 @router.post("/baseline")
-async def baseline(req: CodeRequest, admin: User = Depends(get_admin), db: AsyncSession = Depends(get_db)):
-    """지금 KIS 잔고를 앱 기록 기준으로 (HTS·KIS 앱에서 직접 사고팔았을 때)"""
-    await _step_up(db, admin, req.totp_code)
+async def baseline(admin: User = Depends(get_admin)):
+    """지금 KIS 잔고를 앱 기록 기준으로 (HTS·KIS 앱에서 직접 사고팔았을 때). 주문을 보내지 않고 앱 기록만 바꿔서 2단계 코드 없음
+    (사용자 결정 2026-11-26 — 매번 코드가 불편). 주문 승인·다시 시작·설정은 그대로 2단계 필요"""
     try:
         return await kis_trade.rebaseline(admin.id)
     except Exception as e:

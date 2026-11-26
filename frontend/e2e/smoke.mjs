@@ -647,7 +647,7 @@ async function run() {
   await test("KIS 모의투자: 긴급 정지(코드 없이) · 정지 중 승인 불가 · 다시 시작은 2단계 코드 · 잔고 대조 경고", { api: adminApi({
     "GET /api/kis/status": (req) => ({ ...KF.KIS_STATUS, halted: true, halted_reason: "긴급 정지 버튼", halted_at: 1795000000,
       last_error: "2026-11-25T17:24:51+09:00 제안 실패: 일봉을 받은 종목이 없음",
-      mismatches: [{ symbol: "000660", name: "SK하이닉스", app: 0, kis: 3 }] }),
+      mismatches: [{ symbol: "000660", name: "SK하이닉스", app: 0, kis: 3, pending: false }] }),
     "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
     "POST /api/kis/resume": { message: "다시 시작했습니다" },
     "POST /api/kis/baseline": { message: "KIS 잔고를 앱 기록 기준으로 맞췄습니다" } }) }, async (page, api) => {
@@ -667,10 +667,19 @@ async function run() {
     await page.getByText("다시 시작했습니다").waitFor();
     const mm = await page.getByTestId("kis-mismatch").innerText();
     expect(mm.includes("SK하이닉스: 앱 0주 / KIS 3주"), `대조 경고: ${mm}`);
-    await page.getByLabel("기준 맞추기 2단계 코드").fill("778899");
+    expect(await page.getByLabel("기준 맞추기 2단계 코드").count() === 0, "기준 맞추기에 아직 2단계 코드 칸이 있음");
+    expect(await page.getByTestId("kis-mismatch-pending").count() === 0, "직접 산 종목인데 '체결 중' 안내");
+    page.once("dialog", (d) => d.accept());
     await page.getByRole("button", { name: "기준 다시 맞추기" }).click();
     await page.getByText(/기준으로 맞췄습니다/).waitFor();
-    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/baseline").body).totp_code === "778899", "기준 맞추기 요청 이상");
+    expect(!("totp_code" in JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/baseline").body || "{}")), "기준 맞추기에 코드를 보냄");
+  });
+
+  await test("KIS 모의투자: 앱 주문이 체결 중이라 다르면 '저절로 맞춰짐' 안내", { api: adminApi({
+    "GET /api/kis/status": { ...KF.KIS_STATUS, mismatches: [{ symbol: "005610", name: "삼립", app: 0, kis: 12, pending: true }] } }) }, async (page) => {
+    await page.goto(`${BASE}/kis`);
+    const mm = await page.getByTestId("kis-mismatch").innerText();
+    expect(mm.includes("삼립: 앱 0주 / KIS 12주 (체결 중)") && mm.includes("저절로 맞춰집니다"), `체결 중 안내: ${mm}`);
   });
 
   await test("KIS 모의투자: 운영 중 긴급 정지 버튼 → 확인 후 바로 정지 요청 · 설정 저장(2단계)", { api: adminApi({

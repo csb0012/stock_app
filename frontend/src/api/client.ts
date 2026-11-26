@@ -96,7 +96,7 @@ export const kisApi = {
   halt: (reason: string) => api.post("/kis/halt", { reason }),
   notifyTest: () => api.post("/kis/notify-test"),
   resume: (totp_code: string) => api.post("/kis/resume", { totp_code }),
-  baseline: (totp_code: string) => api.post("/kis/baseline", { totp_code }),
+  baseline: () => api.post("/kis/baseline", {}),
   config: (limits: Record<string, number>, params: Record<string, any> | null, totp_code: string) =>
     api.put("/kis/config", { limits, params, totp_code }),
 };
