@@ -282,6 +282,9 @@ def _us_screener_sync(mode: str) -> list:
             "volume_ratio": round((vol / avg - 1) * 100, 1) if avg > 0 else 0,  # 3개월 평균 대비 증가율(%)
             "trading_value": tv,
             "trading_value_display": f"${tv / 1e9:.2f}B" if tv >= 1e9 else f"${tv / 1e6:.0f}M",
+            # 시간외 가격 원값 (Yahoo 시세에 있으면) — 응답 때 지금이 프리/애프터마켓인지 보고 daytime 으로 바꿈 (us_daytime.attach_screener)
+            "_ext": {k: {"price": q.get(f"{k}MarketPrice"), "time": q.get(f"{k}MarketTime")}
+                     for k in ("pre", "post") if q.get(f"{k}MarketPrice")},
         })
     if mode == "trading_value":
         rows.sort(key=lambda x: x["trading_value"], reverse=True)
@@ -482,4 +485,5 @@ async def screener_us(mode: str, current_user: User = Depends(get_current_user))
 
     async def fn():
         return await asyncio.get_event_loop().run_in_executor(None, lambda: _us_screener_sync(mode))
-    return await _cached_screener(f"us:{mode}", fn)
+    rows = await _cached_screener(f"us:{mode}", fn)
+    return await us_daytime.attach_screener(rows)   # 프리·애프터마켓이면 그 가격 (표시 전용, 캐시된 행은 안 바꿈)

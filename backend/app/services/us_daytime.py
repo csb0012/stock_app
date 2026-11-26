@@ -183,3 +183,35 @@ async def attach(rows: list, symbol_key: str = "symbol", market_key: str | None 
                 r["daytime"] = v
         out.append(r)
     return out
+
+
+async def attach_screener(rows: list, fallback_limit: int = 30) -> list:
+    """미국 스크리너 행 → 프리·애프터마켓 시간이면 daytime(시간외 가격)을 붙인 **새 목록** (_ext 원값은 뺌).
+    1) Yahoo 스크리너 시세의 pre/postMarketPrice·Time (추가 호출 없음) — 시각이 오늘 그 시간대일 때만
+    2) 없으면 앞쪽 fallback_limit 종목만 5분봉으로 (종목이 최대 200개라 전부는 안 받음)"""
+    out = [{k: v for k, v in r.items() if k not in ("_ext", "daytime")} for r in rows]
+    ses = us_ext_session()
+    if not ses["open"]:
+        return out
+    key = "post" if ses["label"] == "애프터마켓" else "pre"
+    missing = []
+    for r, raw in zip(out, rows):
+        e = (raw.get("_ext") or {}).get(key) or {}
+        at = None
+        try:
+            if e.get("price") and e.get("time"):
+                at = datetime.fromtimestamp(float(e["time"]), _NY)
+        except (TypeError, ValueError, OSError):
+            at = None
+        if at and at.date().isoformat() == ses["session_date"] and ses["start_et"] <= at.hour * 60 + at.minute < ses["end_et"]:
+            r["daytime"] = build_ext({"price": float(e["price"]), "base": None, "at": at}, ses, r.get("price"))
+        else:
+            missing.append(r)
+    missing = missing[:fallback_limit]
+    if missing:
+        got = await _ext_many([r["symbol"] for r in missing], ses)
+        for r in missing:
+            v = got.get(r["symbol"])
+            if v:
+                r["daytime"] = {"label": ses["label"], **v} if "error" in v else build_ext(v, ses, r.get("price"))
+    return out

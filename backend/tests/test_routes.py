@@ -184,3 +184,21 @@ def test_recommendations_daytime(api_client, monkeypatch, daytime_on):
     items = client.get("/api/stocks/recommendations/longterm").json()["items"]
     assert items[0]["daytime"]["price"] == 320.53 and "daytime" not in items[1]
     assert client.get("/api/stocks/recommendations/nope").status_code == 404
+
+
+def test_screener_us_after_hours(api_client, monkeypatch):
+    """종목탐색 미국 표: 애프터마켓이면 daytime(시간외 가격), _ext 원값은 응답에 안 나감"""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    from app.api.routes import stocks
+    from app.services import market_calendar
+    client, _, _ = api_client
+    ses = market_calendar.us_ext_session(dt.datetime(2026, 11, 25, 19, 40, tzinfo=ZoneInfo("America/New_York")))
+    monkeypatch.setattr(us_daytime, "us_ext_session", lambda: ses)
+    t = dt.datetime(2026, 11, 25, 19, 35, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    monkeypatch.setattr(stocks, "_us_screener_sync", lambda mode: [
+        {"symbol": "NVDA", "name": "엔비디아", "market": "US", "price": 149.3, "change_rate": -3.91,
+         "_ext": {"post": {"price": 151.68, "time": t}}}])
+    stocks._screener_swr["us"].invalidate() if hasattr(stocks._screener_swr["us"], "invalidate") else None
+    rows = client.get("/api/stocks/screener/us/trading_value").json()
+    assert rows[0]["price"] == 149.3 and rows[0]["daytime"]["price"] == 151.68 and "_ext" not in rows[0]

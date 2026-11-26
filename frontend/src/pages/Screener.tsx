@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { stockApi, watchlistApi, errMsg } from "../api/client";
 import ChangeTag from "../components/common/ChangeTag";
+import { extPrice, SessionTag } from "../components/common/DaytimePrice";
 import StockSearchBox from "../components/common/StockSearchBox";
 import StockQuoteCard from "../components/common/StockQuoteCard";
 import { TrendingUp, TrendingDown, Star, Check, Flame, ArrowDownRight, BarChart3, Activity, RefreshCw } from "lucide-react";
@@ -165,6 +166,8 @@ export default function Screener() {
             </thead>
             <tbody>
               {rows.map((item: any, i: number) => {
+                const ext = extPrice(item.daytime);   // 미국 프리·애프터마켓이면 현재가 자리에 그 가격
+                const chg = ext ? ext.change_rate : item.change_rate;
                 const isInWatchlist = watchlistSymbols.has(item.symbol) || added.has(item.symbol);
                 const isKR = item.market === "KR" || market === "KR";
                 return (
@@ -177,7 +180,7 @@ export default function Screener() {
                   >
                     <td style={{ padding: "12px 16px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        {item.change_rate >= 0
+                        {chg >= 0
                           ? <TrendingUp size={14} style={{ color: "var(--green)" }} />
                           : <TrendingDown size={14} style={{ color: "var(--red)" }} />}
                         <div>
@@ -187,10 +190,11 @@ export default function Screener() {
                       </div>
                     </td>
                     <td style={{ padding: "12px 16px", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                      {isKR ? `₩${(item.price || 0).toLocaleString()}` : `$${(item.price || 0).toFixed(2)}`}
+                      {ext && <><SessionTag d={ext} close={item.price} closeRate={item.change_rate} size={10.5} />{" "}</>}
+                      <span data-testid="screener-price">{isKR ? `₩${(item.price || 0).toLocaleString()}` : `$${((ext ? ext.price : item.price) || 0).toFixed(2)}`}</span>
                     </td>
                     <td style={{ padding: "12px 16px" }}>
-                      <ChangeTag value={item.change_rate} />
+                      <ChangeTag value={chg} />
                     </td>
                     <td style={{ padding: "12px 16px", color: "var(--text-secondary)", fontVariantNumeric: "tabular-nums", fontSize: 13 }}>
                       {mode === "trading_value"

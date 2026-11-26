@@ -496,6 +496,10 @@ async function run() {
       extended: { open: true, label: "애프터마켓", session_date: "2026-11-25", hours_kst: "06:00~10:00" } } },
     "GET /api/watchlist/analysis": F.WATCHLIST.map((w) => w.symbol === "AVGO" ? { ...w, daytime: F.AFTER } : w),
     "GET /api/stocks/quote/US/AVGO": { ...F.QUOTE_AVGO, daytime: F.AFTER },
+    "GET /api/stocks/screener/us/trading_value": [
+      { symbol: "NVDA", name: "엔비디아", market: "US", price: 149.3, change_rate: -3.91, volume: 1, trading_value_display: "$53.68B",
+        daytime: { ...F.AFTER, price: 151.68, base: 149.3, change_rate: 1.59 } },
+      { symbol: "MU", name: "마이크론 테크놀로지", market: "US", price: 601.25, change_rate: -4.57, volume: 1, trading_value_display: "$31.45B" }],
     "GET /api/stocks/recommendations/shortterm": { ...F.RECS, items: F.RECS.items.map((r) => r.symbol === "AVGO" ? { ...r, daytime: F.AFTER } : r) },
     "GET /api/stocks/recommendations/longterm": { ...F.RECS, items: F.RECS.items.map((r) => r.symbol === "AVGO" ? { ...r, daytime: F.AFTER } : r) } }) }, async (page) => {
     await page.goto(`${BASE}/watchlist`);
@@ -511,6 +515,15 @@ async function run() {
     await page.getByRole("button", { name: "표", exact: true }).click();
     const row = await page.locator("tr").filter({ hasText: "브로드컴" }).first().innerText();
     expect(row.includes("애프터마켓") && row.includes("$307.50") && row.includes("+1.02%") && !row.includes("$304.41"), `표 보기: ${row}`);
+    // 종목탐색 미국 표 (거래대금 순): 애프터마켓 가격이 있는 종목만 바뀜
+    await page.goto(`${BASE}/screener`);
+    await page.getByRole("button", { name: /미국/ }).first().click();
+    const nv = page.locator("tr").filter({ hasText: "엔비디아" }).first();
+    await nv.getByTestId("session-tag").waitFor();
+    const nvt = await nv.innerText();
+    expect(nvt.includes("애프터마켓") && nvt.includes("$151.68") && nvt.includes("+1.59%") && !nvt.includes("$149.30"), `스크리너 엔비디아: ${nvt}`);
+    const mut = await page.locator("tr").filter({ hasText: "마이크론" }).first().innerText();
+    expect(mut.includes("$601.25") && !mut.includes("애프터마켓"), `시간외 없는 종목: ${mut}`);
     // 종목탐색 (엔비디아 같은 종목 상세 카드)
     await page.goto(`${BASE}/screener`);
     await page.locator("input").first().fill("브로드컴");

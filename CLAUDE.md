@@ -113,7 +113,7 @@ services/
                    프리마켓(04:00~09:30 ET)·애프터마켓(16:00~20:00 ET, market_calendar.us_ext_session) = Yahoo 5분봉 prepost 의 오늘 그 시간대 마지막 체결,
                    행의 현재가(KIS 정규장 종가) 대비 등락률, 60초 캐시, 빈 응답·봉 없는 종목은 error (KIS 해외 현재가는 정규장 가격만 줘서).
                    attach(rows, extended) 가 **새 목록** 반환 (캐시된 원본 안 바꿈). 표시 전용 — 예측 확률·매입가 계산엔 안 씀.
-                   관심종목·투자종목·AI 추천·종목 조회 응답에 붙음. 대시보드 빅테크/ETF 는 주간거래만(extended=False — 시간외는 market_data 의 ext)
+                   관심종목·투자종목·AI 추천·종목 조회 응답에 붙음. attach_screener = 종목탐색 미국 표(Yahoo 스크리너 시세의 pre/postMarketPrice, 없으면 앞 30종목만 5분봉). 대시보드 빅테크/ETF 는 주간거래만(extended=False — 시간외는 market_data 의 ext)
   invites.py     — 초대 코드: 헷갈리는 글자 뺀 12글자(XXXX-XXXX-XXXX, 약 60비트), HMAC(SECRET_KEY) 해시만 저장, 1회용·기본 3일(1~14)·관리자당 사용 가능 10개,
                    consume = 조건부 UPDATE (같은 코드 동시 가입은 한 명만)
   pwned.py       — 유출 비밀번호 확인 (Have I Been Pwned range API, SHA-1 앞 5글자만 전송 + Add-Padding, 앞자리 캐시). 확인 못 하면 None(막지 않음)

@@ -304,3 +304,52 @@ def test_attach_after_hours_error_not_cached(after_hours):
     assert out[0]["daytime"]["label"] == "애프터마켓" and "조회 실패" in out[0]["daytime"]["error"]
     run(us_daytime.attach([{"symbol": "GONE", "market": "US", "price": 1.0}]))
     assert after_hours["calls"] == 4                # 종목 실패도 캐시 안 함
+
+
+# ---------------- 미국 스크리너 (Yahoo 시세의 pre/postMarketPrice) ----------------
+
+def _srow(sym, price, post=None):
+    r = {"symbol": sym, "name": sym, "market": "US", "price": price, "change_rate": -3.91}
+    if post:
+        r["_ext"] = {"post": {"price": post[0], "time": post[1].timestamp()}}
+    return r
+
+
+def test_attach_screener_uses_quote_fields(after_hours):
+    rows = [_srow("NVDA", 149.30, (151.68, et(2026, 11, 25, 19, 35))),     # 사용자 화면: 149.30 → 애프터 151.68
+            _srow("MU", 601.25, (600.0, et(2026, 11, 24, 19, 59))),        # 어제 애프터마켓 값 → 안 씀 (5분봉으로)
+            _srow("AVGO", 304.41)]                                          # 시세에 시간외 없음 → 5분봉으로
+    out = run(us_daytime.attach_screener(rows))
+    d = out[0]["daytime"]
+    assert d["label"] == "애프터마켓" and d["price"] == 151.68 and d["base"] == 149.30
+    assert d["change_rate"] == pytest.approx(1.59, abs=0.01) and d["et_time"] == "19:35 ET"
+    assert "daytime" not in out[1]                     # 5분봉에도 오늘 애프터 체결 없음
+    assert out[2]["daytime"]["price"] == 307.5
+    assert all("_ext" not in r for r in out) and "_ext" in rows[0]    # 캐시된 원본은 그대로
+    assert after_hours["calls"] == 1                   # 시세에 있던 NVDA 는 따로 안 받음
+
+
+def test_attach_screener_closed_and_limit(after_hours, monkeypatch):
+    rows = [_srow(f"S{i}", 10.0) for i in range(50)]
+    seen = []
+
+    async def fake_many(symbols, session):
+        seen.extend(symbols)
+        return {}
+    monkeypatch.setattr(us_daytime, "_ext_many", fake_many)
+    run(us_daytime.attach_screener(rows))
+    assert len(seen) == 30                              # 200종목 전부 받지 않음 (앞쪽만)
+    monkeypatch.setattr(us_daytime, "us_ext_session", lambda: {"open": False, "label": None})
+    out = run(us_daytime.attach_screener([_srow("NVDA", 149.3, (151.68, et(2026, 11, 25, 19, 35)))]))
+    assert "daytime" not in out[0] and "_ext" not in out[0]
+
+
+def test_us_screener_keeps_ext_quote_fields(monkeypatch):
+    from app.api.routes import stocks
+    monkeypatch.setattr(stocks.yf, "screen", lambda q, count=200: {"quotes": [
+        {"symbol": "NVDA", "shortName": "NVIDIA", "regularMarketPrice": 149.3, "regularMarketChangePercent": -3.91,
+         "regularMarketVolume": 100, "postMarketPrice": 151.68, "postMarketTime": 1795000000},
+        {"symbol": "MU", "shortName": "Micron", "regularMarketPrice": 601.25, "regularMarketVolume": 10}]})
+    rows = {r["symbol"]: r for r in stocks._us_screener_sync("trading_value")}
+    assert rows["NVDA"]["_ext"] == {"post": {"price": 151.68, "time": 1795000000}}
+    assert rows["MU"]["_ext"] == {}
