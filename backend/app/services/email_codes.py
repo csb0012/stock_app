@@ -101,7 +101,7 @@ async def verify(db, email: str, purpose: str, code: str, consume: bool = True):
         row.attempts += 1
         await db.commit()
         left = MAX_ATTEMPTS - row.attempts
-        raise CodeError(f"인증 코드가 틀렸습니다" + (f" (남은 기회 {left}번)" if left else " — 코드를 다시 받으세요"))
+        raise CodeError("인증 코드가 틀렸습니다" + (f" (남은 기회 {left}번)" if left else " — 코드를 다시 받으세요"))
     if consume:
         await db.delete(row)
         await db.commit()

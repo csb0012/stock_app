@@ -8,7 +8,7 @@ export const GURUS = {
       top: [{ ticker: "MU", issuer: "MICRON", weight: 17.61, change: "add" }, { ticker: "AMZN", issuer: "AMAZON", weight: 14.75, change: "reduce" }] },
     { key: "buffett", name: "워런 버핏", firm: "버크셔 해서웨이", style: "좋은 기업을 적정 가격에 사서 오래 보유하는 가치투자", period: "2026-09-30",
       filed: "2026-11-16", prev_period: "2026-06-30", stale: false, n_holdings: 30, total_value: 3.04e11, est_return_1y: 12.1, est_coverage: 95.6,
-      n_new: 1, n_sold: 0, top: [{ ticker: "AAPL", issuer: "APPLE INC", weight: 24.95, change: "same" }] },
+      n_new: 1, n_sold: 0, n_recent: 2, recent_buys: 1, top: [{ ticker: "AAPL", issuer: "APPLE INC", weight: 24.95, change: "same" }] },
     { key: "ackman", name: "빌 애크먼", firm: "퍼싱 스퀘어", style: "소수 우량주 집중", period: "2026-03-31", filed: "2026-05-15",
       prev_period: "2025-12-31", stale: true, n_holdings: 11, total_value: 1.2e10, est_return_1y: -6.5, est_coverage: 100, n_new: 0, n_sold: 0, top: [] },
   ],
@@ -18,6 +18,8 @@ export const GURUS = {
     by_guru: { buffett: { n: 12, avg_excess: 2.1, beat_rate: 58.3, avg_return: 6.2 }, tepper: { n: 30, avg_excess: -3.2, beat_rate: 40.0, avg_return: 1.0 } },
     recent: [],
   },
+  validation_recent: { horizon_days: 63, n: 76, avg_excess: -0.1, beat_rate: 42.1, pending: 35, validated: false },
+  validation_recent_ai: { n: 3, avg_excess: -5.21, beat_rate: 33.3, signals: 115, passed: 7, validated: false },
   validation_ai: { horizon_days: 63, benchmark: "SPY", n: 120, avg_excess: 1.4, beat_rate: 56.1, avg_return: 5.2, pending: 20, missing: 0,
     validated: true, multi: { n: 10 }, by_guru: {}, recent: [], rule: "AI 점수 60↑ · 상승확률 55%↑ · 50일선 위", signals: 775, passed: 120 },
   status: { running: false, step: null, done: 33, total: 33, message: "대가 33명 · 종목 735개", errors: [], cusip_pending: 0, stale: false },
@@ -44,6 +46,11 @@ export const GURU_DETAIL = {
       change: "new", share_change_pct: null, prev_weight: null, change_52w: null, price: null, n_holders: null },
   ],
   sold: [{ cusip: "111111111", ticker: "DVA", issuer: "DAVITA", prev_weight: 1.2 }],
+  moves: [
+    { date: "2026-11-16", trade_date: "2026-09-30", form: "13G/A", kind: "stake_up", ticker: "DAL", issuer: "Delta Air Lines", pct: 9.8, pct_prev: 7.1 },
+    { date: "2026-11-12", trade_date: "2026-11-10", form: "Form 4", kind: "buy", ticker: "OXY", issuer: "Occidental", shares: 120000, price: 52.3 },
+  ],
+  ark: null,
 };
 
 export const VALUE_SCREENS = {

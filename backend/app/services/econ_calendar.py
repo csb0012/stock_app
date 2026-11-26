@@ -147,6 +147,20 @@ FOMC = dict(
 )
 
 
+BOK = dict(
+    name="한국은행 금통위 기준금리 결정", impact="high", metric="한국 기준금리", words=("인상", "인하", "동결"),
+    about="한국은행 금융통화위원회가 한국 기준금리를 정하는 회의 (1년 8번, 보통 목요일 오전 10시 전후 발표). "
+          "대출·예금 금리, 원/달러 환율, 코스피·코스닥에 바로 영향. 총재 기자간담회의 앞으로 금리 방향 발언도 중요.",
+    up="금리 인상 → 대출 이자 부담 ↑ · 원화 강세 경향 → 성장주·부동산·건설 등 금리 민감 업종에 부담, 은행·보험은 상대적으로 유리할 수 있음.",
+    down="금리 인하 → 유동성 ↑ → 주식에 우호적 · 원화 약세 경향(수출주 유리). 경기 둔화 때문에 내린 것이면 반응이 엇갈릴 수 있음.",
+    flat="동결 → 시장은 결정문 문구·소수의견·총재 기자간담회에서 다음 금리 방향 힌트에 반응.",
+)
+# 이벤트 관련 뉴스 (Google 뉴스 한국어 — news.TRUSTED_KR 언론사만): 발표일 앞뒤 며칠만, 30분 캐시
+NEWS_QUERY = {"bok": "한국은행 기준금리 금통위", "fomc": "FOMC 금리 결정"}
+NEWS_DAYS = (-3, 1)            # 오늘 기준 3일 전 ~ 내일 일정에만 뉴스를 붙임
+_news_cache: dict = {}         # 검색어 → (시각, 기사)
+
+
 def err_text(e: BaseException) -> str:
     """화면·로그용 오류 문구 — httpx 시간 초과·연결 오류는 str(e) 가 빈 문자열이라 종류를 적어 줌"""
     if isinstance(e, httpx.TimeoutException):
@@ -366,7 +380,7 @@ async def _fomc_value(client, day: str) -> dict:
 
 
 def _explain(e: dict) -> dict:
-    ind = FOMC if e["key"] == "fomc" else INDICATORS[e["key"]]
+    ind = FOMC if e["key"] == "fomc" else BOK if e["key"] == "bok" else INDICATORS[e["key"]]
     out = {"about": ind["about"], "metric": ind["metric"],
            "scenarios": {w: ind[c] for c, w in zip(("up", "down", "flat"), ind["words"])}}
     if e.get("change"):
@@ -382,6 +396,8 @@ async def _attach_values(events: list) -> list:
     errors = []
 
     async def one(client, e):
+        if e["key"] == "bok":   # 한국은행 — _bok_events 가 이미 값을 붙임
+            return
         if e["date"] > today:
             e.update(released=False)
             if e["date"] <= date.today().isoformat():
@@ -416,6 +432,66 @@ async def _attach_values(events: list) -> list:
     return errors
 
 
+async def _bok_events(start: str, end: str, now: datetime | None = None) -> list:
+    """한국은행 금통위 결정일 (일정·결과는 bok.py — 한국은행 홈페이지)"""
+    from app.services import bok
+    years = sorted({int(start[:4]), int(end[:4])})
+    data = await bok.fetch(years)
+    out = []
+    for d in data["schedule"]:
+        if not (start <= d <= end):
+            continue
+        e = {"date": d, "key": "bok", "event": BOK["name"], "country": "KR", "impact": "high"}
+        v = bok.decision_on(d, data["rates"], data["latest"], now)
+        if v["released"]:
+            words = dict(zip(("up", "down", "flat"), BOK["words"]))
+            diff = (v["actual"] - v["previous"]) if v.get("previous") is not None else 0.0
+            e.update(released=True, actual=f"{v['actual']:.2f}%", prev=f"{v['previous']:.2f}%" if v.get("previous") is not None else "-",
+                     period="", metric=BOK["metric"], change=v["change"],
+                     change_text=words[v["change"]] if v["change"] == "flat" else f"{'▲' if diff > 0 else '▼'} {abs(diff):.2f}%p {words[v['change']]}")
+            if v.get("statement"):
+                e["statement"] = v["statement"]
+        else:
+            e.update(released=False, note=v.get("note"))
+        out.append(e)
+    return out
+
+
+def _news_query(e: dict) -> str | None:
+    if e["key"] in NEWS_QUERY:
+        return NEWS_QUERY[e["key"]]
+    ind = INDICATORS.get(e["key"])
+    return f"미국 {ind['name'].replace('미국 ', '')}" if ind else None
+
+
+async def _attach_news(events: list) -> list:
+    """발표일 앞뒤 며칠 일정에 관련 한국어 기사 (믿을 만한 언론사만, 최근 7일). 실패는 note — 일정·값은 그대로"""
+    from app.services import news
+    today = date.today()
+    lo, hi = (today + timedelta(days=NEWS_DAYS[0])).isoformat(), (today + timedelta(days=NEWS_DAYS[1])).isoformat()
+    errors = []
+    for e in events:
+        if not (lo <= e["date"] <= hi):
+            continue
+        q = _news_query(e)
+        if not q:
+            continue
+        hit = _news_cache.get(q)
+        if not hit or time.time() - hit[0] > 1800:
+            try:
+                arts = await news._fetch_google(f"{q} when:7d", "ko")
+            except Exception as ex:   # noqa: BLE001
+                errors.append(f"뉴스({q}): {err_text(ex)}")
+                e["news_error"] = "관련 뉴스를 못 받음"
+                continue
+            since = (today - timedelta(days=7)).isoformat()
+            arts = [a for a in arts if news._trusted_kr(a.get("press")) and (a.get("date") or "") >= since][:5]
+            hit = (time.time(), arts)
+            _news_cache[q] = hit
+        e["news"] = hit[1]
+    return errors
+
+
 async def get_economic_calendar() -> dict:
     """경제 캘린더 (최근 2주 + 앞으로 4주): FRED 발표 일정 + 연준 FOMC 일정 + 발표값·해설.
     일정을 하나도 못 받으면 오류 (가짜 일정 없음)."""
@@ -437,6 +513,12 @@ async def get_economic_calendar() -> dict:
     except Exception as e:
         errors.append(f"FOMC 일정(연준): {err_text(e)}")
         retry = True
+    try:
+        events += await _bok_events(start, end)
+        used.append("한국은행 금통위 일정·기준금리")
+    except Exception as e:
+        errors.append(f"한국은행 금통위: {err_text(e)}")
+        retry = True
     if not used:
         raise RuntimeError(" / ".join(errors))
     events.sort(key=lambda e: (e["date"], e["event"]))
@@ -444,5 +526,8 @@ async def get_economic_calendar() -> dict:
     if value_errors:
         errors.append(f"발표값 {len(value_errors)}건 조회 실패 ({value_errors[0]})")
         retry = True
+    news_errors = await _attach_news(events)
+    if news_errors:
+        errors.append(f"관련 뉴스 {len(news_errors)}건 실패 ({news_errors[0]})")
     return {"source": " + ".join(used), "events": events, "errors": errors, "retry": retry,
             "disclaimer": DISCLAIMER}

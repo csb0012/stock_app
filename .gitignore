@@ -39,6 +39,8 @@ backend/app/data/accumulation.json
 backend/app/data/guru_filings.json
 backend/app/data/cusip_map.json
 backend/app/data/gurus.json
+backend/app/data/guru_moves.json
+backend/app/data/ark_daily.json
 backend/app/data/sec_tickers.json
 backend/app/data/fundamentals_kr.json
 backend/app/data/quant_frames.pkl

@@ -663,3 +663,25 @@ def test_sms_errors(solapi, monkeypatch):
     monkeypatch.setattr(settings, "sms_daily_limit", 0)
     with pytest.raises(sms.SmsError, match="연결하지 못했습니다"):
         run(sms.send("01012345678", "t"))
+
+
+def test_old_token_cannot_enter_new_account_with_same_username(env):
+    """탈퇴 뒤 다른 사람이 같은 아이디로 가입 → 예전 토큰(아직 12시간 안)으로 새 계정에 못 들어감 (2026-11-26 점검에서 발견)"""
+    c, sent, Session = env
+    old_tok = signup(c, sent, "samename", "first@naver.com", "firstpw12").json()["access_token"]
+    assert c.post("/api/auth/delete-account", json={"password": "firstpw12"}, headers=h(old_tok)).status_code == 200
+    new_tok = signup(c, sent, "samename", "second@naver.com", "secondpw34").json()["access_token"]
+    assert c.get("/api/auth/me", headers=h(new_tok)).status_code == 200
+    r = c.get("/api/auth/me", headers=h(old_tok))
+    assert r.status_code == 401, r.text
+
+
+def test_login_unknown_user_still_checks_password(env, monkeypatch):
+    """없는 아이디도 비밀번호 확인(bcrypt)을 한 번 해서 응답 시간으로 가입 여부가 드러나지 않게"""
+    from app.api.routes import auth
+    calls = []
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", lambda pw, hashed: calls.append(hashed) or real(pw, hashed))
+    c, sent, Session = env
+    r = c.post("/api/auth/login", json={"username": "nobody-here", "password": "whatever1"})
+    assert r.status_code == 401 and calls == [auth._DUMMY_HASH]

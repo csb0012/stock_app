@@ -30,6 +30,40 @@ function Avatar({ name }: { name: string }) {
   );
 }
 
+const MOVE: Record<string, [string, string]> = {
+  buy: ["매수", "var(--green)"], sell: ["매도", "var(--red)"], stake_new: ["5%↑ 새로 보유", "var(--green)"],
+  stake_up: ["지분 늘림", "var(--green)"], stake_down: ["지분 줄임", "var(--red)"], stake: ["지분 신고", "var(--text-secondary)"],
+};
+
+/** 13F 이후 최근 매매 — Form 4(내부자 매매, 2영업일 안) · 13D/13G(5%↑ 지분) · ARK 매일 보유 변화 */
+export function RecentMoves({ moves, onPick }: { moves: any[]; onPick?: (x: any) => void }) {
+  if (!moves?.length) return <p style={{ fontSize: 12, color: "var(--text-muted)" }}>13F 이후 새 공시(Form 4·13D/13G) 없음</p>;
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table className="data-table" data-testid="guru-moves">
+        <thead><tr><th>공시일</th><th>종목</th><th>내용</th><th>출처</th></tr></thead>
+        <tbody>
+          {moves.slice(0, 30).map((m: any, i: number) => {
+            const [label, color] = MOVE[m.kind] || [m.kind, "var(--text-secondary)"];
+            const detail = m.form === "Form 4" ? `${m.shares?.toLocaleString() ?? "-"}주${m.price ? ` · $${m.price}` : ""}`
+              : m.form === "ARK 매일" ? (m.new ? "신규 편입" : m.exit ? "전량 매도" : `${m.change_pct > 0 ? "+" : ""}${m.change_pct}% 수량`)
+              : `${m.pct_prev != null ? `${m.pct_prev}% → ` : ""}${m.pct ?? "-"}%`;
+            return (
+              <tr key={i} style={{ cursor: m.ticker && onPick ? "pointer" : undefined }}
+                onClick={() => m.ticker && onPick?.({ market: "US", symbol: m.ticker, name: m.issuer })}>
+                <td style={{ whiteSpace: "nowrap" }}>{m.date}</td>
+                <td><div style={{ fontWeight: 600 }}>{m.issuer}</div><div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>{m.ticker || "-"}</div></td>
+                <td style={{ color, fontWeight: 600 }}>{label} <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>{detail}</span></td>
+                <td style={{ color: "var(--text-muted)", fontSize: 11.5 }}>{m.form}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function GuruDetail({ k, onPick, onClose }: { k: string; onPick: (x: any) => void; onClose: () => void }) {
   const { data, isLoading, error } = useQuery({ queryKey: ["guru", k], queryFn: () => guruApi.detail(k).then((r) => r.data), staleTime: 30 * 60 * 1000 });
   const g = data?.guru;
@@ -50,6 +84,19 @@ function GuruDetail({ k, onPick, onClose }: { k: string; onPick: (x: any) => voi
       </div>
       {isLoading && <p style={{ color: "var(--text-muted)", fontSize: 13 }}>불러오는 중...</p>}
       {error && <p style={{ color: "var(--red)", fontSize: 13 }}>{errMsg(error)}</p>}
+      {data && (
+        <div style={{ marginBottom: 14 }} data-testid="guru-recent">
+          <h3 style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>13F 이후 최근 매매 <span style={{ fontWeight: 400, fontSize: 11.5, color: "var(--text-muted)" }}>
+            — Form 4(10%↑ 주주·임원 매매, 2영업일 안 공시) · 13D/13G(5%↑ 지분 신고){data.ark ? " · ARK 매일 보유 변화" : ""}</span></h3>
+          <RecentMoves moves={data.moves || []} onPick={onPick} />
+          {data.ark && (
+            <p style={{ fontSize: 12, color: "var(--text-secondary)", marginTop: 8 }} data-testid="guru-ark">
+              <strong>ARK 펀드 합계 보유 ({data.ark.date}, 매일):</strong>{" "}
+              {data.ark.holdings.slice(0, 10).map((h: any) => `${h.ticker} ${h.weight}%`).join(", ")}
+            </p>
+          )}
+        </div>
+      )}
       {data && (
         <div style={{ overflowX: "auto" }}>
           <table className="data-table">
@@ -163,6 +210,7 @@ export default function Gurus() {
                   {quarter(g.period)}{g.stale ? " (최근 공시 없음)" : ""} · {g.n_holdings}종목
                   {g.n_new > 0 && <span style={{ color: "var(--green)" }}> · 신규 {g.n_new}</span>}
                   {g.n_sold > 0 && <span style={{ color: "var(--red)" }}> · 전량 매도 {g.n_sold}</span>}
+                  {g.n_recent > 0 && <span style={{ color: "var(--accent)" }} data-testid="guru-recent-count"> · 13F 이후 공시 {g.n_recent}건</span>}
                   {" · "}{g.top.slice(0, 3).map((t: any) => `${t.ticker || t.issuer} ${t.weight.toFixed(0)}%`).join(", ")}
                 </div>
               </div>
@@ -175,7 +223,7 @@ export default function Gurus() {
       {tab === "stocks" && (
         <>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-            {([["holders", "많이 보유"], ["buyers", "이번 분기 많이 산"], ["sellers", "이번 분기 많이 판"]] as [string, string][]).map(([s, label]) => (
+            {([["holders", "많이 보유"], ["buyers", "이번 분기 많이 산"], ["sellers", "이번 분기 많이 판"], ["recent", "최근 공시로 산 (13F 이후)"]] as [string, string][]).map(([s, label]) => (
               <button key={s} className={`btn ${sort === s ? "btn-primary" : "btn-ghost"}`} style={{ fontSize: 12, padding: "4px 9px" }} onClick={() => setSort(s)}>{label}</button>
             ))}
           </div>
@@ -230,6 +278,19 @@ export default function Gurus() {
                   <div style={{ fontWeight: 600, color: va.validated ? "var(--green)" : "var(--yellow)" }}>
                     {va.validated ? "✓ 통과 → 대가가 이번 분기에 산 종목을 AI 모의투자·KIS 미국 주문의 판단 후보에 넣습니다 (사고팔지는 AI 점수가 정함)"
                       : "미달 → 대가 종목을 판단 후보에 넣지 않습니다 (대가를 무조건 따라가지 않음). 이미 후보인 종목엔 '대가 매수' 이유만 붙음"}
+                  </div>
+                </div>
+              )}
+              {(d?.validation_recent || d?.validation_recent_ai) && (
+                <div data-testid="guru-validation-recent" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.7 }}>
+                  <strong>13F 보다 빠른 공시를 따라 샀다면</strong> (Form 4 장내 매수 · 13D/13G 새 5%↑·지분 증가 · ARK 매일 매수 — 공시 다음 거래일에 사서 {d.validation_recent?.horizon_days ?? 63}거래일)
+                  <div>그냥 따라 사기: S&P500 대비 평균 <strong>{d.validation_recent?.avg_excess == null ? "-" : `${d.validation_recent.avg_excess > 0 ? "+" : ""}${d.validation_recent.avg_excess}%p`}</strong>,
+                    {" "}이긴 비율 {d.validation_recent?.beat_rate ?? "-"}% ({d.validation_recent?.n ?? 0}건{d.validation_recent?.pending ? `, 기간 안 끝난 ${d.validation_recent.pending}건 제외` : ""})</div>
+                  {d.validation_recent_ai && <div>+ AI 필터: {d.validation_recent_ai.signals}건 중 {d.validation_recent_ai.passed}건 통과 → 평균{" "}
+                    <strong>{d.validation_recent_ai.avg_excess == null ? "-" : `${d.validation_recent_ai.avg_excess > 0 ? "+" : ""}${d.validation_recent_ai.avg_excess}%p`}</strong> ({d.validation_recent_ai.n}건)</div>}
+                  <div style={{ fontWeight: 600, color: d.validation_recent_ai?.validated ? "var(--green)" : "var(--yellow)" }}>
+                    {d.validation_recent_ai?.validated ? "✓ 통과 → 최근 공시로 산 종목도 AI 모의투자·KIS 미국 판단 후보에 넣습니다"
+                      : "아직 표본이 적거나 미달 → 판단 후보엔 안 넣고 '대가 최근 매수' 이유로만 표시 (ARK 매일 기록은 서버가 받은 날부터 쌓임)"}
                   </div>
                 </div>
               )}

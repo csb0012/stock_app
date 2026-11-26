@@ -8,6 +8,7 @@
   - 미국 종목: 대상일 당일 발표
   - 국내 종목: 직전 국내 거래일 ~ 대상일 전날 밤 발표 → "간밤 미국 ○○ 결과가 반영되는 날",
                대상일 당일 발표 → "오늘 밤 미국 ○○ 발표 예정"
+- 한국은행 금통위 기준금리 결정일 (한국은행 홈페이지 일정, country=KR): 국내 종목 대상일 당일 → "한국은행 금리 결정일" (미국 종목엔 안 붙임)
 FRED 키가 없거나 조회 실패하면 그 경고만 빠지고 status() 에 사유가 남음 (가짜 일정으로 채우지 않음)
 """
 import time
@@ -56,6 +57,15 @@ async def refresh():
     except Exception as e:
         errors.append(f"FOMC 일정(연준) 조회 실패: {err_text(e)}")
         retry = True
+    try:
+        from app.services import bok
+        sched = (await bok.fetch(sorted({int(start[:4]), int(end[:4])})))["schedule"]
+        events += [{"date": d, "key": "bok", "event": "한국은행 금리 결정", "country": "KR", "impact": "high"}
+                   for d in sched if start <= d <= end]
+        ok = True
+    except Exception as e:
+        errors.append(f"한국은행 금통위 일정 조회 실패: {err_text(e)}")
+        retry = True
     if ok:   # 하나라도 받았으면 교체, 다 실패하면 이전 일정 유지
         _cache.update(ts=time.time(), events=sorted(events, key=lambda e: e["date"]))
     _cache.update(error=" / ".join(errors) or None, retry=retry)
@@ -96,6 +106,10 @@ def warnings_for(market: str, target: str) -> list:
         out.append(f"{ox} — 장 막판 변동성 주의")
     for e in _cache["events"]:
         d = date.fromisoformat(e["date"][:10])
+        if e.get("country") == "KR":   # 한국은행 — 국내 장중(오전 10시 전후) 발표
+            if market == "KR" and d == t:
+                out.append(f"{e['event']}일 — 변동성 주의")
+            continue
         if market == "US" and d == t:
             out.append(f"미국 {e['event'].replace('미국 ', '')} 발표일 — 변동성 주의")
         elif market == "KR":

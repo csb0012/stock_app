@@ -331,6 +331,10 @@ def event_labels(market: str, trade_day: str, macro: list) -> list:
     for e in macro:
         d = date.fromisoformat(e["date"][:10])
         name = e["event"].replace("미국 ", "")
+        if e.get("country") == "KR":   # 한국은행 금리 결정 — 국내 장중 발표라 그날만
+            if market == "KR" and d == t:
+                out.append(f"{name}일")
+            continue
         if market == "US" and d == t:
             out.append(f"{name} 발표일")
         elif market == "KR" and _prev_trading_day("KR", t) <= d < t:

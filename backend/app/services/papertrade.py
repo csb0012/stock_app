@@ -157,6 +157,13 @@ async def macro_events(start: str, end: str) -> tuple:
         evs += await _fomc_calendar(start, end)
     except Exception as e:
         notes.append(f"FOMC 일정 못 받음: {err_text(e)}")
+    try:   # 한국은행 금통위 (국내 시뮬레이션만 씀 — event_labels 가 country=KR 은 국내에만)
+        from app.services import bok
+        sched = (await bok.fetch(list(range(int(start[:4]), int(end[:4]) + 1))))["schedule"]
+        evs += [{"date": d, "key": "bok", "event": "한국은행 금리 결정", "country": "KR", "impact": "high"}
+                for d in sched if start <= d <= end]
+    except Exception as e:
+        notes.append(f"한국은행 금통위 일정 못 받음: {err_text(e)}")
     return evs, notes
 
 
@@ -362,7 +369,7 @@ async def _live_universe(market: str, user_id: int, positions: dict) -> tuple:
     # 가치주·쌍끌이(국내) / 투자 대가가 산 종목(미국, AI 필터 검증 통과 때만) 후보 + 이유·감점 (signals.live_candidates)
     try:
         from app.services import signals
-        lc = signals.live_candidates(market)
+        lc = signals.live_candidates(market, await signals.us_value_candidates() if market == "US" else None)
     except Exception as e:   # noqa: BLE001 — 후보를 못 늘려도 판단은 그대로
         print(f"[paper] 추가 후보 실패: {e}")
         lc = {"items": [], "tags": {}, "penalty": {}, "notes": []}

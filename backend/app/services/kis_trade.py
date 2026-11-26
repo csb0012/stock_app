@@ -40,6 +40,7 @@ from datetime import datetime, date, timedelta
 
 from sqlalchemy import select, update, func as sa_func
 
+from app.core.bg import spawn
 from app.core.database import AsyncSessionLocal
 from app.models.kis import KisTrade, KisOrder, KisLog
 from app.services import kis_order
@@ -703,7 +704,7 @@ async def schedule_intraday() -> bool:
             await propose_intraday()
         except Exception as e:   # noqa: BLE001 — _g('_intraday')['error'] 로 화면에 보임
             print(f"[kis] 장중 제안 실패: {e}")
-    _g('_intraday')["task"] = asyncio.get_running_loop().create_task(go())
+    _g('_intraday')["task"] = spawn(go())
     return True
 
 
@@ -1472,7 +1473,7 @@ def _alert_admins(subject: str, body: str, priority: int = 3, tags: list | None 
         except Exception as e:   # noqa: BLE001
             print(f"[kis] 알림 메일 실패: {type(e).__name__}: {str(e)[:100]}")
     try:
-        asyncio.get_running_loop().create_task(go())
+        spawn(go())
     except RuntimeError:
         pass
 

@@ -1,11 +1,6 @@
 """미국 거시경제 데이터 (yfinance, FRED 등 무료 소스)"""
 import yfinance as yf
 import asyncio
-from datetime import datetime
-from typing import Optional
-from functools import lru_cache
-import httpx
-from app.core.config import settings
 
 # 주요 티커 매핑
 INDEX_TICKERS = {

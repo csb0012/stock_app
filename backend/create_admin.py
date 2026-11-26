@@ -26,7 +26,8 @@ async def create_admin(username: str, password: str):
             print(f"이미 있는 아이디입니다: {username}")
             return 1
         has_admin = (await db.execute(select(User.id).where(User.is_admin.is_(True)).limit(1))).first()
-        db.add(User(username=username, hashed_password=get_password_hash(password), is_admin=not has_admin))
+        db.add(User(username=username, hashed_password=get_password_hash(password), is_admin=not has_admin,
+                    session_epoch=time.time()))   # 같은 아이디로 예전에 있던 계정의 토큰은 안 통하게
         await db.commit()
         print(f"계정 생성 완료: {username}" + ("" if has_admin else " (관리자)"))
         print("로그인하면 먼저 2단계 인증(Google Authenticator) QR 등록 화면이 나옵니다 — 등록해야 다른 화면을 쓸 수 있음")

@@ -7,6 +7,20 @@ from tests.conftest import run
 from app.services import econ_calendar as ec
 
 
+
+@pytest.fixture(autouse=True)
+def _no_kr_and_news(monkeypatch):
+    """이 파일은 미국(FRED·FOMC) 흐름만 — 한국은행 일정·관련 뉴스는 test_bok.py 에서"""
+    from app.services import econ_calendar
+
+    async def no_bok(start, end, now=None):
+        return []
+
+    async def no_news(events):
+        return []
+    monkeypatch.setattr(econ_calendar, "_bok_events", no_bok)
+    monkeypatch.setattr(econ_calendar, "_attach_news", no_news)
+
 def obs(pairs):
     return {"observations": [{"date": d, "value": v} for d, v in pairs]}
 
@@ -143,7 +157,11 @@ def test_calendar_no_sources_raises(monkeypatch):
     async def boom(start, end):
         raise RuntimeError("연결 실패")
     monkeypatch.setattr(ec, "_fomc_calendar", boom)
-    with pytest.raises(RuntimeError, match="FRED_API_KEY 없음"):
+
+    async def bok_boom(start, end, now=None):
+        raise RuntimeError("한국은행 막힘")
+    monkeypatch.setattr(ec, "_bok_events", bok_boom)
+    with pytest.raises(RuntimeError, match="FRED_API_KEY 없음.*한국은행 막힘"):
         run(ec.get_economic_calendar())
 
 

@@ -111,6 +111,12 @@ export const CALENDAR = {
       released: false, note: "FRED 에 아직 반영 전 (보통 발표 후 1시간 안에 올라옴)", explain: explain("소비자심리지수", ["개선", "악화", "같음"]) },
     { date: day(2), key: "gross domestic product", event: "미국 GDP", country: "US", impact: "high", released: false,
       explain: explain("미국 경제 성장률", ["성장 가속", "성장 둔화", "같음"]) },
+    { date: day(-1), key: "bok", event: "한국은행 금통위 기준금리 결정", country: "KR", impact: "high", released: true, actual: "3.25%", prev: "3.00%",
+      period: "", metric: "한국 기준금리", change: "up", change_text: "▲ 0.25%p 인상",
+      statement: "금융통화위원회는 기준금리를 3.00%에서 3.25%로 상향 조정하여 통화정책을 운용하기로 하였습니다.",
+      news: [{ title: "한은, 기준금리 3.25%로 인상", date: day(-1), url: "https://news.example.com/a", press: "연합뉴스" },
+             { title: "가짜 링크 기사", date: day(-1), url: "javascript:alert(1)", press: "이데일리" }],
+      explain: { ...explain("한국은행 금통위", ["인상", "인하", "동결"]), effect: "금리 인상 → 성장주 부담." } },
   ],
 };
 // 업데이트 전 백엔드가 주던 예전 형식 (발표값·해설 없음) — 화면에 '-' 만 보이던 상황 재현용

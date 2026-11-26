@@ -154,7 +154,10 @@ async def tick():
         _loop_status["last_fund"] = datetime.now().isoformat(timespec="seconds") + " " + (st.get("message") or "")
         changed = True
     # 수급: 업데이트 직후 한 번 — 대상의 절반 넘게 비어 있으면 전 종목 수집 (평소엔 scheduler flow_kr 18:10)
-    if flows.coverage(uni) < 0.5 and not flows.status().get("running"):
+    # 하루 한 번만 시도 — KIS 투자자 API 가 계속 실패하면(모의 키 미지원 등) 30분마다 1,800번씩 다시 부르지 않게 (2026-11-26 점검)
+    today = datetime.now().date().isoformat()
+    if flows.coverage(uni) < 0.5 and not flows.status().get("running") and _loop_status.get("flow_boot_day") != today:
+        _loop_status["flow_boot_day"] = today
         mark_background()
         r = await flows.collect(uni)
         _loop_status["last_flow_boot"] = f"{datetime.now().isoformat(timespec='seconds')} {len(uni)}종목 · 새 날짜 {r['added']}건"
@@ -195,7 +198,31 @@ def retail_status() -> dict:
     return _retail_cache["res"]
 
 
-def live_candidates(market: str) -> dict:
+US_VALUE_SCREENS = ("undervalued_growth", "high_roe_cheap", "cash_cow")
+US_VALUE_PER_SCREEN = 4
+_us_value_cache: dict = {"at": 0.0, "rows": None, "error": None}
+
+
+async def us_value_candidates() -> list:
+    """미국 가치주 찾기 조건(Yahoo 스크리너) 상위 → [{symbol, name, why}] (1시간 캐시, 실패하면 빈 목록 + 사유)"""
+    if _us_value_cache["rows"] is not None and time.time() - _us_value_cache["at"] < 3600:
+        return _us_value_cache["rows"]
+    names = {k: n for k, n, *_ in fundamentals._us_screens()}
+    out: dict = {}
+    errs = []
+    for key in US_VALUE_SCREENS:
+        try:
+            r = await asyncio.get_event_loop().run_in_executor(None, fundamentals.us_screen_sync, key, 25)
+        except Exception as e:   # noqa: BLE001
+            errs.append(f"{names[key]}: {str(e)[:80]}")
+            continue
+        for x in r["items"][:US_VALUE_PER_SCREEN]:
+            out.setdefault(x["symbol"], {"symbol": x["symbol"], "name": x["name"], "why": []})["why"].append(names[key])
+    _us_value_cache.update(at=time.time(), rows=list(out.values()), error="; ".join(errs) or None)
+    return _us_value_cache["rows"]
+
+
+def live_candidates(market: str, us_value: list | None = None) -> dict:
     """→ {items: [{symbol, name}], tags: {종목: [이유]}, penalty: {종목: (점수, 문구)}, notes}"""
     items, tags, pen, notes = {}, {}, {}, []
 
@@ -230,6 +257,11 @@ def live_candidates(market: str) -> dict:
             for sym in flows.retail_only_now():
                 pen[sym] = (rc["penalty"], f"개인만 순매수 −{rc['penalty']}점(과거 검증)")
     elif market == "US":
+        for x in us_value or []:   # 미국 가치주 찾기 조건 상위 (AI 추천의 가치 신호와 같은 출처)
+            items.setdefault(x["symbol"], {"symbol": x["symbol"], "name": x["name"]})
+            tag(x["symbol"], "가치주(" + "·".join(x["why"][:2]) + ")")
+        if _us_value_cache.get("error"):
+            notes.append(f"미국 가치주 후보 일부 실패: {_us_value_cache['error'][:80]}")
         g = gurus.result() or {}
         va = g.get("validation_ai") or {}
         stocks = sorted((g.get("stocks") or {}).values(), key=lambda s: (-s["n_buyers"], -s["n_holders"]))
@@ -238,9 +270,20 @@ def live_candidates(market: str) -> dict:
                 tag(s["ticker"], f"대가 매수({', '.join(b['name'] for b in s['buyers'][:2])})")
             elif s["n_holders"] >= 3:
                 tag(s["ticker"], f"대가 {s['n_holders']}명 보유")
+        vr = g.get("validation_recent_ai") or {}
+        for s in stocks:   # 13F 이후 최근 매매 (Form 4 · 13D/13G · ARK 매일)
+            if s.get("n_recent_buys"):
+                r0 = next((x for x in s.get("recent") or [] if x["kind"] in ("buy", "stake_new", "stake_up")), None)
+                if r0:
+                    tag(s["ticker"], f"대가 최근 매수({r0['name']} {r0['form']} {r0['date'][5:]})")
         if va.get("validated"):
             for s in [x for x in stocks if x["n_buyers"]][:MAX_GURU]:
                 items.setdefault(s["ticker"], {"symbol": s["ticker"], "name": s.get("name") or s["ticker"]})
         elif va:
-            notes.append(f"대가+AI 필터 검증 미달(S&P500 대비 {va.get('avg_excess')}%p) — 대가 종목은 후보에 안 넣음")
+            notes.append(f"대가+AI 필터 검증 미달(S&P500 대비 {va.get('avg_excess')}%p) — 13F 대가 종목은 후보에 안 넣음")
+        if vr.get("validated"):
+            for s in [x for x in stocks if x.get("n_recent_buys")][:MAX_GURU]:
+                items.setdefault(s["ticker"], {"symbol": s["ticker"], "name": s.get("name") or s["ticker"]})
+        elif vr:
+            notes.append("최근 매매(Form 4·13D/G·ARK)+AI 필터 검증 미달 — 그 종목은 후보에 안 넣음")
     return {"items": list(items.values()), "tags": tags, "penalty": pen, "notes": notes}

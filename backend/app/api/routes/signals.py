@@ -3,6 +3,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.core.bg import spawn
 from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.core.swr import SWRCache
@@ -21,8 +22,10 @@ async def guru_list(current_user: User = Depends(get_current_user)):
     r = gurus.result()
     st = {**gurus.status(), "stale": gurus.stale()}
     if not r:
-        return {"gurus": [], "validation": None, "validation_ai": None, "status": st, "updated_at": None, "errors": []}
-    return {"gurus": r["gurus"], "validation": r.get("validation"), "validation_ai": r.get("validation_ai"), "status": st,
+        return {"gurus": [], "validation": None, "validation_ai": None, "validation_recent": None, "validation_recent_ai": None,
+                "status": st, "updated_at": None, "errors": []}
+    return {"gurus": r["gurus"], "validation": r.get("validation"), "validation_ai": r.get("validation_ai"),
+            "validation_recent": r.get("validation_recent"), "validation_recent_ai": r.get("validation_recent_ai"), "status": st,
             "updated_at": r.get("updated_at"), "errors": r.get("errors", []), "unmapped": r.get("unmapped")}
 
 
@@ -31,9 +34,9 @@ async def guru_stocks(sort: str = "holders", limit: int = Query(100, ge=1, le=30
     """대가들이 많이 보유한·이번 분기에 많이 산 종목 (sort = holders | buyers | sellers)"""
     r = gurus.result() or {}
     rows = list((r.get("stocks") or {}).values())
-    key = {"buyers": "n_buyers", "sellers": "n_sellers"}.get(sort, "n_holders")
-    rows.sort(key=lambda s: (-s[key], -s["n_holders"], -sum(h["weight"] for h in s["holders"])))
-    rows = [s for s in rows if s[key] > 0][:limit]
+    key = {"buyers": "n_buyers", "sellers": "n_sellers", "recent": "n_recent_buys"}.get(sort, "n_holders")
+    rows.sort(key=lambda s: (-s.get(key, 0), -s["n_holders"], -sum(h["weight"] for h in s["holders"])))
+    rows = [s for s in rows if s.get(key, 0) > 0][:limit]
     return {"items": rows, "updated_at": r.get("updated_at"), "sort": sort}
 
 
@@ -50,7 +53,7 @@ async def guru_one(key: str, current_user: User = Depends(get_current_user)):
 async def guru_refresh(current_user: User = Depends(get_current_user)):
     """SEC 13F 다시 받기 (백그라운드 — 처음엔 티커 변환 때문에 5~10분)"""
     if not gurus.status()["running"]:
-        asyncio.create_task(gurus.refresh())
+        spawn(gurus.refresh())
         await asyncio.sleep(0)
     return gurus.status()
 

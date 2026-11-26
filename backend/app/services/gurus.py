@@ -17,7 +17,7 @@ import asyncio
 import json
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 import httpx
@@ -28,6 +28,9 @@ _DATA = Path(__file__).resolve().parents[1] / "data"
 _FILINGS_FILE = _DATA / "guru_filings.json"
 _CUSIP_FILE = _DATA / "cusip_map.json"
 _RESULT_FILE = _DATA / "gurus.json"
+_MOVES_FILE = _DATA / "guru_moves.json"      # Form 4·13D/13G 파싱 결과 (공시는 안 바뀌어서 acc 별로 한 번만)
+_ARK_FILE = _DATA / "ark_daily.json"         # ARK 매일 보유 합계 (날짜별, 120일)
+RECENT_SHOW_DAYS = 90                        # 종목 신호·후보에 쓰는 '최근 매매' 기간
 
 MAX_Q = 8                 # 대가별 최근 공시 몇 분기까지 (검증용 — 2년)
 KEEP_MIN_W = 0.0001       # 비중 0.01% 미만 줄은 저장 안 함 (파일 크기)
@@ -310,7 +313,7 @@ async def _filing_list(client, cik: int) -> tuple:
         if f["period"] not in seen:
             seen.add(f["period"])
             uniq.append(f)
-    return d.get("name", ""), uniq[:MAX_Q]
+    return d.get("name", ""), uniq[:MAX_Q], d
 
 
 async def _load_filing(client, cik: int, acc: str) -> dict:
@@ -513,6 +516,141 @@ def ai_filter(signals: list, ohlcv: dict) -> list:
     return out
 
 
+def attach_moves(res: dict, moves: dict, names: dict, today: date | None = None):
+    """대가별 최근 매매(13F 기준일 이후) + 종목별 '최근 90일 매매한 대가' 를 결과에 붙임 (순수 계산)"""
+    today = today or date.today()
+    cut = (today - timedelta(days=RECENT_SHOW_DAYS)).isoformat()
+    gname = {g[0]: g[1] for g in GURUS}
+    by_key = {g["key"]: g for g in res.get("gurus", [])}
+    res["moves"] = {}
+    for key, mv in moves.items():
+        period = (by_key.get(key) or {}).get("period") or cut
+        show = [m for m in mv if m["date"] > period][:40]
+        res["moves"][key] = show
+        if key in by_key:
+            by_key[key]["n_recent"] = len(show)
+            by_key[key]["recent_buys"] = sum(1 for m in show if m["kind"] in ("buy", "stake_new", "stake_up"))
+        for m in mv:
+            t = m.get("ticker")
+            if not t or m["date"] < cut:
+                continue
+            st = res["stocks"].setdefault(t, {"ticker": t, "name": names.get(t) or m.get("issuer") or t, "holders": [], "buyers": [],
+                                              "sellers": [], "n_holders": 0, "n_buyers": 0, "n_sellers": 0})
+            st.setdefault("recent", []).append({"key": key, "name": gname.get(key, key), "kind": m["kind"], "date": m["date"],
+                                                "form": m["form"], "pct": m.get("pct"), "change_pct": m.get("change_pct")})
+    for st in res["stocks"].values():
+        rc = st.get("recent") or []
+        st["recent"] = sorted(rc, key=lambda x: x["date"], reverse=True)[:8]
+        st["n_recent_buys"] = len({x["key"] for x in rc if x["kind"] in ("buy", "stake_new", "stake_up")})
+        st["n_recent_sells"] = len({x["key"] for x in rc if x["kind"] in ("sell", "stake_down")})
+
+
+def recent_signals(moves: dict) -> list:
+    """최근 매매 중 '샀다' → 검증용 신호 {key, ticker, filed, period, weight, src} (공시·파일 날짜 다음 거래일에 산 것으로)"""
+    from app.services import guru_recent
+    out = []
+    for key, mv in moves.items():
+        for m in guru_recent.buy_moves(mv):
+            out.append({"key": key, "ticker": m["ticker"], "filed": m["date"], "period": m["date"], "weight": None, "src": m["form"]})
+    return out
+
+
+async def _recent_moves(subs: dict) -> dict:
+    """대가별 Form 4·13D/13G (1년, 대가당 최근 MAX_PER_GURU 건) + ARK 매일 보유 변화 → {key: 매매 목록(최신 순)}"""
+    from app.services import guru_recent as gr
+    mcache = _read(_MOVES_FILE, {})
+    out: dict = {}
+    fails: list = []
+    since = gr.since_date()
+    try:
+        async with httpx.AsyncClient(headers={"User-Agent": _ua()}, timeout=30.0) as client:
+            tick_json = await _sec_tickers(client)
+            by_cik: dict = {}
+            for v in tick_json.values():
+                by_cik.setdefault(int(v["cik_str"]), v["ticker"].replace(".", "-"))
+            ciks = {g[0]: g[3] for g in GURUS}
+            for key, sub in subs.items():
+                parsed = []
+                for f in gr.recent_filings(sub, since)[:gr.MAX_PER_GURU]:
+                    if f["acc"] not in mcache:
+                        try:
+                            mcache[f["acc"]] = await _load_recent(client, ciks[key], f)
+                        except Exception as e:   # noqa: BLE001 — 그 공시만 건너뜀 (저장 안 해서 다음에 다시)
+                            fails.append(f"{key} {f['form']} {f['filed']}: {str(e)[:60]}")
+                            continue
+                    data = mcache[f["acc"]]
+                    if data is not None:
+                        parsed.append({**f, "data": data})
+                out[key] = gr.moves_from(parsed, by_cik)
+        keep = {f["acc"] for sub in subs.values() for f in gr.recent_filings(sub, since)}
+        _write(_MOVES_FILE, {a: v for a, v in mcache.items() if a in keep})
+        if fails:
+            _status["errors"].append(f"Form 4·13D/13G {len(fails)}건 못 받음 (다음에 다시): {fails[0]}")
+    except Exception as e:   # noqa: BLE001
+        _status["errors"].append(f"Form 4·13D/13G: {str(e)[:150]}")
+    try:
+        ark = await _ark_moves()
+        if ark:
+            out["wood"] = sorted((out.get("wood") or []) + ark, key=lambda m: m["date"], reverse=True)
+    except Exception as e:   # noqa: BLE001
+        _status["errors"].append(f"ARK 매일 보유: {str(e)[:150]}")
+    return out
+
+
+async def _load_recent(client, cik: int, f: dict):
+    """공시 1건 → Form 4 매매 목록 / 13D·13G 내용. XML 이 아닌 예전(2024 이전 13D/G 글) 공시는 None"""
+    from app.services import guru_recent as gr
+    doc = (f.get("doc") or "").split("/")[-1]
+    if not doc.lower().endswith(".xml"):
+        return None
+    text = (await _sec_get(client, f"https://www.sec.gov/Archives/edgar/data/{cik}/{f['acc'].replace('-', '')}/{doc}")).text
+    return gr.parse_form4(text, cik) if f["form"] in gr.FORMS_4 else gr.parse_13dg(text, cik)
+
+
+async def _ark_moves() -> list:
+    """ARK 펀드 6개 매일 보유 CSV → 합계를 날짜별로 저장 → 날마다 수량 변화. 오늘 파일만 있으면(처음) 매매 0건"""
+    from app.services import guru_recent as gr
+    parts, day, errs = [], None, []
+    async with httpx.AsyncClient(headers={"User-Agent": "Mozilla/5.0 (StockApp)"}, timeout=30.0, follow_redirects=True) as client:
+        for fund, files in gr.ARK_FUNDS.items():
+            best = None
+            for fname in files:
+                try:
+                    r = await client.get(gr.ARK_URL.format(fname))
+                    if r.status_code != 200:
+                        continue
+                    d, h = gr.parse_ark_csv(r.text)
+                    if d and h and (best is None or d > best[0]):
+                        best = (d, h)
+                except Exception as e:   # noqa: BLE001
+                    errs.append(f"{fund}: {str(e)[:60]}")
+            if best:
+                parts.append(best[1])
+                day = max(day or best[0], best[0])
+            else:
+                errs.append(f"{fund}: 보유 파일 없음")
+    if not parts:
+        raise RuntimeError("ARK 보유 파일을 하나도 못 받음 — " + "; ".join(errs[:2]))
+    snaps = _read(_ARK_FILE, {})
+    snaps[day] = gr.merge_funds(parts)
+    snaps = gr.trim_snapshots(snaps)
+    _write(_ARK_FILE, snaps)
+    return gr.ark_moves(snaps)
+
+
+def ark_holdings(limit: int = 30) -> dict | None:
+    """캐시 우드 ARK 펀드 합계 최신 보유 (매일) — 대가 상세 화면용"""
+    snaps = _read(_ARK_FILE, {})
+    if not snaps:
+        return None
+    day = max(snaps)
+    h = snaps[day]
+    total = sum(v["value"] for v in h.values()) or 1
+    rows = sorted(({"ticker": t, "issuer": v["company"], "weight": round(v["value"] / total * 100, 2), "shares": v["shares"]}
+                   for t, v in h.items()), key=lambda r: -r["weight"])
+    return {"date": day, "n": len(rows), "holdings": rows[:limit]}
+
+
 async def refresh(force: bool = False) -> dict:
     """13F 다시 받기 → 결과 저장 (이미 실행 중이면 상태만)"""
     global _result
@@ -525,11 +663,13 @@ async def refresh(force: bool = False) -> dict:
             cache = _read(_FILINGS_FILE, {})       # acc -> 저장본
             cmap = _read(_CUSIP_FILE, {})
             filings: dict = {}
+            subs: dict = {}                         # 대가 → SEC submissions (최근 Form 4·13D/13G 목록용)
             async with httpx.AsyncClient(headers={"User-Agent": _ua(), "Accept-Encoding": "gzip, deflate"},
                                          timeout=30.0, follow_redirects=True) as client:
                 for key, name, firm, cik, style in GURUS:
                     try:
-                        sec_name, lst = await _filing_list(client, cik)
+                        sec_name, lst, sub_json = await _filing_list(client, cik)
+                        subs[key] = sub_json
                         got = []
                         for f in lst:
                             if f["acc"] not in cache:
@@ -591,11 +731,17 @@ async def refresh(force: bool = False) -> dict:
             names = {t: _us_name(t) for t in latest}
             res = build(filings, cmap, quotes, {t: n for t, n in names.items() if n})
 
+            # 13F 이후 최근 매매 (Form 4 · 13D/13G · ARK 매일) — 실패해도 13F 결과는 그대로
+            _status["step"] = "최근 매매 (Form 4·13D/13G·ARK)"
+            moves = await _recent_moves(subs)
+            attach_moves(res, moves, {t: n for t, n in names.items() if n})
+            recent_sigs = recent_signals(moves)
+
             # 검증 (따라 사기)
             _status["step"] = "따라 사기 검증 (과거 주가)"
             sigs = buy_signals(filings, cmap)
             try:
-                tick = sorted({s["ticker"] for s in sigs} | {"SPY"})
+                tick = sorted({s["ticker"] for s in sigs + recent_sigs} | {"SPY"})
                 ohlcv = await asyncio.get_event_loop().run_in_executor(None, _ohlcv_sync, tick)
                 closes = _closes_of(ohlcv)
                 res["validation"] = validate(sigs, closes)
@@ -603,8 +749,14 @@ async def refresh(force: bool = False) -> dict:
                 passed = await asyncio.get_event_loop().run_in_executor(None, ai_filter, sigs, ohlcv)
                 res["validation_ai"] = {**validate(passed, closes), "rule": f"AI 점수 {AI_BUY_SCORE}↑ · 상승확률 {AI_MIN_PROB}%↑ · 50일선 위",
                                         "signals": len(sigs), "passed": len(passed)}
+                # 13F 보다 빠른 공시(Form 4 장내 매수 · 13D/13G 새 5%↑·지분 증가 · ARK 매일 매수)를 따라 샀다면 / + AI 필터
+                res["validation_recent"] = validate(recent_sigs, closes)
+                rp = await asyncio.get_event_loop().run_in_executor(None, ai_filter, recent_sigs, ohlcv)
+                res["validation_recent_ai"] = {**validate(rp, closes), "signals": len(recent_sigs), "passed": len(rp),
+                                               "rule": f"AI 점수 {AI_BUY_SCORE}↑ · 상승확률 {AI_MIN_PROB}%↑ · 50일선 위"}
             except Exception as e:
                 res["validation"], res["validation_ai"] = None, None
+                res["validation_recent"], res["validation_recent_ai"] = None, None
                 _status["errors"].append(f"검증 주가: {str(e)[:150]}")
             res["accs"] = {k: [f["acc"] for f in fl] for k, fl in filings.items()}
             res.update(updated_at=datetime.now().isoformat(timespec="seconds"), errors=_status["errors"][:10],
@@ -667,7 +819,7 @@ def guru_detail(key: str) -> dict | None:
             h["name"] = _us_name(t)
             s = stocks.get(t) or {}
             h["change_52w"], h["price"], h["n_holders"] = s.get("change_52w"), s.get("price"), s.get("n_holders")
-    return {"guru": summary, **pf}
+    return {"guru": summary, **pf, "moves": (r.get("moves") or {}).get(key) or [], "ark": ark_holdings() if key == "wood" else None}
 
 
 def signal(symbol: str) -> dict | None:
@@ -683,6 +835,7 @@ def signal(symbol: str) -> dict | None:
     va = r.get("validation_ai") or {}
     return {"n_holders": s["n_holders"], "n_buyers": s["n_buyers"], "n_sellers": s["n_sellers"],
             "ai_validated": bool(va.get("validated")),
+            "recent": (s.get("recent") or [])[:6], "n_recent_buys": s.get("n_recent_buys", 0), "n_recent_sells": s.get("n_recent_sells", 0),
             "holders": s["holders"][:6], "buyers": s["buyers"][:6], "sellers": s["sellers"][:6],
             "period": max((g["period"] for g in r.get("gurus", []) if not g.get("stale")), default=None),
             "points": pts, "validated": bool(v.get("validated")),

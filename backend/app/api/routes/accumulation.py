@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends
 
+from app.core.bg import spawn
 from app.api.routes.auth import get_current_user
 from app.models.user import User
 from app.services import accumulation, themes
@@ -25,7 +26,7 @@ async def accumulation_result(min_score: int = 50, current_user: User = Depends(
 async def accumulation_scan(current_user: User = Depends(get_current_user)):
     """전 종목 다시 스캔 (백그라운드, 실서버 7~10분)"""
     if not accumulation.status()["running"]:
-        asyncio.create_task(accumulation.scan())
+        spawn(accumulation.scan())
         await asyncio.sleep(0)
     return accumulation.status()
 

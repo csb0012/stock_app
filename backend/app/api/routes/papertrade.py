@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.bg import spawn
 from app.api.routes.auth import get_current_user
 from app.core.database import get_db
 from app.models.paper import PaperSim, PaperAccount
@@ -91,7 +92,7 @@ async def delete_simulation(sim_id: int, db: AsyncSession = Depends(get_db), cur
 # ---------------- 실시간 모의투자 ----------------
 
 def _bg(coro, what: str):
-    t = asyncio.create_task(coro)
+    t = spawn(coro)
     t.add_done_callback(lambda x: x.cancelled() or (x.exception() and print(f"[paper] {what} 실패: {x.exception()}")))
 
 

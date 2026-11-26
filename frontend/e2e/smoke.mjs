@@ -288,13 +288,15 @@ async function run() {
     const list = page.getByTestId("guru-list");
     await list.waitFor();
     const t = await list.innerText();
-    for (const s of ["데이비드 테퍼", "+26.8%", "워런 버핏", "최근 공시 없음", "신규 2", "MU 18%"]) expect(t.includes(s), `대가 목록에 '${s}' 없음`);
+    for (const s of ["데이비드 테퍼", "+26.8%", "워런 버핏", "최근 공시 없음", "신규 2", "MU 18%", "13F 이후 공시 2건"]) expect(t.includes(s), `대가 목록에 '${s}' 없음`);
     await shot(page, "gurus");
     await page.getByText("워런 버핏").first().click();
     const det = page.getByTestId("guru-detail");
     await det.getByText("처브").waitFor();
     const dt = await det.innerText();
     for (const s of ["24.9%", "추가 매수 +31.5%", "신규 매수", "티커 변환 전", "전량 매도", "DVA(1.2%)"]) expect(dt.includes(s), `대가 상세에 '${s}' 없음`);
+    const rm = await det.getByTestId("guru-moves").innerText();
+    for (const s of ["13G/A", "지분 늘림", "7.1% → 9.8%", "Form 4", "매수", "120,000주 · $52.3", "OXY"]) expect(rm.includes(s), `최근 매매에 '${s}' 없음`);
     await det.getByText("애플").click();
     await page.getByTestId("quote-card").waitFor();
     await page.getByRole("button", { name: "대가들이 산 종목" }).click();
@@ -307,6 +309,8 @@ async function run() {
     await page.getByRole("button", { name: "따라 사기 검증" }).click();
     const v = await page.getByTestId("guru-validation").innerText();
     for (const s of ["다음 거래일 종가", "-1.9%p", "42.3%", "775건", "점수엔 안 넣음", "워런 버핏"]) expect(v.includes(s), `검증에 '${s}' 없음`);
+    const vr = await page.getByTestId("guru-validation-recent").innerText();
+    for (const s of ["13F 보다 빠른 공시", "-0.1%p", "115건 중 7건 통과", "판단 후보엔 안 넣고"]) expect(vr.includes(s), `최근 공시 검증에 '${s}' 없음`);
     const va = await page.getByTestId("guru-validation-ai").innerText();
     for (const s of ["AI 가 다시 분석해서", "775건 중 AI 통과 120건", "+1.4%p", "56.1%", "판단 후보에 넣습니다"]) expect(va.includes(s), `AI 필터 검증에 '${s}' 없음`);
     await shot(page, "gurus-validation");
@@ -1272,6 +1276,22 @@ async function run() {
     await page.getByText(/실직자 증가/).waitFor();
     expect(await page.getByTestId("calendar-old-format").count() === 0, "정상 데이터인데 예전 형식 경고가 뜸");
     await shot(page, "calendar");
+  });
+
+  await test("경제 캘린더: 🇰🇷 한국은행 금통위 결과·결정문·관련 뉴스 (http 링크만)", { api: makeApi({ "GET /api/market/calendar": F.CALENDAR }) }, async (page) => {
+    await page.goto(`${BASE}/calendar`);
+    const row = page.getByText("한국은행 금통위 기준금리 결정").first();
+    await row.waitFor();
+    const t = await page.locator("body").innerText();
+    for (const s of ["🇰🇷", "3.25%", "▲ 0.25%p 인상", "뉴스 2"]) expect(t.includes(s), `캘린더에 '${s}' 없음`);
+    await row.click();
+    const news = page.getByTestId("cal-news");
+    await news.waitFor();
+    const nt = await news.innerText();
+    expect(nt.includes("한은, 기준금리 3.25%로 인상") && nt.includes("연합뉴스"), `관련 뉴스: ${nt}`);
+    expect(await news.locator("a").count() === 1, "javascript: 링크가 링크로 걸림");
+    expect((await page.locator("body").innerText()).includes("결정문: 금융통화위원회는"), "결정문이 안 보임");
+    await shot(page, "calendar-kr");
   });
 
   await test("경제 캘린더: 백엔드가 예전 형식이면 재시작 안내", { api: makeApi({ "GET /api/market/calendar": F.CALENDAR_OLD }) }, async (page) => {

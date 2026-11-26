@@ -27,6 +27,24 @@ def _no_external_security_calls(monkeypatch):
     monkeypatch.setattr(settings, "ntfy_topic", "")      # PC 의 .env 에 NTFY_TOPIC 이 있어도 테스트가 진짜 휴대폰 알림을 보내지 않게
     monkeypatch.setattr(settings, "invite_only", False)
     monkeypatch.setattr(settings, "require_totp", False)
+    # 한국은행 홈페이지·Google 뉴스는 테스트에서 실제로 부르지 않음 (필요한 테스트가 직접 가짜로 바꿈)
+    from app.services import bok, news
+
+    async def _no_bok(client, url):
+        raise RuntimeError("테스트: 한국은행 홈페이지에 접속하지 않음")
+
+    async def _no_google(query, lang="ko"):
+        raise RuntimeError("테스트: Google 뉴스에 접속하지 않음")
+    monkeypatch.setattr(bok, "_get", _no_bok)
+    monkeypatch.setattr(bok, "_cache", {"schedule": {}, "rates": None, "latest": None, "ts": {}})
+    monkeypatch.setattr(news, "_fetch_google", _no_google)
+    # 미국 가치주 후보(Yahoo 스크리너)도 실제로 안 부름 — 판단 후보 테스트가 직접 가짜로 바꿈
+    from app.services import fundamentals, signals
+
+    def _no_yahoo_screen(key, limit=100):
+        raise RuntimeError("테스트: Yahoo 스크리너에 접속하지 않음")
+    monkeypatch.setattr(fundamentals, "us_screen_sync", _no_yahoo_screen)
+    monkeypatch.setattr(signals, "_us_value_cache", {"at": 0.0, "rows": None, "error": None})
     from app.api.routes import auth   # 로그인 실패·잠금 기록은 모듈에 남으므로 테스트마다 비움
     for d in (auth._fails, auth._locked, auth._acct_fails, auth._acct_locked):
         d.clear()

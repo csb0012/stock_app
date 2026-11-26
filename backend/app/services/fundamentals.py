@@ -168,7 +168,10 @@ async def refresh_kr(symbols: list, force: bool = False) -> dict:
     async with _lock:
         data = _load()
         cutoff = (date.today() - timedelta(days=KR_REFRESH_DAYS)).isoformat()
-        todo = [s for s in symbols if force or (data.get(s) or {}).get("fetched", "") < cutoff]
+        today_s = date.today().isoformat()
+        # 실패한 종목은 그날 다시 안 물음 (네이버가 막혔을 때 30분마다 전 종목을 다시 부르지 않게 — 2026-11-26 점검)
+        todo = [s for s in symbols if force or ((data.get(s) or {}).get("fetched", "") < cutoff
+                                                 and (data.get(s) or {}).get("tried", "") != today_s)]
         _status.update(running=True, done=0, total=len(todo), errors=0, error_samples=[], message=None,
                        started_at=datetime.now().isoformat(timespec="seconds"), finished_at=None)
         sem = asyncio.Semaphore(4)
@@ -182,7 +185,7 @@ async def refresh_kr(symbols: list, force: bool = False) -> dict:
                     _status["errors"] += 1
                     if len(_status["error_samples"]) < 5:
                         _status["error_samples"].append(f"{s}: {str(e)[:120]}")
-                    data.setdefault(s, {})["error"] = str(e)[:120]
+                    data.setdefault(s, {}).update(error=str(e)[:120], tried=today_s)
                 finally:
                     _status["done"] += 1
                     if _status["done"] % 200 == 0:

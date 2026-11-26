@@ -45,6 +45,12 @@ export default function SignalBadges({ s, compact = false }: { s?: any; compact?
           {g.n_sellers ? ` · ${g.n_sellers}명 매도` : ""}
         </Pill>
       )}
+      {g?.n_recent_buys > 0 && (
+        <Pill testid="guru-recent-badge" color="var(--green)"
+          title={"13F 이후 최근 공시 (Form 4 · 13D/13G · ARK 매일):\n" + (g.recent || []).map((x: any) => `${x.date} ${x.name} ${x.form} ${x.kind}`).join("\n")}>
+          대가 최근 매수 {g.n_recent_buys}명 ({g.recent?.[0]?.form})
+        </Pill>
+      )}
       {v && (v.per != null || v.pbr != null) && (
         <Pill testid="value-badge" color="var(--text-secondary)"
           title={`최근 4분기 실적(${v.q?.slice(0, 4)}.${v.q?.slice(4)} 까지, 네이버 증권) 기준\n` +

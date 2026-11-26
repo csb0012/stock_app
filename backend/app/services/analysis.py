@@ -2,7 +2,6 @@
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
-from typing import Optional
 
 
 def _clean(v):

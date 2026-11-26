@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from app.services import gurus, fundamentals, flows, quant, signals
+from tests.conftest import run
 
 XML = """<informationTable xmlns="http://www.sec.gov/edgar/document/thirteenf/informationtable">
   <infoTable><nameOfIssuer>APPLE INC</nameOfIssuer><titleOfClass>COM</titleOfClass><cusip>037833100</cusip>
@@ -489,3 +490,56 @@ def test_apply_signals_tags_penalty_and_reason():
     papertrade.apply_signals(rows, {"A": {"tags": ["쌍끌이 3일"]}, "B": {"penalty": (5, "개인만 순매수 −5점(과거 검증)")}})
     assert rows["A"]["score"] == 66 and rows["B"]["score"] == 57
     assert "쌍끌이 3일" in pe._fmt_reason(rows["A"], None, []) and "개인만 순매수" in pe._fmt_reason(rows["B"], None, [])
+
+
+def test_us_value_candidates_cached_and_tagged(monkeypatch):
+    calls = []
+
+    def fake_screen(key, limit=100):
+        calls.append(key)
+        if key == "cash_cow":
+            raise RuntimeError("Yahoo 막힘")
+        return {"items": [{"symbol": "AAA", "name": "에이"}, {"symbol": "BBB" if key == "undervalued_growth" else "CCC", "name": "x"}]}
+    monkeypatch.setattr(fundamentals, "us_screen_sync", fake_screen)
+    rows = run(signals.us_value_candidates())
+    aaa = next(r for r in rows if r["symbol"] == "AAA")
+    assert aaa["why"] == ["저평가 성장주", "고수익 저평가"] and {r["symbol"] for r in rows} == {"AAA", "BBB", "CCC"}
+    assert run(signals.us_value_candidates()) is rows and len(calls) == 3          # 1시간 캐시
+    monkeypatch.setattr(gurus, "_result", {"stocks": {}})
+    c = signals.live_candidates("US", rows)
+    assert {i["symbol"] for i in c["items"]} == {"AAA", "BBB", "CCC"}
+    assert c["tags"]["AAA"] == ["가치주(저평가 성장주·고수익 저평가)"] and "Yahoo 막힘" in c["notes"][0]
+
+
+def test_background_fill_does_not_retry_storm(monkeypatch):
+    """재무·수급 채우기: 실패해도 30분마다 전 종목을 다시 부르지 않음 (하루 한 번) — 2026-11-26 점검"""
+    from app.services import accumulation, kis_api
+    calls = {"naver": 0, "kis": 0}
+
+    async def bad_naver(client, s):
+        calls["naver"] += 1
+        raise RuntimeError("네이버 막힘")
+    monkeypatch.setattr(fundamentals, "_fetch_kr", bad_naver)
+    monkeypatch.setattr(fundamentals, "_kr", {})
+    monkeypatch.setattr(fundamentals, "_save", lambda: None)
+    uni = ["000001", "000002"]
+    run(fundamentals.refresh_kr(uni))
+    run(fundamentals.refresh_kr(uni))
+    assert calls["naver"] == 2                                   # 두 번째엔 그날 실패한 종목을 다시 안 물음
+
+    async def bad_collect(symbols):
+        calls["kis"] += 1
+        return {"added": 0, "errors": ["x"]}
+    monkeypatch.setattr(signals, "liquid_universe", lambda: uni)
+    monkeypatch.setattr(flows, "collect", bad_collect)
+    monkeypatch.setattr(flows, "_mem", {})
+    monkeypatch.setattr(accumulation, "status", lambda: {"running": False})
+
+    async def no_rebuild():
+        return False
+    monkeypatch.setattr(accumulation, "rebuild_quant", no_rebuild)
+    monkeypatch.setattr(kis_api, "mark_background", lambda: None)
+    monkeypatch.setattr(signals, "_loop_status", {"last_fund": None, "last_flow_boot": None, "last_error": None})
+    run(signals.tick())
+    run(signals.tick())
+    assert calls["kis"] == 1                                     # 수급 전 종목 수집도 하루 한 번

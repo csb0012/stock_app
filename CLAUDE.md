@@ -74,6 +74,7 @@ npm run dev
 
 ```
 core/
+  bg.py          — spawn(coro): 뒤에서 도는 작업 시작 + 끝날 때까지 참조 보관 (asyncio 가 참조 없는 작업을 지울 수 있음 — 알림 메일·다시 계산 요청에 씀)
   swr.py         — SWRCache: 기존 값을 바로 주고 뒤에서 갱신(stale-while-revalidate), 동시 요청 1회 실행. 응답에 updated_at·refreshing·refresh_error
                    fresh_for(값) 로 값마다 신선 기간 조절 (경제 캘린더: 일정·발표값 일시 실패면 5분)
   config.py      — Pydantic Settings (backend/.env 절대경로로 읽음, KIS 키 필수 검증, .env 의 모르는 값은 무시)
@@ -183,6 +184,13 @@ services/
                    → signal()/boost_points() 가 AI 장기 점수 0~10점, 아니면 0 (근거로만).
                    ai_filter(): 대가가 산 종목 중 공시일 종가까지로 AI 매수 조건(AI 점수 60↑·상승확률 55%↑·50일선 위, 퀀트 = 그날 대가 종목들 안 순위) 통과한 것만
                    → validation_ai (이게 통과해야 AI 모의투자·KIS 미국 판단 후보에 대가 종목을 넣음 — '대가를 무조건 따라가지 않음'). 하루 1번 loop (시작 3분 뒤). 파일 app/data/guru_filings.json·cusip_map.json·gurus.json
+  guru_recent.py — 투자 대가 '13F 이후' 최근 매매 (사용자 요청 2026-11-26 — 13F 는 분기·45일 늦음): Form 4(대가가 보고자인 장내 매수 P·매도 S만,
+                   자기 회사 주식 제외, clean_ticker 로 N/A·NONE 거름) · 13D/13G(2024.12~ XML — 처음 = 새로 5%↑, 정정 = 앞 신고와 지분율 비교) ·
+                   ARK 매일 보유 CSV 6개 펀드(합계를 날짜별 app/data/ark_daily.json 120일, 하루 수량 ±5%↑·신규·전량 = 매매).
+                   gurus.refresh 가 대가당 1년·최근 40건까지 받고(acc 별 app/data/guru_moves.json, 실패한 공시만 건너뜀) → attach_moves(화면: 13F 기준일 이후, 신호: 90일) ·
+                   recent_signals → validation_recent / validation_recent_ai (통과해야 미국 판단 후보에 최근 매수 종목)
+  bok.py         — 한국은행 금통위: 결정회의 일정(pYear)·기준금리 추이 표·메인 결정문 파싱 (www.bok.or.kr, 키 없음, 6시간·결정일 30분 캐시).
+                   decision_on(그날): 표에 변경 → 인상/인하 · 메인 결정문이 그날 → 그것 · 지난 회의 → 동결 · 당일 10시 전 → 발표 전 (짐작 안 함)
   fundamentals.py— 가치·재무. 국내 = 네이버 분기 실적(m.stock.naver.com/api/stock/{코드}/finance/quarter, 예상치 제외, 종목마다 7일, app/data/fundamentals_kr.json)
                    → metrics(그날 **알려진** 분기만: 1~3분기 끝+45일, 4분기 +90일 → TTM EPS·BPS·ROE·영업이익률·전년 동분기 성장률·배당) · with_price → PER·PBR·배당수익률.
                    kr_factor_frame = 퀀트 '가치'(E/P·B/P 백분위)·'수익성'(ROE·영업이익률) 요인 (날짜별, 미래 실적 안 씀). KR_SCREENS(토스식 9개 조건) · run_screen.
@@ -192,7 +200,8 @@ services/
                    loop(시작 5분 뒤, 30분마다): 스캔 끝나길 기다림 → 재무 7일 지난 종목 받기 → 수급이 대상의 절반 미만이면 전 종목 수집 → rebuild_quant.
                    live_candidates(시장) = AI 모의투자·KIS 주문 판단 후보 넓히기 (사용자 결정 2026-11-26 — 후보만, 사고팔지는 AI 점수):
                    국내 = 가치주 조건 상위 10(퀀트 점수 순) + 쌍끌이 2일↑ 10 + 개인만 순매수 감점(retail_status 가 과거 검증 통과일 때만 −5),
-                   미국 = 투자 대가가 이번 분기에 산 종목 (gurus validation_ai 통과 때만). 이유는 tags → papertrade.apply_signals → 판단 사유
+                   미국 = 가치주 찾기 조건 상위(us_value_candidates: 저평가 성장주·고수익 저평가·돈 잘 버는 회사 각 4, 1시간 캐시) + 투자 대가가 이번 분기에 산 종목
+                   (gurus validation_ai 통과 때만) + 최근 공시로 산 종목(validation_recent_ai 통과 때만). 이유는 tags → papertrade.apply_signals → 판단 사유
   chatbot.py     — 규칙 기반 챗봇 (외부 AI 없음): route() 가 질문 키워드로 의도(종목 분석·매수/매도 후보·투자종목·관심종목·
                    테마·매집·시장·적중률·이벤트·도움말)를 고르고, 기존 데이터(AI 추천 _live·analyze_kr/us·portfolio/watchlist 분석·
                    prediction_log.review·events)를 조회해 정해진 마크다운 형식으로 답함. 종목은 종목마스터 정확 일치 우선
@@ -215,7 +224,8 @@ services/
                    네이버는 등락률 순·페이지당 최대 100개라 장중엔 페이지 사이 순서가 바뀜 → 번호로 중복 제거 + 전체 개수 찰 때까지 다시 훑음(_paged),
                    예전 중복 파일은 불러올 때 정리하고 바로 다시 받음
   events.py      — 변동성 이벤트 경고(확률 영향 없음): 옵션 만기일(국내 둘째 목·미국 셋째 금, 분기 = 마녀의 날) + FRED 미국 주요 지표 발표일 (econ_calendar 일정 사용)
-                   + FOMC 금리 결정일(연준 공식 일정 페이지 — FRED 의 FOMC 항목은 매일 나와서 안 씀)
+                   + FOMC 금리 결정일(연준 공식 일정 페이지 — FRED 의 FOMC 항목은 매일 나와서 안 씀) + 한국은행 금리 결정일(bok, country KR — 국내 종목 당일만,
+                   paper_engine.event_labels 도 같아서 AI 모의투자·KIS 국내 판단의 '이벤트 날 새 매수 절반'에 들어감)
   repair.py      — 시작 시 잘못 저장된 종목코드를 종목마스터 이름으로 자동 복구
   market_data.py — 대시보드: 코스피·코스닥 = KIS 업종 현재지수(Yahoo ^KS11 은 하루 늦을 수 있어 안 씀), 해외 지수·매크로·빅테크·ETF = yfinance
                    (각 값에 source·as_of, 날짜 늦으면 stale, 미국 종목은 시간외 가격 ext)
@@ -223,7 +233,8 @@ services/
                    실제·이전 값 = FRED 시리즈를 발표 당일 기준(vintage, realtime_start=그날)으로 조회해 전날 기준과 비교(수정 발표도 구분),
                    FOMC = DFEDTARL·DFEDTARU 결정 전날 vs 다음 날. 발표된 값은 메모리 캐시. 예상치(컨센서스)는 무료 공식 출처가 없어 안 다룸.
                    INDICATORS(지표별 시리즈·계산·해설: about + 오름/내림/같음 시장 영향). 외부 API 오류 문구에 키가 든 URL 을 넣지 않음 (err_text)
-                   '오늘'·발표 여부는 미국 중부 날짜(fred_today) 기준 — 한국 날짜로 FRED 에 realtime_start 를 보내면 미래 날짜라 HTTP 400
+                   '오늘'·발표 여부는 미국 중부 날짜(fred_today) 기준 — 한국 날짜로 FRED 에 realtime_start 를 보내면 미래 날짜라 HTTP 400.
+                   + 한국은행 금통위 (_bok_events, country KR, BOK 해설) + 이벤트 관련 뉴스(_attach_news: 오늘 −3일~+1일 일정에 Google 뉴스 한국어 7일, news.TRUSTED_KR 만, 30분 캐시)
   paper_engine.py— AI 모의투자 계산만 (DB·외부 호출 없음): AI 점수 = 상승확률 45%(규칙 점수, 실시간은 학습 모델 포함 AI 추천 확률) + 퀀트 종합 백분위 35%
                    (요인 비중은 그날 결과가 확정된 과거로만, 20거래일마다) + 매집 20%(40점 초과분).
                    개선 옵션(기본 켬): adaptive = 세 신호 비중을 최근 120거래일 IC(10거래일 뒤 수익률, 확정일 ≤ 판단일만)로 20거래일마다 + 고정 비중과 반반(축소),
@@ -407,6 +418,15 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
    (테스트 도구는 `backend/requirements-dev.txt`(pytest) — 앱 실행용 requirements.txt 에는 넣지 않는다)
 5. **문서만 바꾼 경우**: 문서에 적은 파일 경로·명령어·API 경로·설정값이 실제 코드와 같은지 확인.
 6. **기록**: PROGRESS.md 작업 이력에 `검증:` 줄로 무엇을 어떻게 테스트했는지 적는다 (테스트 개수 포함). 실제 KIS·외부 API 로 확인하지 못한 부분은 **"실서버 미검증"** 으로 분명히 적고 "알려진 이슈"에 남긴다 (사용자가 pull 후 그 부분을 확인할 수 있게).
+
+## AI 기능 반영 규칙 (사용자 결정 2026-11-26)
+
+**AI 추천(종목 판단)에 들어가는 신호·데이터를 새로 만들거나 바꾸면, AI 모의투자(실시간 계좌)와 KIS 모의투자 주문 판단에도 넣어야 하는지 따져서 맞으면 같이 넣는다** (따로 말하지 않아도).
+- 두 곳의 판단은 같은 함수다: `papertrade.analyze_live` (후보 = `_live_universe` + `signals.live_candidates`, 점수 = `paper_engine` AI 점수, 이유 = `apply_signals` tags, 이벤트 = `events._cache` → `event_labels`).
+  여기에 넣으면 AI 모의투자·KIS 국내·미국이 한꺼번에 바뀐다.
+- 넣는 방식: ① 후보만 늘리기(사고팔지는 AI 점수) ② 이유(tags)로만 보여주기 ③ 점수·감점 — **③은 과거 검증(미래 데이터 없이)을 통과할 때만**. 검증 전엔 ①·② 까지.
+- 넣지 않는 경우(그 이유를 PROGRESS.md 에 적음): 장기 보유 분석처럼 기간이 다른 것, 표시 전용(프리·애프터마켓 가격), 검증이 미달인 점수.
+- 작업을 마칠 때 PROGRESS.md `검증:` 줄에 "AI 모의투자·KIS 판단 반영: 함/안 함(이유)" 을 적는다.
 
 ## 작업 기록 규칙
 

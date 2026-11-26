@@ -235,7 +235,7 @@ async def _fetch_all(stocks: list, us_hist: dict) -> dict:
 async def _run(force: bool):
     # 순환 import 방지
     from app.services.quote import batch_yf_history
-    from app.services.prediction_log import grade, index_change_fn
+    from app.services.prediction_log import index_change_fn
 
     cutoff = date.fromordinal(date.today().toordinal() - DAYS).isoformat()
     stocks = await _universe()

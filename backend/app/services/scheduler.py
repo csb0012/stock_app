@@ -14,7 +14,6 @@
 import asyncio
 from datetime import datetime
 
-import time
 
 from app.services import backtest, ml_model, prediction_log, flows, events
 from app.services.market_calendar import _TZ, is_trading_day

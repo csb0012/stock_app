@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 
+from app.core.bg import spawn
 from app.api.routes.auth import get_current_user
 from app.core.swr import SWRCache
 from app.models.user import User
@@ -32,7 +33,7 @@ async def theme_refresh(current_user: User = Depends(get_current_user)):
     """네이버 테마 구성 지금 다시 받기 (백그라운드)"""
     import asyncio
     if not themes.status()["running"]:
-        asyncio.create_task(themes.refresh())
+        spawn(themes.refresh())
         await asyncio.sleep(0)
     return themes.status()
 

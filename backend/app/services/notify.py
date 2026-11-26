@@ -5,12 +5,12 @@
 - 주제 이름은 비밀번호처럼 다룸: 로그·오류 문구·화면에 넣지 않음. 보내는 내용에도 토큰·계좌번호 같은 비밀은 안 넣음
 - 실패해도 주문 흐름을 막지 않음 (send_bg). 설정이 없으면 아무것도 안 함 (보낸 척 안 함)
 """
-import asyncio
 import re
 from urllib.parse import urlparse
 
 import httpx
 
+from app.core.bg import spawn
 from app.core.config import settings
 
 _TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -103,6 +103,6 @@ def send_bg(title: str, message: str, priority: int = 3, tags: list | None = Non
         except Exception as e:   # noqa: BLE001
             print(f"[notify] ntfy 알림 실패: {str(e)[:150]}")
     try:
-        asyncio.get_running_loop().create_task(go())
+        spawn(go())
     except RuntimeError:
         pass

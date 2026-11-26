@@ -1,23 +1,23 @@
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import Optional
+from app.core.bg import spawn
 from app.core.database import get_db
 from app.core.security import (
     verify_password, get_password_hash, create_access_token,
     decode_token, generate_totp_secret, get_totp_uri,
-    verify_totp, generate_qr_code_base64, totp_step,
+    generate_qr_code_base64, totp_step,
 )
 from app.models.user import User, AccountEvent, Invite
 from app.models.watchlist import WatchlistItem
 from app.models.portfolio import PortfolioItem
 from app.models import paper as _paper  # noqa: F401 — 탈퇴 시 모의투자 기록 삭제 (테이블 등록)
 from app.services import mailer, email_codes, sms, pwned, invites
-import asyncio
 from app.services.email_codes import CodeError, normalize_email, normalize_phone, format_phone
 from app.core.config import settings
 from sqlalchemy import delete, func as sa_func
@@ -44,6 +44,9 @@ def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for")
     parts = [p.strip() for p in fwd.split(",") if p.strip()] if fwd else []
     return parts[-1] if parts else (request.client.host if request.client else "?")
+
+
+_DUMMY_HASH = get_password_hash("timing-equalizer-not-a-real-password")
 
 
 def _check_lock(ip: str):
@@ -100,7 +103,10 @@ def _alert(user: User, subject: str, body: str):
             await mailer.send(user.email, subject, body)
         except Exception as e:   # noqa: BLE001
             print(f"[auth] 보안 알림 메일 실패: {type(e).__name__}: {str(e)[:100]}")
-    asyncio.get_event_loop().create_task(go())
+    try:
+        spawn(go())
+    except RuntimeError:   # 돌고 있는 이벤트 루프가 없음 (보낼 수 없음)
+        pass
 
 
 def _alert_body(what: str, request: Request) -> str:
@@ -160,6 +166,11 @@ async def get_user_before_totp(request: Request, bearer: Optional[str] = Depends
     user = result.scalar_one_or_none()
     if not user or user.is_active is False:
         raise HTTPException(status_code=401, detail="계정을 찾을 수 없습니다 — 다시 로그인하세요")
+    # 탈퇴 후 다른 사람이 같은 아이디로 가입해도 예전 토큰으로는 못 들어가게 — 토큰의 계정 번호(uid)가 같아야 함
+    # (uid 가 없는 예전 토큰은 아래 pwv·sev 확인만 — 12시간 뒤엔 모두 새 형식)
+    # (SQLite 는 지운 계정 번호를 다음 가입에 다시 쓸 수 있음 → 새 계정은 가입 때 session_epoch 를 정해서 sev 로도 걸러짐)
+    if payload.get("uid") is not None and payload.get("uid") != user.id:
+        raise HTTPException(status_code=401, detail="계정을 찾을 수 없습니다 — 다시 로그인하세요")
     # 비밀번호를 바꾸면 그 전에 발급된 토큰(다른 기기·탈취된 토큰)은 무효 — 토큰의 pwv(비밀번호 버전)가 지금 값과 같아야 함
     if user.password_changed_at and payload.get("pwv") != user.password_changed_at:
         raise HTTPException(status_code=401, detail="비밀번호가 바뀌어 다시 로그인해야 합니다")
@@ -188,7 +199,7 @@ async def get_admin(user: User = Depends(get_current_user)):
 
 
 def token_for(user: User) -> str:
-    return create_access_token({"sub": user.username, "pwv": user.password_changed_at or 0,
+    return create_access_token({"sub": user.username, "uid": user.id, "pwv": user.password_changed_at or 0,
                                 "sev": user.session_epoch or 0})
 
 
@@ -443,7 +454,8 @@ async def register(req: SignupRequest, request: Request, db: AsyncSession = Depe
     if await _owner(db, kind, target):
         raise HTTPException(status_code=400, detail="이미 가입된 이메일입니다" if kind == "email" else "이미 가입된 휴대폰 번호입니다")
     await _check_code(db, target, "signup", req.code)
-    user = User(username=username, hashed_password=get_password_hash(req.password), nickname=nickname)
+    # session_epoch 를 가입 때 정해 둠 → 탈퇴한 같은 아이디의 예전 토큰(sev 다름)으로는 이 계정에 못 들어옴
+    user = User(username=username, hashed_password=get_password_hash(req.password), nickname=nickname, session_epoch=time.time())
     if kind == "email":
         user.email, user.email_verified = target, True
     else:
@@ -527,6 +539,8 @@ async def login(req: LoginRequest, request: Request, db: AsyncSession = Depends(
                        _alert_body("누군가 계정에 비밀번호를 여러 번 틀리게 입력해 15분 동안 로그인을 잠갔습니다.", request))
         raise HTTPException(status_code=401, detail=msg)
 
+    if not user:   # 없는 아이디도 같은 시간 걸리게 (응답 시간으로 가입된 아이디를 알아내지 못하게)
+        verify_password(req.password, _DUMMY_HASH)
     if not user or user.is_active is False or not verify_password(req.password, user.hashed_password):
         await fail("비밀번호 틀림", "아이디 또는 비밀번호가 틀렸습니다")
 

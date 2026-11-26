@@ -36,6 +36,27 @@ function ChangeBadge({ e }: { e: any }) {
   );
 }
 
+const FLAG: Record<string, string> = { KR: "🇰🇷", US: "🇺🇸" };
+
+/** 이벤트 관련 기사 (발표일 앞뒤 며칠만, 믿을 만한 국내 언론사만 — 서버 econ_calendar._attach_news) */
+function EventNews({ e }: { e: any }) {
+  if (e.news_error) return <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>관련 뉴스를 못 받았습니다</p>;
+  if (!e.news?.length) return null;
+  return (
+    <div data-testid="cal-news" style={{ marginTop: 10, fontSize: 12.5 }}>
+      <strong style={{ color: "var(--text-primary)" }}>관련 뉴스</strong>
+      <ul style={{ margin: "4px 0 0", paddingLeft: 18, lineHeight: 1.7 }}>
+        {e.news.map((n: any) => (
+          <li key={n.url || n.title}>
+            {/^https?:\/\//.test(n.url || "") ? <a href={n.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>{n.title}</a> : n.title}
+            <span style={{ color: "var(--text-muted)", fontSize: 11 }}> · {n.press} {n.date?.slice(5)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Explain({ e }: { e: any }) {
   const x = e.explain;
   if (!x) return null;
@@ -48,6 +69,7 @@ function Explain({ e }: { e: any }) {
           <strong style={{ color: "var(--text-primary)" }}>이번 결과 — {e.change_text}</strong>
           {e.period ? ` (${e.period}, ${x.metric} ${e.prev} → ${e.actual})` : ` (${e.prev} → ${e.actual})`}
           <br />→ {x.effect}
+          {e.statement && <><br /><span style={{ color: "var(--text-muted)" }}>결정문: {e.statement}</span></>}
         </p>
       ) : (
         <div>
@@ -80,7 +102,8 @@ function EventRow({ e, past }: { e: any; past: boolean }) {
         <td style={{ ...TD, fontWeight: 500, fontSize: 13 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
-            {e.event}
+            <span title={e.country === "KR" ? "한국" : "미국"}>{FLAG[e.country] || ""}</span> {e.event}
+            {e.news?.length > 0 && <span className="badge badge-neutral" style={{ fontSize: 10.5 }}>뉴스 {e.news.length}</span>}
           </div>
           {e.period && <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, marginLeft: 15 }}>{e.period} · {e.explain?.metric}</div>}
         </td>
@@ -104,6 +127,7 @@ function EventRow({ e, past }: { e: any; past: boolean }) {
           <td colSpan={cols + 1} style={{ padding: "4px 16px 14px 31px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
             {e.note && <p style={{ fontSize: 12, color: "var(--yellow)", margin: "8px 0" }}>⚠ {e.note}</p>}
             <div style={{ paddingTop: 8 }}><Explain e={e} /></div>
+            <EventNews e={e} />
           </td>
         </tr>
       )}
@@ -120,7 +144,7 @@ function EventCard({ e, past }: { e: any; past: boolean }) {
         style={{ all: "unset", boxSizing: "border-box", width: "100%", cursor: "pointer", padding: "11px 14px", display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           <div style={{ width: 7, height: 7, borderRadius: "50%", background: IMPACT_COLOR[e.impact] || "var(--text-muted)", flexShrink: 0 }} />
-          <strong style={{ fontSize: 13.5, flex: 1, minWidth: 0 }}>{e.event}</strong>
+          <strong style={{ fontSize: 13.5, flex: 1, minWidth: 0 }}>{FLAG[e.country] || ""} {e.event}</strong>
           <span style={{ fontSize: 11.5, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{e.date?.slice(5, 10).replace("-", "/")}</span>
           {open ? <ChevronUp size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} /> : <ChevronDown size={14} style={{ color: "var(--text-muted)", flexShrink: 0 }} />}
         </div>
@@ -139,6 +163,7 @@ function EventCard({ e, past }: { e: any; past: boolean }) {
         <div style={{ padding: "2px 14px 12px 29px", background: "color-mix(in srgb, var(--accent) 4%, transparent)" }}>
           {e.note && <p style={{ fontSize: 12, color: "var(--yellow)", margin: "8px 0" }}>⚠ {e.note}</p>}
           <div style={{ paddingTop: 8 }}><Explain e={e} /></div>
+          <EventNews e={e} />
         </div>
       )}
     </div>
@@ -197,7 +222,7 @@ export default function CalendarPage() {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>경제 캘린더</h1>
         <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-          최근 2주 발표 + 앞으로 4주 일정 · 실제 발표값과 이전 대비 변화 · 결과에 따른 시장 영향 해설
+          최근 2주 발표 + 앞으로 4주 일정 (미국 지표·FOMC + 🇰🇷 한국은행 금통위) · 실제 발표값과 이전 대비 변화 · 결과에 따른 시장 영향 해설 · 발표일 앞뒤엔 관련 뉴스
           {data?.source && <span> · 출처: {data.source}</span>}
         </p>
         {data?.disclaimer && <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 4 }}>ⓘ {data.disclaimer}</p>}

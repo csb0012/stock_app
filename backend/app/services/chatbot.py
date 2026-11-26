@@ -404,7 +404,7 @@ async def _events(q: str) -> str:
                 out.append((d.isoformat(), "국내" if mk == "KR" else "미국", ox))
     for e in events._cache["events"]:
         if today.isoformat() <= e["date"][:10] <= (today + timedelta(days=days)).isoformat():
-            out.append((e["date"][:10], "미국", e["event"]))
+            out.append((e["date"][:10], "국내" if e.get("country") == "KR" else "미국", e["event"]))
     out.sort()
     note = events.status().get("error")
     if not out:
