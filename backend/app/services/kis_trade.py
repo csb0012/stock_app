@@ -466,7 +466,7 @@ async def _auto_cancel(db, k: KisOrder, why: str) -> dict:
     k.status, k.message = "cancelled", f"급변으로 자동 취소 — {why}"
     await audit(db, "auto_cancel", f"{k.name}: {why}", order_id=k.id, ok=False)
     await db.commit()
-    _push(f"매수 자동 취소 — {k.name}", f"{k.name}({k.symbol}) 매수를 취소했습니다: {why}", 4, ["no_entry_sign"])
+    _push(f"매수 자동 취소 — {k.name}", f"{k.name}({k.symbol}) 매수를 취소했습니다: {why}", 4, ["no_entry_sign"], order_id=k.id)
     return {"status": "cancelled", "message": k.message}
 
 
@@ -530,7 +530,7 @@ async def check_exits(prices: dict | None = None) -> int:
     for k in stops:
         r = await submit(k.id, auto=True)
         if r.get("status") == "submitted":   # 막힘·실패는 submit 이 따로 알림
-            _push(f"자동 손절 매도 — {k.name}", f"{k.name}({k.symbol}) {k.qty}주 시장가 매도 주문: {k.reason}", 5, ["rotating_light"])
+            _push(f"자동 손절 매도 — {k.name}", f"{k.name}({k.symbol}) {k.qty}주 시장가 매도 주문: {k.reason}", 5, ["rotating_light"], order_id=k.id)
     return len(made) + len(stops)
 
 
@@ -631,17 +631,18 @@ async def _quote(symbol: str) -> dict:
     return {"price": float(q["price"]), "vi": bool(q.get("vi")), "halted": bool(q.get("halted"))}
 
 
-def _push(title: str, body: str, priority: int = 3, tags: list | None = None):
-    """주문 결과는 휴대폰 푸시만 (메일까지 보내면 너무 많음). NTFY_TOPIC 없으면 아무것도 안 함"""
+def _push(title: str, body: str, priority: int = 3, tags: list | None = None, order_id: int | None = None):
+    """주문 결과는 휴대폰 푸시만 (메일까지 보내면 너무 많음). NTFY_TOPIC 없으면 아무것도 안 함.
+    알림을 누르면 웹 화면 /kis?order=번호 (그 주문으로 스크롤·강조)"""
     from app.services import notify
-    notify.send_bg(title, body, priority, tags)
+    notify.send_bg(title, body, priority, tags, click=f"/kis?order={order_id}" if order_id else "/kis")
 
 
 async def _block(db, k: KisOrder, why: str) -> dict:
     k.status, k.message = "blocked", why
     await audit(db, "blocked", f"{k.name}: {why}", order_id=k.id, ok=False)
     await db.commit()
-    _push(f"주문 안 보냄 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) 안전장치로 막음: {why}", 4, ["no_entry"])
+    _push(f"주문 안 보냄 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) 안전장치로 막음: {why}", 4, ["no_entry"], order_id=k.id)
     return {"status": "blocked", "message": why}
 
 
@@ -755,18 +756,18 @@ async def submit(order_id: int, auto: bool = False) -> dict:
                     k.status, k.message = "unknown", f"주문을 보냈는데 KIS 응답을 못 받음 — KIS 앱에서 체결 여부를 확인하세요 ({str(e)[:200]})"
                     await audit(db, "submit_unknown", k.message, order_id=k.id, ok=False)
                     await db.commit()
-                    _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}) {qty}주: {k.message}", 5, ["warning"])
+                    _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}) {qty}주: {k.message}", 5, ["warning"], order_id=k.id)
                     return {"status": "unknown", "message": k.message}
                 k.status, k.message = "failed", f"KIS 연결 실패 — 주문은 안 들어감: {str(e)[:200]}"
                 await audit(db, "submit_fail", k.message, order_id=k.id, ok=False)
                 await db.commit()
-                _push(f"KIS 주문 못 보냄 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["x"])
+                _push(f"KIS 주문 못 보냄 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["x"], order_id=k.id)
                 return {"status": "failed", "message": k.message}
             except Exception as e:
                 k.status, k.message = "failed", f"KIS 주문 거부: {str(e)[:250]}"
                 await audit(db, "submit_fail", k.message, order_id=k.id, ok=False)
                 await db.commit()
-                _push(f"KIS 주문 거부 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) {qty}주: {k.message}", 4, ["x"])
+                _push(f"KIS 주문 거부 — {k.name}", f"{'매수' if k.side == 'buy' else '매도'} {k.name}({k.symbol}) {qty}주: {k.message}", 4, ["x"], order_id=k.id)
                 return {"status": "failed", "message": k.message}
             _balance_cache["data"] = None   # 잔고가 바뀜 — 화면이 예전 잔고로 '대조 다름'을 띄우지 않게
             _wait_kind.pop(k.id, None)
@@ -777,7 +778,7 @@ async def submit(order_id: int, auto: bool = False) -> dict:
             await db.commit()
             if auto and k.side == "buy":
                 _push(f"매수 주문 — {k.name}", f"{k.name}({k.symbol}) {qty}주 {how} (현재가 {px:,.0f}원) — 승인한 조건이 맞아 주문했습니다", 3,
-                      ["shopping_cart"])
+                      ["shopping_cart"], order_id=k.id)
             return {"status": "submitted", "message": k.message}
 
 
@@ -846,7 +847,7 @@ async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True)
             if final:
                 k.status, k.message = "unknown", "KIS 체결 내역에 이 주문번호가 없음 — KIS 앱에서 확인"
                 await audit(db, "fill_unknown", k.message, order_id=k.id, ok=False)
-                _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"])
+                _push(f"주문 결과 확인 필요 — {k.name}", f"{k.name}({k.symbol}): {k.message}", 4, ["warning"], order_id=k.id)
                 changed += 1
             continue
         delta = int(e["filled"]) - int(k.filled_qty or 0)
@@ -859,7 +860,7 @@ async def _sync_fills(db, row, s: dict, final: bool = False, apply: bool = True)
             k.status = "filled"
             await audit(db, "filled", f"{k.name} {k.filled_qty}주 평균 {k.filled_price or 0:,.0f}원", order_id=k.id)
             _push(f"체결 — {'매수' if k.side == 'buy' else '매도'} {k.name}", f"{k.name}({k.symbol}) {k.filled_qty}주 · 평균 {k.filled_price or 0:,.0f}원 (모의투자)",
-                  3, ["white_check_mark"])
+                  3, ["white_check_mark"], order_id=k.id)
         elif (e["cancelled"] or (final and e["remain"] >= 0)
               or (k.cancel_req and (e["remain"] <= 0 or int(e.get("cancel_qty") or 0) > 0))):
             gone = e["cancelled"] or k.cancel_req
@@ -1038,7 +1039,7 @@ def _alert_admins(subject: str, body: str, priority: int = 3, tags: list | None 
     """관리자 알림 — 휴대폰 푸시(ntfy, NTFY_TOPIC 있을 때) + 인증된 이메일(메일 설정 있을 때). 뒤에서 보냄, 실패해도 주문 흐름은 그대로"""
     from app.services import mailer, notify
     from app.models.user import User
-    notify.send_bg(subject.replace("[StockApp] ", ""), body, priority, tags)
+    notify.send_bg(subject.replace("[StockApp] ", ""), body, priority, tags, click="/kis")
     if not mailer.configured():
         return
 
@@ -1129,9 +1130,9 @@ async def watch() -> dict:
             try:
                 await cancel_sent(k.id, None, why=f"자동 취소 — {why}")
                 done["cancelled"] += 1
-                _push(f"매수 자동 취소 — {k.name}", f"{k.name}({k.symbol}) 접수된 매수 주문을 KIS 에서 취소했습니다: {why}", 4, ["no_entry_sign"])
+                _push(f"매수 자동 취소 — {k.name}", f"{k.name}({k.symbol}) 접수된 매수 주문을 KIS 에서 취소했습니다: {why}", 4, ["no_entry_sign"], order_id=k.id)
             except Exception as e:   # noqa: BLE001
-                _push(f"자동 취소 실패 — {k.name}", f"{k.name}({k.symbol}) 매수 주문 취소 실패 — KIS 앱에서 확인하세요: {str(e)[:150]}", 5, ["warning"])
+                _push(f"자동 취소 실패 — {k.name}", f"{k.name}({k.symbol}) 매수 주문 취소 실패 — KIS 앱에서 확인하세요: {str(e)[:150]}", 5, ["warning"], order_id=k.id)
         elif px:
             why = shock_reason(k, px, limits)
             if why:

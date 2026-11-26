@@ -119,7 +119,9 @@ async def notify_test(admin: User = Depends(get_admin)):
     if not notify.configured():
         raise HTTPException(status_code=503, detail="NTFY_TOPIC 이 없습니다 — backend/.env 에 넣고 서버를 다시 켜세요 (docs/kis-mock-trading.md)")
     try:
-        await notify.send("StockApp 알림 시험", "이 알림이 보이면 KIS 모의투자 주문 제안·체결·정지 알림을 휴대폰으로 받을 수 있습니다.", 3, ["bell"])
+        await notify.send("StockApp 알림 시험", "이 알림이 보이면 KIS 모의투자 주문 제안·체결·정지 알림을 휴대폰으로 받을 수 있습니다."
+                          + (" 누르면 KIS 모의투자 주문 화면이 열립니다." if notify.app_url("/kis") else
+                             " (알림을 누르면 열 웹 주소가 없음 — backend/.env 에 NTFY_CLICK_URL=https://내주소 를 넣으세요)"), 3, ["bell"], click="/kis")
     except notify.NotifyError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return {"message": "시험 알림을 보냈습니다 — 휴대폰 ntfy 앱을 확인하세요"}

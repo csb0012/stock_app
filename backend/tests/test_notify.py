@@ -25,6 +25,7 @@ def ntfy(monkeypatch):
     monkeypatch.setattr(settings, "ntfy_server", "https://ntfy.sh")
     monkeypatch.setattr(settings, "ntfy_token", "")
     monkeypatch.setattr(settings, "ntfy_click_url", "")
+    monkeypatch.setattr(settings, "domain", "")
     return sent, resp
 
 
@@ -73,3 +74,37 @@ def test_kis_events_go_to_phone(monkeypatch):
     kis_trade._push("체결 — 매수 삼성전자", "삼성전자(005930) 14주 · 평균 70,000원 (모의투자)")
     assert pushed == [("AI 주문 제안 1건 — 승인 대기", 4, "- 매수 삼성전자(005930)"),
                       ("체결 — 매수 삼성전자", 3, "삼성전자(005930) 14주 · 평균 70,000원 (모의투자)")]
+
+
+
+def test_click_opens_web_page(ntfy, monkeypatch):
+    """알림을 누르면 웹 화면: 사이트 주소(NTFY_CLICK_URL 의 주소 부분 또는 클라우드 DOMAIN) + 경로 (/kis?order=12)"""
+    sent, _ = ntfy
+    assert notify.app_url("/kis") is None                        # 주소를 모르면 링크 없이
+    run(notify.send("t", "m", click="/kis?order=12"))
+    assert "click" not in sent[-1]["json"]
+    monkeypatch.setattr(settings, "domain", "mystock.duckdns.org")   # 클라우드: deploy/.env 의 DOMAIN
+    assert notify.app_url("/kis?order=12") == "https://mystock.duckdns.org/kis?order=12"
+    run(notify.send("t", "m", click="/kis?order=12"))
+    assert sent[-1]["json"]["click"] == "https://mystock.duckdns.org/kis?order=12"
+    run(notify.send("t", "m"))                                    # 경로 없으면 첫 화면
+    assert sent[-1]["json"]["click"] == "https://mystock.duckdns.org/"
+    monkeypatch.setattr(settings, "ntfy_click_url", "https://other.example.com:8443/kis")   # 직접 넣은 주소가 우선, 뒤 경로는 무시
+    assert notify.app_url("kis") == "https://other.example.com:8443/kis"
+    run(notify.send("t", "m", click="/kis?order=3"))
+    assert sent[-1]["json"]["click"] == "https://other.example.com:8443/kis?order=3"
+    run(notify.send("t", "m"))                                    # 예전 설정(경로 포함)은 그대로
+    assert sent[-1]["json"]["click"] == "https://other.example.com:8443/kis"
+    assert notify.status()["link"] == "https://other.example.com:8443/kis"
+    monkeypatch.setattr(settings, "ntfy_click_url", "")
+    for bad in ("evil.com/x", "a b", "javascript:alert(1)", "https://x.com"):
+        monkeypatch.setattr(settings, "domain", bad)
+        assert notify.app_url("/kis") is None, bad
+
+
+def test_kis_pushes_link_to_order(monkeypatch):
+    got = []
+    monkeypatch.setattr(notify, "send_bg", lambda title, body, priority=3, tags=None, click=None: got.append(click))
+    kis_trade._push("t", "b", 4, order_id=12)
+    kis_trade._push("t", "b")
+    assert got == ["/kis?order=12", "/kis"]

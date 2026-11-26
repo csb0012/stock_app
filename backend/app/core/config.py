@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     ntfy_server: str = "https://ntfy.sh"   # 날씨 알림(weather-app)과 같은 이름·방식 (JSON 으로 보냄)
     ntfy_topic: str = ""
     ntfy_token: str = ""             # 선택 — 주제를 예약·비공개로 했으면 액세스 토큰 (tk_...)
-    ntfy_click_url: str = ""         # 선택 — 알림을 누르면 열 주소 (예: https://mystock.duckdns.org/kis)
+    ntfy_click_url: str = ""         # 선택 — 알림을 누르면 열 웹 사이트 주소 (예: https://mystock.duckdns.org). 비우면 클라우드 DOMAIN
+    domain: str = ""                 # 클라우드: deploy/.env 의 DOMAIN (docker-compose.cloud.yml 이 backend 에도 넘김) → 알림 링크 https://DOMAIN/...
 
     # 휴대폰 문자 발송 (이메일 대신 휴대폰으로 본인인증) — 솔라피(solapi.com) API 키
     sms_api_key: str = ""

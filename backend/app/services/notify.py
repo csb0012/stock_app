@@ -7,6 +7,7 @@
 """
 import asyncio
 import re
+from urllib.parse import urlparse
 
 import httpx
 
@@ -28,7 +29,26 @@ def status() -> dict:
     """화면용 — 주제 이름은 안 보여줌 (켜짐 여부·서버·마지막 결과만)"""
     url = settings.ntfy_server.strip().rstrip("/") or "https://ntfy.sh"
     return {"configured": configured(), "server": re.sub(r"^https?://", "", url), "token": bool(settings.ntfy_token.strip()),
-            "last": dict(_last)}
+            "link": app_url("/kis"), "last": dict(_last)}
+
+
+_HOST_RE = re.compile(r"^[A-Za-z0-9.-]+(:\d{1,5})?$")
+
+
+def app_url(path: str = "/") -> str | None:
+    """알림을 누르면 열 웹 주소 = 사이트 주소 + path (예: /kis?order=12).
+    사이트 주소: NTFY_CLICK_URL(뒤에 붙은 경로는 무시하고 주소만) → 없으면 클라우드 DOMAIN(https://DOMAIN). 둘 다 없으면 None (링크 없이 보냄)"""
+    base = settings.ntfy_click_url.strip()
+    if base.startswith(("https://", "http://")):
+        u = urlparse(base)
+        if not u.netloc:
+            return None
+        origin = f"{u.scheme}://{u.netloc}"
+    elif _HOST_RE.fullmatch(settings.domain.strip()):
+        origin = f"https://{settings.domain.strip()}"
+    else:
+        return None
+    return origin + (path if path.startswith("/") else "/" + path)
 
 
 async def send(title: str, message: str, priority: int = 3, tags: list | None = None, click: str | None = None):
@@ -45,8 +65,14 @@ async def send(title: str, message: str, priority: int = 3, tags: list | None = 
     body = {"topic": topic, "title": title[:120], "message": message[:3500], "priority": max(1, min(5, int(priority)))}
     if tags:
         body["tags"] = tags
-    link = click or settings.ntfy_click_url.strip()
-    if link.startswith(("https://", "http://")):
+    # click: '/kis?order=12' 같은 경로면 사이트 주소를 붙임. 없으면 NTFY_CLICK_URL 그대로(예전 설정) 또는 사이트 첫 화면
+    if click and click.startswith("/"):
+        link = app_url(click)
+    elif click:
+        link = click
+    else:
+        link = settings.ntfy_click_url.strip() or app_url("/")
+    if link and link.startswith(("https://", "http://")):
         body["click"] = link
     headers = {"Authorization": f"Bearer {settings.ntfy_token.strip()}"} if settings.ntfy_token.strip() else {}
     try:

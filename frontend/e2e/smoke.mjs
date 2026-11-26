@@ -634,6 +634,8 @@ async function run() {
     expect(st.includes("운영 중") && st.includes("****3456-01") && st.includes("1 / 10건") && st.includes("+120,000원"), `상태: ${st}`);
     const bal = await page.getByTestId("kis-balance").innerText();
     expect(bal.includes("SK하이닉스") && bal.includes("8,150,000원") && bal.includes("176,700원"), `잔고: ${bal}`);
+    expect((await page.getByTestId("kis-notify-link").innerText()).includes("mystock.duckdns.org/kis"), "알림 링크 주소 안내 없음");
+    expect(await page.getByTestId("kis-order-cards").count() === 0, "넓은 화면인데 카드 보기");
     const wl = await page.getByTestId("kis-watch").innerText();
     expect(wl.includes("5초마다") && wl.includes("4종목") && wl.includes("REST 4") && wl.includes("지수 -0.4%")
       && wl.includes("실시간 체결가 연결 안 됨") && wl.includes("연결 거부"), `실시간 감시: ${wl}`);
@@ -767,7 +769,67 @@ async function run() {
       await page.goto(`${BASE}${path}`);
       await page.getByTestId(path === "/admin" ? "admin-summary" : "kis-balance").waitFor();
       await noHScroll(page);
+      await shot(page, `mobile${path.replace("/", "-")}`);
     }
+  });
+
+  await test("휴대폰 알림을 누름(/kis?order=10, 폭 390px): 그 주문 카드로 이동·강조 · 표 대신 카드 · 규칙·설정 접힘 · 승인", { width: 390, height: 844, api: adminApi({
+    "POST /api/kis/orders/approve": { results: [{ id: 11, status: "approved", message: "개장 5분 뒤부터 매수" }] } }) }, async (page, api) => {
+    page.on("dialog", (d) => d.accept());
+    await page.goto(`${BASE}/kis?order=10`);
+    const cards = page.getByTestId("kis-order-cards");
+    await cards.waitFor();
+    const focused = page.locator('[data-focused="1"]');
+    expect(await focused.count() === 1 && (await focused.getAttribute("data-order")) === "10", "알림의 주문이 강조되지 않음");
+    await page.waitForTimeout(300);
+    const box = await focused.boundingBox();
+    expect(box && box.y >= 0 && box.y + box.height <= 844, `알림의 주문 카드가 화면 안에 없음: ${JSON.stringify(box)}`);
+    expect((await focused.innerText()).includes("현대차") && (await focused.innerText()).includes("비싸서 기다림"), "강조된 카드 내용");
+    expect(await page.getByTestId("kis-proposals").locator("table").count() === 0, "휴대폰인데 제안 표가 그대로");
+    expect((await page.getByTestId("kis-holdings-cards").innerText()).includes("손절 176,700원"), "보유 종목 카드");
+    expect((await page.getByTestId("kis-history-cards").innerText()).includes("자동 손절"), "주문 기록 카드");
+    expect(!(await page.getByTestId("kis-rules-fold").evaluate((e) => e.open)), "자동 규칙이 펼쳐져 있음");
+    const cfg = page.getByTestId("kis-config");
+    expect(await cfg.locator("input").count() === 0, "설정이 접혀 있지 않음");
+    await cfg.getByRole("button", { name: "설정 보기·바꾸기" }).click();
+    const g = cfg.getByTestId("kis-config-group").first();
+    const tops = await g.locator("input").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+    expect(tops.length === 3 && tops[0] === tops[1], `휴대폰 설정 2열 입력칸 높이 다름: ${tops}`);
+    await noHScroll(page);
+    await shot(page, "mobile-kis-cards");
+    await cards.getByLabel("삼성전자 선택").check();
+    await page.getByTestId("kis-approve-bar").getByLabel("승인 2단계 코드").fill("123456");
+    await page.getByTestId("kis-approve").click();
+    await page.getByText(/조건 대기 1/).waitFor();
+    expect(JSON.parse(api.calls.find((c) => c.key === "POST /api/kis/orders/approve").body).ids[0] === 11, "휴대폰 승인 요청 이상");
+  });
+
+  await test("끝난 주문 알림(/kis?order=13 자동 손절, 폭 390px) → 주문 기록 카드로 이동·강조", { width: 390, height: 844, api: adminApi() }, async (page) => {
+    await page.goto(`${BASE}/kis?order=13`);
+    const f = page.locator('[data-focused="1"]');
+    await f.waitFor();
+    expect(await f.count() === 1 && (await f.innerText()).includes("기아") && (await f.innerText()).includes("자동 손절"), "주문 기록에서 강조 안 됨");
+    await page.waitForTimeout(300);
+    const box = await f.boundingBox();
+    expect(box && box.y >= 0 && box.y + box.height <= 844, `강조된 기록이 화면 밖: ${JSON.stringify(box)}`);
+  });
+
+  await test("로그인이 풀린 채 알림 링크(/kis?order=10)를 열면 → 로그인 → 그 화면으로 돌아감", { token: false, api: adminApi({
+    "POST /api/auth/login": { access_token: "x", token_type: "bearer" } }) }, async (page) => {
+    await page.goto(`${BASE}/kis?order=10`);
+    await page.waitForURL(/\/login\?next=%2Fkis%3Forder%3D10$/);
+    await page.locator("input").nth(0).fill("boss"); await page.locator("input").nth(1).fill("pw");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(`${BASE}/kis?order=10`);
+    await page.locator('[data-focused="1"]').waitFor();
+  });
+
+  await test("로그인 next 에 다른 사이트 주소(//evil.com)를 넣어도 첫 화면으로", { token: false, api: makeApi({
+    "POST /api/auth/login": { access_token: "x", token_type: "bearer" } }) }, async (page) => {
+    await page.goto(`${BASE}/login?next=%2F%2Fevil.com%2Fx`);
+    await page.locator("input").nth(0).fill("me"); await page.locator("input").nth(1).fill("pw");
+    await page.keyboard.press("Enter");
+    await page.waitForURL(`${BASE}/`);
   });
 
   await test("로그인 화면: 회원가입·비밀번호 찾기 링크 + 안내 문구", { token: false }, async (page) => {

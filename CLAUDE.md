@@ -53,7 +53,7 @@ npm run dev
 | `KIS_ACCOUNT_NO` | 필수 | 증권 계좌번호 (위와 동일하게 필수 검증) |
 | `KIS_IS_REAL` | — | `false` = 모의서버, `true` = 실서버 |
 | `KIS_MOCK_APP_KEY`·`KIS_MOCK_APP_SECRET`·`KIS_MOCK_ACCOUNT_NO` | 선택 | KIS 모의투자 주문(AI 제안 → 관리자 승인) 전용 키·계좌 — 비우면 주문 기능 꺼짐. `KIS_IS_REAL=false` 면 비워 둬도 시세용 키·계좌를 씀. 실거래 서버로는 주문 안 함 (`docs/kis-mock-trading.md`) |
-| `NTFY_TOPIC`·`NTFY_SERVER`·`NTFY_TOKEN`·`NTFY_CLICK_URL` | 선택 | 휴대폰 푸시(ntfy 앱, 날씨 알림과 같은 JSON 방식·다른 주제) — KIS 모의투자 제안·체결·막힘·정지. 주제를 비우면 끔. 주제 이름은 비밀처럼(로그·화면·오류에 안 냄) |
+| `NTFY_TOPIC`·`NTFY_SERVER`·`NTFY_TOKEN`·`NTFY_CLICK_URL` | 선택 | 휴대폰 푸시(ntfy 앱, 날씨 알림과 같은 JSON 방식·다른 주제) — KIS 모의투자 제안·체결·막힘·정지. 주제를 비우면 끔. 주제 이름은 비밀처럼(로그·화면·오류에 안 냄). 알림을 누르면 웹 `/kis?order=번호` — 사이트 주소 = `NTFY_CLICK_URL`(주소 부분만) 또는 클라우드 `DOMAIN`(docker-compose.cloud.yml 이 deploy/.env 를 backend 에도 넘김) |
 | `SECRET_KEY` | 권장 | JWT 서명 키 — 예시값이면 무작위 키를 만들어 `backend/.secret_key` 에 저장해 사용 |
 | `TOTP_ISSUER` | — | Google Authenticator 에 보이는 이름 (기본 `StockApp`) |
 | `FINNHUB_API_KEY` | 선택 | 미국 종목 애널리스트 의견·실적 요인 (경제 캘린더는 Finnhub 유료라 안 씀) |
@@ -130,7 +130,8 @@ services/
                    백테스트·과거 시뮬레이션엔 안 씀(미래 데이터). backtest.run 끝에 recompute → app/data/factor_weights.json. 학습 모델이 쓰이면 모델 우선(모델 입력은 원래 비중)
   kis_ws.py      — KIS 실시간 체결가 웹소켓 (국내 H0STCNT0): 장 시간(08:55~15:35)·보는 종목이 있을 때만 연결, want()=구독 목록(2분 TTL·최대 40), get()=10초 안 값,
                    접속키 /oauth2/Approval, PINGPONG 되돌림, 끊기면 5~60초 뒤 재연결. quote.live_prices 가 5초 안 값이 있으면 REST 안 부름. status() → scheduler-status 의 kis_ws
-  notify.py      — 휴대폰 푸시 (ntfy): send(제목·내용·우선순위·태그, JSON 으로 POST — 한글 제목), send_bg(뒤에서, 실패해도 계속), status()(주제 이름 없이 켜짐·서버·마지막 결과).
+  notify.py      — 휴대폰 푸시 (ntfy): send(제목·내용·우선순위·태그·click, JSON 으로 POST — 한글 제목), send_bg(뒤에서, 실패해도 계속), status()(주제 이름 없이 켜짐·서버·link·마지막 결과).
+                   app_url(path) = 사이트 주소(NTFY_CLICK_URL 의 scheme+host → 없으면 https://DOMAIN) + path — click 이 '/…' 면 이걸로. kis_trade._push(order_id=) → /kis?order=번호.
                    kis_trade 가 씀: 제안·정지 = 푸시+메일(_alert_admins), 체결·막힘·거부·결과 모름 = 푸시만(_push). 테스트는 conftest 가 NTFY_TOPIC 을 비움
   mailer.py      — SMTP 메일 발송 (465 = SSL, 그 외 STARTTLS). 설정 없으면 MailError(보낸 척 안 함), 오류 문구에 비밀번호 안 넣음
   sms.py         — 휴대폰 문자 발송 (솔라피 /messages/v4/send-many/detail, HMAC-SHA256 서명). 설정 없으면 SmsError, 하루 SMS_DAILY_LIMIT 건
@@ -262,14 +263,15 @@ api/routes/
 ### 프론트엔드 (`frontend/src/`)
 
 ```
-api/client.ts      — axios 인스턴스; 로그인 토큰을 **X-Access-Token** 헤더로 자동 주입 (Authorization 은 클라우드 Caddy 접속 비밀번호(Basic)
+api/client.ts      — loginUrl(next)/safeNext(): 로그인 풀리면 /login?next=원래 주소 → 로그인 후 그 화면 (사이트 안 경로만, //·/\\ 거부). axios 인스턴스; 로그인 토큰을 **X-Access-Token** 헤더로 자동 주입 (Authorization 은 클라우드 Caddy 접속 비밀번호(Basic)
                      자리라 쓰면 안 됨 — 덮으면 모든 요청이 Caddy 401); 401 → /login 리디렉트, 403 + X-Totp-Required → /setup-2fa
 api/queryClient.ts, api/persist.ts — React Query 설정 + localStorage 저장 (아래 설명)
 store/auth.ts      — Zustand: token + user 상태
 pages/             — Dashboard, Recommendations, Screener(종목탐색 = 검색 + 스크리너, 예전 /search 는 여기로), Themes(테마별 주식), Quant(퀀트 점수), Accumulation(매집 탐지),
                      Watchlist(국내/미국 탭 · 3열 카드 또는 표 · 매입가/목표가/손절가 · 탭·보기·정렬은 localStorage 기억), Portfolio,
                      Admin(/admin, 관리자만 — AdminRoute: 요약·회원 목록·회원 상세(활동 기록)·초대 코드·전체 보안 기록),
-                     KisTrade(/kis, 관리자만 — KIS 모의투자: 상태·긴급 정지/다시 시작·잔고·대조 경고·기준 맞추기·제안 선택 → 2단계 코드로 승인·거절·취소·설정·주문 기록·감사 로그),
+                     KisTrade(/kis, 관리자만 — KIS 모의투자: 상태·긴급 정지/다시 시작·잔고·대조 경고·기준 맞추기·제안 선택 → 2단계 코드로 승인·거절·취소·설정·주문 기록·감사 로그.
+                       ?order=번호 = 휴대폰 알림 링크 → 그 주문 스크롤·강조. 640px 이하(useNarrow)는 표 대신 카드·규칙/설정 접음·승인 줄 화면 아래 고정),
                      Setup2FA(/setup-2fa: 2단계 필수인데 안 켰을 때 — 등록하면 첫 화면, ProtectedRoute 와 403 X-Totp-Required 가 여기로 보냄),
                      PaperTrading(/paper, AI 모의투자: 실시간 계좌 / 과거 시뮬레이션 탭(localStorage paper-tab) · 자산 곡선 SVG(AI vs 지수) · 거래 이유 · 판단 기록),
                      Predictions(예측 검증), Calendar,

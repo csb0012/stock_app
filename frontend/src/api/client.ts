@@ -1,6 +1,17 @@
 import axios from "axios";
 import { clearPersisted } from "./persist";
 
+/** 로그인 화면 주소 — 다시 로그인하면 원래 보던 화면(예: 휴대폰 알림의 /kis?order=12)으로 돌아가게 next 를 붙임 */
+export function loginUrl(next?: string): string {
+  return next && next !== "/" && next.startsWith("/") && !next.startsWith("/login") ? `/login?next=${encodeURIComponent(next)}` : "/login";
+}
+
+/** next 값이 이 사이트 안 주소일 때만 (다른 사이트로 보내는 주소 조작 방지 — //evil.com, /\\evil.com, https:// 등 거부) */
+export function safeNext(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\") || next.startsWith("/login")) return "/";
+  return next;
+}
+
 const api = axios.create({ baseURL: "/api" });
 
 api.interceptors.request.use((config) => {
@@ -21,7 +32,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401 && !isLoginCall) {
       localStorage.removeItem("token");
       clearPersisted();
-      if (window.location.pathname !== "/login") window.location.href = "/login";
+      if (window.location.pathname !== "/login") window.location.href = loginUrl(window.location.pathname + window.location.search);
     }
     // 2단계 인증 필수인데 아직 안 켬 → 2단계 설정 화면으로 (서버가 X-Totp-Required 헤더를 붙여 403)
     if (err.response?.status === 403 && err.response?.headers?.["x-totp-required"] && window.location.pathname !== "/setup-2fa") {

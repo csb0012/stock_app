@@ -33,7 +33,7 @@ const LIMIT_META = {
 
 export const KIS_STATUS = {
   configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", account_source: "KIS_MOCK_ACCOUNT_NO",
-  notify: { configured: true, server: "ntfy.sh", token: false, last: { ok: true, error: null, at: 1795000000 } }, halted: false, halted_reason: null, halted_at: null,
+  notify: { configured: true, server: "ntfy.sh", token: false, link: "https://mystock.duckdns.org/kis", last: { ok: true, error: null, at: 1795000000 } }, halted: false, halted_reason: null, halted_at: null,
   limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3 },
   limit_meta: LIMIT_META,
   param_meta: { max_positions: { default: 5, min: 1, max: 15, label: "최대 보유 종목 수" }, buy_score: { default: 60, min: 50, max: 90, label: "매수 기준 AI 점수" },

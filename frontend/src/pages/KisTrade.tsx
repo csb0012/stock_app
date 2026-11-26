@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { useNarrow } from "../components/common/useNarrow";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot, Radar } from "lucide-react";
 import { kisApi, errMsg } from "../api/client";
@@ -46,6 +48,9 @@ const statusBadge = (o: any) => <span className={`badge ${STATUS_CLS[o.status] |
 const amount = (o: any) => (o.side === "sell" ? `${o.qty?.toLocaleString() ?? "-"}주` : o.qty ? `${o.qty.toLocaleString()}주` : `${won(o.budget)}어치`)
   + (o.limit_price ? ` · 지정가 ${won(o.limit_price)}` : o.submitted_at && o.side === "sell" ? " · 시장가" : "");
 const srcTag = (o: any) => { const t = SOURCE[o.source]; return t ? <span style={{ fontSize: 10.5, color: t[1], fontWeight: 600 }}> {t[0]}</span> : null; };
+const mCard: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 5, minWidth: 0 };
+const mRow: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, minWidth: 0 };
+const mSub: React.CSSProperties = { fontSize: 11.5, color: "var(--text-muted)" };
 const pct = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
 
 function Rules({ s }: { s: any }) {
@@ -88,6 +93,18 @@ export default function KisTrade() {
 
   const [picked, setPicked] = useState<number[]>([]);
   const [code, setCode] = useState("");
+  const narrow = useNarrow();
+  // 휴대폰 알림을 누르면 /kis?order=번호 — 그 주문으로 스크롤 + 강조
+  const focus = Number(useSearchParams()[0].get("order")) || null;
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    if (!focus || scrolled || !open.data || !hist.data) return;
+    const el = document.querySelector(`[data-order="${focus}"]`);
+    if (el) { el.scrollIntoView({ block: "center" }); setScrolled(true); }
+  }, [focus, scrolled, open.data, hist.data]);
+  const inOpen = (id: number) => !!open.data?.items?.some((x: any) => x.id === id);   // 진행 중 목록에 있으면 거기만 강조
+  const hl = (id: number): React.CSSProperties => (id === focus
+    ? { outline: "2px solid var(--accent)", outlineOffset: -2, background: "color-mix(in srgb, var(--accent) 8%, transparent)" } : {});
   const [resumeCode, setResumeCode] = useState("");
 
   const approve = useMutation({ mutationFn: () => kisApi.approve(picked, code).then((r) => r.data), meta: { inlineError: true },
@@ -177,6 +194,8 @@ export default function KisTrade() {
             {s.notify?.configured ? (
               <>
                 <span>휴대폰 알림(ntfy {s.notify.server}) 켜짐 — 제안·자동 손절·급변 자동 취소·조건 충족 주문·체결·막힘·정지를 보냅니다</span>
+                {s.notify.link ? <span data-testid="kis-notify-link" style={{ color: "var(--text-muted)" }}>· 알림을 누르면 {s.notify.link.replace(/^https?:\/\//, "")} (그 주문 위치)</span>
+                  : <span data-testid="kis-notify-link" style={{ color: "var(--yellow)" }}>· 알림을 눌러도 열 주소 없음 — backend/.env 에 NTFY_CLICK_URL=https://내주소 를 넣으세요</span>}
                 {s.notify.last?.ok === false && <span style={{ color: "var(--red)" }}>마지막 알림 실패: {s.notify.last.error}</span>}
                 <button className="btn btn-ghost" style={{ fontSize: 11.5, padding: "2px 8px" }} disabled={ntest.isPending} onClick={() => ntest.mutate()}>알림 시험 보내기</button>
               </>
@@ -217,7 +236,20 @@ export default function KisTrade() {
                 <div>주식 평가 <strong>{won(bal.stock_value)}</strong></div>
                 <div>평가손익 <strong className={bal.pnl >= 0 ? "up" : "down"}>{bal.pnl >= 0 ? "+" : ""}{won(bal.pnl)}</strong></div>
               </div>
-              {bal.holdings.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>보유 종목 없음</p> : (
+              {bal.holdings.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>보유 종목 없음</p> : narrow ? (
+                <div data-testid="kis-holdings-cards" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {bal.holdings.map((h: any) => (
+                    <div key={h.symbol} style={mCard}>
+                      <div style={mRow}>
+                        <strong style={{ fontSize: 13.5 }}>{h.name} <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: 11.5 }}>{h.symbol}</span></strong>
+                        <strong className={h.pnl_pct >= 0 ? "up" : "down"}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct.toFixed(2)}%</strong>
+                      </div>
+                      <div style={mSub}>{h.qty.toLocaleString()}주 · 평균 {won(h.avg)} → 현재 {won(h.price)}</div>
+                      <div style={mSub}>손절 {won(h.stop)} · 목표 {won(h.target)} · 보유 {h.hold_days ?? "-"}일</div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
                 <div style={{ overflowX: "auto" }}>
                   <table className="data-table">
                     <thead><tr><th>종목</th><th className="num">수량</th><th className="num">평균가</th><th className="num">현재가</th><th className="num">손익</th><th className="num">손절가</th><th className="num">목표가</th><th className="num">보유일</th></tr></thead>
@@ -244,9 +276,40 @@ export default function KisTrade() {
           desc="장 마감 15분 뒤 자동으로 제안 (장중엔 목표가에 닿으면 매도 제안). 제안은 다음 거래일 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
           right={<button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={propose.isPending || s.halted} onClick={() => propose.mutate()}>
             <Bot size={13} className={propose.isPending ? "spin" : undefined} /> {propose.isPending ? "판단 중 (몇 분)..." : "지금 제안 만들기"}</button>}>
-          <Rules s={s} />
+          {narrow ? (
+            <details data-testid="kis-rules-fold" style={{ fontSize: 12 }}>
+              <summary style={{ cursor: "pointer", color: "var(--text-secondary)" }}>자동 규칙 보기 (언제 사고 · 언제 자동 취소 · 자동 손절)</summary>
+              <div style={{ marginTop: 8 }}><Rules s={s} /></div>
+            </details>
+          ) : <Rules s={s} />}
           {open.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(open.error)}</p>}
-          {orders.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>승인 대기·진행 중인 주문이 없습니다</p> : (
+          {orders.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>승인 대기·진행 중인 주문이 없습니다</p> : narrow ? (
+            <div data-testid="kis-order-cards" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {orders.map((o) => (
+                <div key={o.id} data-order={o.id} data-focused={o.id === focus ? "1" : undefined} style={{ ...mCard, ...hl(o.id) }}>
+                  <div style={mRow}>
+                    <label style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+                      {o.status === "proposed" && (
+                        <input type="checkbox" aria-label={`${o.name} 선택`} checked={picked.includes(o.id)} onChange={() => toggle(o.id)} style={{ width: 18, height: 18 }} />
+                      )}
+                      {sideBadge(o.side)}
+                      <strong style={{ fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</strong>
+                    </label>
+                    {statusBadge(o)}
+                  </div>
+                  <div style={mSub}>{amount(o)}{o.ref_price ? ` · 제안가 ${won(o.ref_price)}` : ""}{srcTag(o)}</div>
+                  <div style={{ fontSize: 12, lineHeight: 1.5 }}>{o.reason}</div>
+                  {o.message && <div style={{ ...mSub, lineHeight: 1.5 }}>{o.message}</div>}
+                  <div style={mRow}>
+                    <span style={mSub}>기한 {when(o.expires_at)}</span>
+                    {o.status === "approved" && <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => reject.mutate([o.id])}>주문 전 취소</button>}
+                    {o.status === "submitted" && <button className="btn btn-ghost" style={{ fontSize: 12, color: "var(--red)" }}
+                      onClick={() => { if (window.confirm(`${o.name} 주문을 KIS 에서 취소할까요?`)) cancel.mutate(o.id); }}>주문 취소</button>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
@@ -254,7 +317,7 @@ export default function KisTrade() {
                 </tr></thead>
                 <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <tr key={o.id} data-order={o.id} data-focused={o.id === focus ? "1" : undefined} style={{ borderTop: "1px solid var(--border)", ...hl(o.id) }}>
                       <td style={td}>{o.status === "proposed" && (
                         <input type="checkbox" aria-label={`${o.name} 선택`} checked={picked.includes(o.id)} onChange={() => toggle(o.id)} />
                       )}</td>
@@ -277,7 +340,8 @@ export default function KisTrade() {
             </div>
           )}
           {proposed.length > 0 && (
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+            <div data-testid="kis-approve-bar" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: 10,
+              ...(narrow ? { position: "sticky", bottom: 0, zIndex: 5, background: "var(--bg-card)", paddingBottom: 10, boxShadow: "0 -6px 12px -8px rgba(0,0,0,.25)" } : {}) }}>
               <button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setPicked(picked.length === proposed.length ? [] : proposed.map((o) => o.id))}>
                 {picked.length === proposed.length ? "선택 해제" : "모두 선택"}</button>
               <ShieldCheck size={14} style={{ color: "var(--accent)" }} />
@@ -286,7 +350,7 @@ export default function KisTrade() {
                 onClick={() => { if (window.confirm(`선택한 ${picked.length}건을 승인할까요? ${s.window === "open" ? "조건이 맞으면 바로 모의투자 서버로 주문합니다 (매수는 지정가)." : "다음 장중에 조건이 맞을 때 주문합니다."} 급변이 오면 매수는 자동으로 취소됩니다.`)) approve.mutate(); }}>
                 선택한 {picked.length}건 승인</button>
               <button className="btn btn-ghost" disabled={!picked.length || reject.isPending} onClick={() => reject.mutate(picked)}>거절</button>
-              <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>주문 직전에 한도·손실·가격·VI·잔고 대조를 다시 확인하고, 걸리면 보내지 않거나 기다립니다</span>
+              {!narrow && <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>주문 직전에 한도·손실·가격·VI·잔고 대조를 다시 확인하고, 걸리면 보내지 않거나 기다립니다</span>}
             </div>
           )}
           {approve.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(approve.error)}</p>}
@@ -311,7 +375,22 @@ export default function KisTrade() {
 
       {s.configured && (
         <Card icon={History} title="주문 기록" testid="kis-history" desc="최근 100건 (제안·승인·거절·체결·막힘 전부)">
-          {hist.data?.items?.length ? (
+          {hist.data?.items?.length ? narrow ? (
+            <div data-testid="kis-history-cards" style={{ display: "flex", flexDirection: "column" }}>
+              {hist.data.items.map((o: any) => (
+                <div key={o.id} data-order={inOpen(o.id) ? undefined : o.id} data-focused={o.id === focus && !inOpen(o.id) ? "1" : undefined}
+                  style={{ borderTop: "1px solid var(--border)", padding: "8px 2px", display: "flex", flexDirection: "column", gap: 3, ...hl(o.id) }}>
+                  <div style={mRow}>
+                    <span style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>{sideBadge(o.side)}<strong style={{ fontSize: 13 }}>{o.name}</strong>{srcTag(o)}</span>
+                    {statusBadge(o)}
+                  </div>
+                  <div style={mSub}>제안 {when(o.created_at)}{o.submitted_at ? ` · 주문 ${o.qty?.toLocaleString()}주${o.limit_price ? ` 지정가 ${won(o.limit_price)}` : " 시장가"}` : ""}
+                    {o.filled_qty ? ` · 체결 ${o.filled_qty.toLocaleString()}주 ${won(o.filled_price)}` : ""}</div>
+                  {o.message && <div style={{ ...mSub, lineHeight: 1.5 }}>{o.message}</div>}
+                </div>
+              ))}
+            </div>
+          ) : (
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                 <thead><tr style={{ color: "var(--text-muted)", textAlign: "left" }}>
@@ -319,7 +398,8 @@ export default function KisTrade() {
                 </tr></thead>
                 <tbody>
                   {hist.data.items.map((o: any) => (
-                    <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
+                    <tr key={o.id} data-order={inOpen(o.id) ? undefined : o.id} data-focused={o.id === focus && !inOpen(o.id) ? "1" : undefined}
+                      style={{ borderTop: "1px solid var(--border)", ...hl(o.id) }}>
                       <td style={td}>{when(o.created_at)}</td><td style={td}>{sideBadge(o.side)}{srcTag(o)}</td>
                       <td style={td}>{o.name} <span style={{ color: "var(--text-muted)" }}>{o.symbol}</span></td>
                       <td style={td}>{o.submitted_at ? `${when(o.submitted_at)} · ${o.qty?.toLocaleString()}주${o.limit_price ? ` · 지정가 ${won(o.limit_price)}` : " · 시장가"}` : "-"}</td>
@@ -337,7 +417,16 @@ export default function KisTrade() {
 
       <Card icon={ScrollText} title="감사 로그" testid="kis-audit" desc="누가 언제 무엇을 했는지 — 제안·승인·주문·체결·정지·설정 변경을 모두 남깁니다 (지우지 않음)">
         {log.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(log.error)}</p>}
-        {log.data?.items?.length ? (
+        {log.data?.items?.length ? narrow ? (
+          <div style={{ display: "flex", flexDirection: "column", maxHeight: 420, overflowY: "auto" }}>
+            {log.data.items.map((l: any) => (
+              <div key={l.id} style={{ borderTop: "1px solid var(--border)", padding: "6px 2px", fontSize: 12, color: l.ok ? undefined : "var(--red)" }}>
+                <div style={{ ...mSub, color: l.ok ? "var(--text-muted)" : "var(--red)" }}>{when(l.at)} · {l.by} · <strong>{ACTION[l.action] || l.action}</strong></div>
+                <div style={{ lineHeight: 1.5 }}>{l.detail}{l.order_id ? <span style={{ color: "var(--text-muted)" }}> (#{l.order_id})</span> : null}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
           <div style={{ overflowX: "auto", maxHeight: 360 }}>
             <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
               <thead><tr style={{ color: "var(--text-muted)", textAlign: "left" }}><th style={th}>시각</th><th style={th}>누가</th><th style={th}>일</th><th style={th}>내용</th></tr></thead>
@@ -388,9 +477,12 @@ const LIMIT_GROUPS: [string, string, string[]][] = [
 ];
 
 function Field({ label, range, value, onChange }: { label: string; range?: string; value: number; onChange: (n: number) => void }) {
+  const narrow = useNarrow();
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-      <span style={{ fontSize: 12, color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={label}>{label}</span>
+      {/* 휴대폰(2열)에선 이름이 두 줄이 될 수 있어 두 줄 높이를 늘 잡아 둠 — 같은 줄 입력칸 위치가 같게 */}
+      <span style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.3,
+        ...(narrow ? { minHeight: 31 } : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }) }} title={label}>{label}</span>
       <span style={{ fontSize: 10.5, color: "var(--text-muted)", minHeight: 14 }}>{range || ""}</span>
       <input type="number" value={Number.isFinite(value) ? value : ""} aria-label={label} onChange={(e) => onChange(Number(e.target.value))}
         style={{ ...inputStyle, width: "100%" }} />
@@ -402,7 +494,7 @@ function Group({ title, desc, children, testid }: { title: string; desc: string;
   return (
     <div data-testid={testid} style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
       <div style={{ fontSize: 12.5 }}><strong>{title}</strong> <span style={{ color: "var(--text-muted)", fontSize: 11.5 }}>— {desc}</span></div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 10 }}>{children}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(170px, calc(50% - 5px)), 1fr))", gap: 10 }}>{children}</div>
     </div>
   );
 }
@@ -420,6 +512,17 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
   const limitField = (k: string) => meta[k] && (
     <Field key={k} label={meta[k].label} range={`${meta[k].min.toLocaleString()} ~ ${meta[k].max.toLocaleString()}`} value={lim[k]} onChange={(n) => setLim({ ...lim, [k]: n })} />
   );
+  const narrow = useNarrow();
+  const [show, setShow] = useState(false);
+  if (narrow && !show) {   // 휴대폰: 자주 안 바꾸니 접어 둠 (화면이 너무 길어짐)
+    return (
+      <Card icon={Settings2} title="안전장치 · 매매 규칙" testid="kis-config" desc="바꾸려면 2단계 코드가 필요합니다"
+        right={<button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setShow(true)}>설정 보기·바꾸기</button>}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>1회 {won(s.limits.max_order_krw)} · 하루 {s.limits.max_orders_day}건 · 손실 한도 {won(s.limits.max_loss_krw)} ·
+          손절 {s.params.stop_pct}% · 목표 {s.params.take_pct}%</span>
+      </Card>
+    );
+  }
   return (
     <Card icon={Settings2} title="안전장치 · 매매 규칙" testid="kis-config" desc="바꾸려면 2단계 코드가 필요합니다. 매매 규칙은 AI 모의투자와 같은 항목입니다">
       {groups.map(([t, d, keys]) => <Group key={t} title={t} desc={d} testid="kis-config-group">{keys.map(limitField)}</Group>)}

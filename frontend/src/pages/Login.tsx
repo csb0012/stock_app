@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { authApi, errMsg } from "../api/client";
+import { authApi, errMsg, safeNext } from "../api/client";
 import { useAuthStore } from "../store/auth";
 import { TrendingUp, Lock, User, Shield } from "lucide-react";
 import ThemeToggle from "../components/common/ThemeToggle";
@@ -12,7 +12,9 @@ export default function Login() {
   const [needsTotp, setNeedsTotp] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const notice = (useLocation().state as any)?.notice as string | undefined;
+  const loc = useLocation();
+  const notice = (loc.state as any)?.notice as string | undefined;
+  const next = safeNext(new URLSearchParams(loc.search).get("next"));   // 휴대폰 알림 등으로 들어온 화면
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,7 +31,7 @@ export default function Login() {
       } else {
         setToken(res.data.access_token);
         // 2단계 인증 필수인데 아직 등록 안 함 → QR 등록 화면부터
-        navigate(res.data.totp_setup_required ? "/setup-2fa" : "/");
+        navigate(res.data.totp_setup_required ? "/setup-2fa" : next, { replace: true });
       }
     } catch (err: any) {
       setError(errMsg(err) || "로그인 실패");

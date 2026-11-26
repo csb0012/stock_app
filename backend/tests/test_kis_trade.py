@@ -504,7 +504,7 @@ def test_propose_from_kis_balance(kenv, monkeypatch):
 def test_stop_loss_sells_automatically(kenv, monkeypatch):
     """손절가에 닿으면 승인 없이 바로 시장가 매도 + 휴대폰 알림 (사용자 결정 2026-11-26)"""
     pushed = []
-    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append((title, priority)))
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None, **kw: pushed.append((title, priority)))
     kenv.b.holdings["005930"] = [10, 70_000]
     run(kis_trade.rebaseline(kenv.uid))
     kenv.b.prices["005930"] = 64_000      # 손절가 65,100 아래
@@ -587,7 +587,7 @@ def _feed(env, *prices, sym="005930", step=60):
 
 def test_fast_drop_cancels_waiting_and_resting_buys(kenv, monkeypatch):
     pushed = []
-    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append(title))
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None, **kw: pushed.append(title))
     kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 1, 30, tzinfo=KST)
     waiting = buy(kenv)                                   # 개장 5분 전 — 조건 대기
     assert approve(kenv, waiting).json()["results"][0]["status"] == "approved"
@@ -918,7 +918,7 @@ def test_account_error_cleared_when_balance_ok(kenv, monkeypatch):
 def test_order_results_pushed_to_phone(kenv, monkeypatch):
     """승인한 주문의 결과(체결·막힘)가 휴대폰 푸시로 감"""
     pushed = []
-    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append((title, priority)))
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None, **kw: pushed.append((title, priority)))
     approve(kenv, buy(kenv))
     run(kis_trade.refresh_fills())
     kenv.b.prices["000660"] = 180_000     # 제안 때보다 −10% → 급변 자동 취소
