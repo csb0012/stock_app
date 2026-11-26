@@ -20,7 +20,7 @@ class KisTrade(Base):
 
 class KisOrder(Base):
     """주문 제안 1건 → 승인 → 주문 → 체결. 상태:
-    proposed(승인 대기) / approved(승인 — 장 열리면 주문) / submitting(보내는 중) / submitted(주문 접수) /
+    proposed(승인 대기) / approved(승인 — 장중에 조건이 맞으면 주문) / submitting(보내는 중) / submitted(주문 접수) /
     filled(체결) / partial(일부 체결) / unfilled(안 체결) / unknown(결과 모름 — 직접 확인) /
     rejected(거절) / expired(기한 지남) / cancelled(취소) / blocked(안전장치로 안 보냄) / failed(KIS 거부)"""
     __tablename__ = "kis_orders"
@@ -28,7 +28,7 @@ class KisOrder(Base):
     id = Column(Integer, primary_key=True, index=True)
     created_at = Column(Float, nullable=False)
     base_date = Column(String, nullable=True)        # 판단에 쓴 종가 날짜
-    source = Column(String, nullable=False, default="ai")   # ai(장 마감 후 판단) / exit(장중 손절·목표)
+    source = Column(String, nullable=False, default="ai")   # ai(장 마감 후 판단) / exit(장중 목표가 매도 제안) / stop(자동 손절 — 승인 없이)
     side = Column(String, nullable=False)            # buy / sell
     symbol = Column(String, nullable=False, index=True)
     name = Column(String, nullable=True)
@@ -43,6 +43,8 @@ class KisOrder(Base):
     decided_at = Column(Float, nullable=True)
     submitted_at = Column(Float, nullable=True)
     order_price = Column(Float, nullable=True)       # 주문 직전 현재가
+    limit_price = Column(Float, nullable=True)       # 지정가 (매수) — 없으면 시장가
+    cancel_req = Column(Float, nullable=True)        # KIS 에 취소를 요청한 시각 (체결 내역에 반영되면 cancelled/partial)
     odno = Column(String, nullable=True)             # KIS 주문번호
     orgno = Column(String, nullable=True)            # KIS 주문 조직번호 (취소에 필요)
     filled_qty = Column(Integer, nullable=False, default=0)

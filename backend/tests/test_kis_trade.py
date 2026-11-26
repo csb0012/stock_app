@@ -23,7 +23,7 @@ SECRET = pyotp.random_base32()
 
 
 class FakeBroker:
-    """KIS 모의투자 계좌 흉내: 시장가 주문은 바로 현재가로 체결"""
+    """KIS 모의투자 계좌 흉내: 시장가·현재가 이상 지정가는 바로 현재가로 체결 (현재가보다 낮은 지정가는 걸려 있음)"""
 
     def __init__(self):
         self.cash = 10_000_000
@@ -33,6 +33,9 @@ class FakeBroker:
         self.orders = []        # 보낸 주문
         self.fill = True
         self.fail = None
+        self.vi = set()         # VI 발동 중인 종목
+        self.index = 0.0        # 코스피·코스닥 중 더 빠진 쪽 등락률
+        self.no_price = set()   # 실시간·REST 가격을 못 받는 종목
 
     async def balance(self):
         hs = [{"symbol": s, "name": f"종목{s}", "qty": q, "sellable": q, "avg": a, "price": self.prices[s],
@@ -41,13 +44,13 @@ class FakeBroker:
         return {"cash": self.cash, "d2_cash": self.cash, "total": self.cash + stock, "stock_value": stock,
                 "prev_total": self.prev_total, "pnl": 0, "holdings": hs}
 
-    async def order(self, side, symbol, qty):
+    async def order(self, side, symbol, qty, price=None):
         if self.fail:
             raise KISError(self.fail)
         odno = f"{len(self.orders) + 1:010d}"
         px = self.prices[symbol]
-        self.orders.append({"odno": odno, "side": side, "symbol": symbol, "qty": qty, "px": px, "filled": 0})
-        if self.fill:
+        self.orders.append({"odno": odno, "side": side, "symbol": symbol, "qty": qty, "px": px, "filled": 0, "limit": price})
+        if self.fill and (price is None or price >= px):
             self._fill(self.orders[-1])
         return {"odno": odno, "orgno": "00950", "time": "091500", "msg": "주문 전송 완료"}
 
@@ -108,8 +111,22 @@ def kenv(monkeypatch):
 
     async def price_now(symbol, bal):
         return float(b.prices[symbol])
+
+    async def quote(symbol):
+        return {"price": float(b.prices[symbol]), "vi": symbol in b.vi, "halted": False}
+
+    async def index_change():
+        return b.index
+
+    async def fetch_prices(symbols):
+        return {s: (float(b.prices[s]), "ws") for s in symbols if s in b.prices and s not in b.no_price}
     monkeypatch.setattr(kis_trade, "_price_now", price_now)
+    monkeypatch.setattr(kis_trade, "_quote", quote)
+    monkeypatch.setattr(kis_trade, "_index_change", index_change)
+    monkeypatch.setattr(kis_trade, "_fetch_prices", fetch_prices)
     kis_trade._balance_cache.update(at=0.0, data=None, error=None)
+    for d in (kis_trade._hist, kis_trade._next_try, kis_trade._wait_kind):
+        d.clear()
 
     async def _db():
         async with Session() as s:
@@ -207,12 +224,20 @@ def test_approved_outside_hours_waits_for_open(kenv):
     oid = add_order(kenv, side="buy", symbol="005930", name="삼성", budget=1_000_000, ref_price=70_000, reason="x")
     r = approve(kenv, oid)
     assert r.json()["results"][0]["status"] == "approved" and kenv.b.orders == []
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 0, 30, tzinfo=KST)   # 개장 직후 1분 전엔 안 보냄
+    sell = add_order(kenv, side="sell", symbol="000660", name="하이닉스", qty=2, ref_price=200_000, reason="x")
+    kenv.b.holdings["000660"] = [2, 190_000]
+    assert approve(kenv, sell).json()["results"][0]["status"] == "approved"
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 0, 30, tzinfo=KST)   # 개장 1분 전엔 아무것도 안 보냄
     run(kis_trade.tick())
     assert kenv.b.orders == []
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 1, 10, tzinfo=KST)
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 1, 10, tzinfo=KST)   # 매도는 개장 1분 뒤, 매수는 5분 뒤부터
     run(kis_trade.tick())
-    assert len(kenv.b.orders) == 1 and order(kenv, oid).status == "filled"
+    assert [o["side"] for o in kenv.b.orders] == ["sell"] and order(kenv, oid).status == "approved"
+    assert "개장 5분 뒤" in order(kenv, oid).message
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 5, 10, tzinfo=KST)
+    run(kis_trade.tick())
+    assert [o["side"] for o in kenv.b.orders] == ["sell", "buy"] and order(kenv, oid).status == "filled"
+    assert kenv.b.orders[1]["limit"] == 70_300    # 지정가 = 현재가 70,000 × 1.003 → 호가 단위(100원) 올림
 
 
 def test_proposal_expires_after_next_close(kenv):
@@ -252,16 +277,29 @@ def test_daily_order_count_limit(kenv):
     assert r["status"] == "blocked" and "횟수" in r["message"] and len(kenv.b.orders) == 1
 
 
-def test_price_gap_blocks_buy(kenv):
+def test_price_rise_waits_then_buys_when_back_in_range(kenv):
+    """비싸지면 막아 버리지 않고 기다림 (쫓아가서 안 삼) → 허용 안으로 내려오면 그때 지정가로 삼"""
     kenv.b.prices["005930"] = 73_000      # 제안 70,000 → +4.3% (허용 3%)
-    r = approve(kenv, buy(kenv)).json()["results"][0]
-    assert r["status"] == "blocked" and "비싸져서" in r["message"] and kenv.b.orders == []
+    oid = buy(kenv)
+    r = approve(kenv, oid).json()["results"][0]
+    assert r["status"] == "approved" and "비싸서 기다림" in r["message"] and kenv.b.orders == []
+    run(kis_trade.watch())                # 아직 비쌈 → 그대로
+    assert kenv.b.orders == [] and order(kenv, oid).status == "approved"
+    kenv.b.prices["005930"] = 71_500      # +2.1% — 허용 안
+    kenv.clock["t"] += dt.timedelta(seconds=31)
+    assert run(kis_trade.watch())["sent"] == 1
+    k = order(kenv, oid)
+    assert k.status == "submitted" and k.limit_price == 71_800 and kenv.b.orders[0]["limit"] == 71_800   # 71,500 × 1.003 = 71,714.5 → 71,800
+    log = [l["action"] for l in run(kis_trade.list_log())]
+    assert log.count("wait") == 1         # 기다림은 이유가 바뀔 때만 기록 (매번 안 쌓음)
 
 
-def test_price_crash_blocks_buy(kenv):
+def test_price_crash_cancels_buy(kenv):
     kenv.b.prices["005930"] = 65_000      # 제안 70,000 → −7.1% (허용 −6%) — 판단 때와 상황이 다름
-    r = approve(kenv, buy(kenv)).json()["results"][0]
-    assert r["status"] == "blocked" and "급락" in r["message"] and kenv.b.orders == []
+    oid = buy(kenv)
+    r = approve(kenv, oid).json()["results"][0]
+    assert r["status"] == "cancelled" and "급락" in r["message"] and kenv.b.orders == []
+    assert order(kenv, oid).message.startswith("급변으로 자동 취소")
     kenv.b.prices["005930"] = 67_000      # −4.3% 는 괜찮음
     assert approve(kenv, buy(kenv)).json()["results"][0]["status"] == "submitted"
 
@@ -395,7 +433,7 @@ def test_emergency_halt_cancels_unfilled(kenv):
     assert r.status_code == 200 and "1건 취소" in r.json()["message"]
     assert order(kenv, sent).status == "cancelled" and order(kenv, waiting).status == "cancelled"
     assert kenv.b.orders[0]["cancelled"]
-    assert run(kis_trade.list_log())[0]["action"] in ("cancel", "halt")
+    assert "cancel" in [l["action"] for l in run(kis_trade.list_log())]
 
 
 def test_interrupted_submit_is_not_resent(kenv):
@@ -463,16 +501,215 @@ def test_propose_from_kis_balance(kenv, monkeypatch):
     assert len(kenv.c.get("/api/kis/orders").json()["items"]) == 2
 
 
-def test_exit_proposal_on_stop(kenv):
+def test_stop_loss_sells_automatically(kenv, monkeypatch):
+    """손절가에 닿으면 승인 없이 바로 시장가 매도 + 휴대폰 알림 (사용자 결정 2026-11-26)"""
+    pushed = []
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append((title, priority)))
     kenv.b.holdings["005930"] = [10, 70_000]
     run(kis_trade.rebaseline(kenv.uid))
     kenv.b.prices["005930"] = 64_000      # 손절가 65,100 아래
-    kis_trade._balance_cache["data"] = None
-    assert run(kis_trade.check_exits()) == 1
-    items = kenv.c.get("/api/kis/orders").json()["items"]
-    assert items[0]["side"] == "sell" and items[0]["source"] == "exit" and "손절가" in items[0]["reason"]
-    assert run(kis_trade.check_exits()) == 0   # 같은 종목 매도 제안 중복 없음
+    assert run(kis_trade.watch())["stops"] == 1
+    assert kenv.b.orders[0] == {**kenv.b.orders[0], "side": "sell", "qty": 10, "limit": None}   # 시장가
+    items = kenv.c.get("/api/kis/orders?kind=all").json()["items"]
+    assert items[0]["source"] == "stop" and items[0]["status"] in ("submitted", "filled") and "자동 매도" in items[0]["reason"]
+    assert ("자동 손절 매도 — 종목005930", 5) in pushed
+    run(kis_trade.refresh_fills())
+    assert run(kis_trade.watch()).get("stops", 0) == 0 and len(kenv.b.orders) == 1   # 다 팔렸음 — 두 번 안 팖
+    assert "auto_stop" in [l["action"] for l in run(kis_trade.list_log())]
+
+
+def test_stop_loss_while_order_in_flight_not_doubled(kenv):
+    kenv.b.holdings["005930"] = [10, 70_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    kenv.b.prices["005930"] = 64_000
+    run(kis_trade.watch())
+    kenv.clock["t"] += dt.timedelta(seconds=300)
+    run(kis_trade.watch())                 # 아직 접수 중(안 체결) — 다시 안 보냄
+    assert len(kenv.b.orders) == 1
+
+
+def test_stop_loss_runs_during_loss_halt_not_manual_halt(kenv):
+    kenv.b.holdings["005930"] = [10, 70_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.prices["005930"] = 64_000
+    assert kenv.c.post("/api/kis/halt", json={"reason": ""}).status_code == 200   # 긴급 정지 = 모두 멈춤
+    run(kis_trade.watch())
     assert kenv.b.orders == []
+    kenv.c.post("/api/kis/resume", json={"totp_code": kenv.code()})
+    kenv.b.prev_total = kenv.b.cash + 10 * 64_000 + 600_000      # 하루 손실 60만 (한도 50만) → 자동 정지
+    run(kis_trade.check_exits())           # 5분 확인(잔고) — 손실 한도 정지 + 손절은 계속
+    st = run(kis_trade.overview())
+    assert st["halted"] and "손실 한도" in st["halted_reason"] and st["watch"]["stops_ok"]
+    assert [o["side"] for o in kenv.b.orders] == ["sell"]
+
+
+def test_stop_loss_ignores_daily_count_and_retries_limited(kenv):
+    run(kis_trade.set_config(kenv.uid, {"max_orders_day": 1}, None))
+    approve(kenv, buy(kenv, sym="000660", ref=200_000))   # 오늘 주문 1건 = 한도
+    run(kis_trade.refresh_fills())
+    kenv.b.holdings["005930"] = [10, 70_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.prices["005930"] = 64_000
+    kenv.b.fail = "KIS VTTC0011U 실패: 잠깐 오류"
+    run(kis_trade.watch())
+    assert len(kenv.b.orders) == 1        # 횟수 한도에 안 막히고 보냄 → KIS 거부(failed)
+    run(kis_trade.watch())                # 2분 안엔 다시 안 함
+    kenv.b.fail = None
+    kenv.clock["t"] += dt.timedelta(seconds=121)
+    run(kis_trade.watch())
+    assert [o["side"] for o in kenv.b.orders] == ["buy", "sell"]
+    stops = [o for o in run(kis_trade.list_orders("all")) if o["source"] == "stop"]
+    assert [o["status"] for o in stops] == ["submitted", "failed"]
+
+
+def test_target_reached_is_proposal_not_auto(kenv):
+    kenv.b.holdings["005930"] = [10, 70_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.prices["005930"] = 81_000      # 목표 80,500 위
+    run(kis_trade.watch())
+    items = kenv.c.get("/api/kis/orders").json()["items"]
+    assert len(items) == 1 and items[0]["source"] == "exit" and items[0]["status"] == "proposed" and kenv.b.orders == []
+    kenv.c.post("/api/kis/orders/reject", json={"ids": [items[0]["id"]]})
+    kenv.clock["t"] += dt.timedelta(seconds=60)
+    run(kis_trade.watch())                # 거절했으면 오늘은 다시 안 물음
+    assert kenv.c.get("/api/kis/orders").json()["items"] == []
+
+
+# ---------------- 장중 실시간 감시 · 급변 ----------------
+
+def _feed(env, *prices, sym="005930", step=60):
+    for p in prices:
+        env.b.prices[sym] = p
+        run(kis_trade.watch())
+        env.clock["t"] += dt.timedelta(seconds=step)
+
+
+def test_fast_drop_cancels_waiting_and_resting_buys(kenv, monkeypatch):
+    pushed = []
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append(title))
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 1, 30, tzinfo=KST)
+    waiting = buy(kenv)                                   # 개장 5분 전 — 조건 대기
+    assert approve(kenv, waiting).json()["results"][0]["status"] == "approved"
+    _feed(kenv, 70_000, 69_800)
+    kenv.b.prices["005930"] = 67_800                      # 10분 최고 70,000 대비 −3.1%
+    run(kis_trade.watch())
+    k = order(kenv, waiting)
+    assert k.status == "cancelled" and "10분 안에" in k.message and kenv.b.orders == []
+    assert "매수 자동 취소 — 종목005930" in pushed
+    # 접수된(지정가가 안 체결) 매수도 KIS 에서 취소
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 11, 0, tzinfo=KST)
+    kis_trade._hist.clear()
+    kenv.b.prices["000660"] = 200_000
+    resting = buy(kenv, sym="000660", ref=200_000)
+    approve(kenv, resting)
+    kenv.b.orders[0]["filled"] = 0
+    kenv.b.holdings.pop("000660", None)                   # (안 체결로 되돌림 — 가짜 계좌)
+    kenv.b.cash = 10_000_000
+
+    async def unfilled(day=None):
+        return [{**e, "filled": 0, "remain": e["qty"], "avg_price": 0} if not e["cancelled"] else {**e, "filled": 0, "avg_price": 0}
+                for e in await FakeBroker.executions(kenv.b)]
+    monkeypatch.setattr(kis_order, "executions", unfilled)
+    assert order(kenv, resting).status == "submitted"
+    _feed(kenv, 200_000, sym="000660")
+    kenv.b.prices["000660"] = 193_000                     # −3.5%
+    assert run(kis_trade.watch())["cancelled"] == 1
+    k = order(kenv, resting)
+    assert kenv.b.orders[0]["cancelled"] and k.cancel_req and k.status == "cancelled" and "10분 안에" in k.message
+    run(kis_trade.watch())
+    assert sum(1 for t in pushed if t == "매수 자동 취소 — 종목000660") == 1     # 한 번만
+
+
+def test_slow_drop_over_10_minutes_is_not_shock(kenv):
+    oid = buy(kenv)
+    kenv.b.fill = False
+    _feed(kenv, 70_000, 69_500, 69_000, sym="005930", step=300)   # 15분에 걸쳐 −1.4%
+    kenv.b.prices["005930"] = 68_000                     # 10분 안 최고 69,500 대비 −2.2% (15분 전 70,000 은 안 봄)
+    assert kis_trade.fast_drop("005930", 68_000)[1] == 69_500
+    approve(kenv, oid)
+    assert order(kenv, oid).status == "submitted"
+
+
+def test_vi_and_index_drop_make_buy_wait(kenv):
+    kenv.b.vi.add("005930")
+    oid = buy(kenv)
+    r = approve(kenv, oid).json()["results"][0]
+    assert r["status"] == "approved" and "VI" in r["message"] and kenv.b.orders == []
+    kenv.b.vi.clear()
+    kenv.b.index = -2.4                    # 코스닥 −2.4% (기준 −2%)
+    kenv.clock["t"] += dt.timedelta(seconds=31)
+    run(kis_trade.watch())
+    k = order(kenv, oid)
+    assert k.status == "approved" and "지수 -2.4% 하락" in k.message and kenv.b.orders == []
+    kenv.b.index = None                    # 지수를 못 받으면 사지 않고 기다림 (이유 표시)
+    kenv.clock["t"] += dt.timedelta(seconds=31)
+    run(kis_trade.watch())
+    assert "지수를 못 받아" in order(kenv, oid).message and kenv.b.orders == []
+    kenv.b.index = -0.5
+    kenv.clock["t"] += dt.timedelta(seconds=31)
+    run(kis_trade.watch())
+    assert order(kenv, oid).status == "submitted"
+
+
+def test_no_price_no_action(kenv):
+    """가격을 못 받은 종목은 판단하지 않음 (지어내지 않음) — 상태에 몇 종목 못 받았는지 표시"""
+    oid = buy(kenv)
+    kenv.b.no_price.add("005930")
+    approve(kenv, oid)    # 승인 순간 submit 은 REST 로 확인 — 여기선 정상이라 바로 감
+    assert order(kenv, oid).status == "submitted"
+    kenv.b.holdings["000660"] = [5, 200_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.no_price.add("000660")
+    kenv.b.prices["000660"] = 150_000      # 손절가 아래지만 가격을 못 받음
+    run(kis_trade.watch())
+    st = run(kis_trade.overview())
+    assert st["watch"]["missing"] == 2 and len(kenv.b.orders) == 1
+
+
+def test_halt_cancels_resting_buy_via_watch(kenv):
+    """하루 손실 한도로 자동 정지되면 걸려 있는(안 체결) 매수도 취소"""
+    kenv.b.fill = False
+    oid = buy(kenv)
+    approve(kenv, oid)
+    kenv.b.cash -= 600_000                 # 오늘 60만원 손실 (한도 50만)
+    kis_trade._balance_cache["data"] = None
+    run(kis_trade.check_exits())
+    assert run(kis_trade.overview())["halted"]
+    run(kis_trade.watch())
+    assert kenv.b.orders[0]["cancelled"] and order(kenv, oid).status == "cancelled"
+
+
+def test_partial_fill_then_cancel_keeps_filled_shares(kenv):
+    run(kis_trade.rebaseline(kenv.uid))
+    kenv.b.fill = False
+    oid = buy(kenv)
+    approve(kenv, oid)
+    o = kenv.b.orders[0]
+    _part_fill(kenv.b, o, 5)                 # 5주만 체결된 상태에서 취소
+    kis_trade._balance_cache["data"] = None
+    assert "취소 요청" in kenv.c.post(f"/api/kis/orders/{oid}/cancel").json()["message"]
+    k = order(kenv, oid)
+    assert k.status == "partial" and k.filled_qty == 5
+    kis_trade._balance_cache["data"] = None
+    st = run(kis_trade.overview())
+    assert st["mismatches"] == [] and st["balance"]["holdings"][0]["qty"] == 5
+
+
+def test_old_limits_row_gets_new_defaults(kenv):
+    """업데이트 전 DB(한도 4개만 저장) → 새 항목은 기본값"""
+    from app.models.kis import KisTrade
+
+    async def old():
+        async with kenv.Session() as s:
+            s.add(KisTrade(id=1, halted=False, limits=json.dumps({"max_order_krw": 1_000_000, "max_orders_day": 10,
+                                                                  "max_loss_krw": 500_000, "max_gap_pct": 3.0}), params="{}", state="{}"))
+            await s.commit()
+    run(old())
+    st = kenv.c.get("/api/kis/status").json()
+    assert st["limits"]["fast_drop_pct"] == 3.0 and st["limits"]["index_drop_pct"] == 2.0 and st["limits"]["max_order_krw"] == 1_000_000
+    assert st["limit_meta"]["limit_slip_pct"]["label"] == "매수 지정가 여유 (%)"
+    assert st["watch"]["every"] == 5 and st["watch"]["buy_after_open"] == 5
 
 
 # ---------------- KIS 주문 API 래퍼 ----------------
@@ -503,8 +740,20 @@ def test_order_request_shape_and_tr_fallback(monkeypatch):
     assert sent[-1][2] == {"CANO": "50123456", "ACNT_PRDT_CD": "01", "PDNO": "005930", "ORD_DVSN": "01", "ORD_QTY": "3", "ORD_UNPR": "0"}
     run(kis_order.order("buy", "005930", 1))
     assert sent[-1][1] == "VTTC0802U"     # 한 번 된 번호를 계속 씀
+    run(kis_order.order("buy", "005930", 2, 70_300))   # 지정가
+    assert sent[-1][2]["ORD_DVSN"] == "00" and sent[-1][2]["ORD_UNPR"] == "70300" and sent[-1][2]["ORD_QTY"] == "2"
+    for bad in (70_250, 0, 70_300.5):                  # 호가 단위(100원)에 안 맞음 · 0 · 소수
+        with pytest.raises(ValueError):
+            run(kis_order.order("buy", "005930", 1, bad))
     with pytest.raises(ValueError):
         run(kis_order.order("buy", "../x", 1))
+
+
+def test_tick_size_and_round_up():
+    assert [kis_order.tick_size(p) for p in (1_999, 2_000, 4_999, 5_000, 19_990, 20_000, 49_950, 50_000, 199_900, 200_000, 499_500, 500_000)] == \
+        [1, 5, 5, 10, 10, 50, 50, 100, 100, 500, 500, 1_000]
+    assert kis_order.tick_up(70_210) == 70_300 and kis_order.tick_up(70_300) == 70_300 and kis_order.tick_up(1_234.2) == 1_235
+    assert kis_order.tick_up(4_999.1) == 5_000 and kis_order.tick_up(200_001) == 200_500
 
 
 def test_order_not_retried_on_other_errors(monkeypatch):
@@ -672,9 +921,11 @@ def test_order_results_pushed_to_phone(kenv, monkeypatch):
     monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None: pushed.append((title, priority)))
     approve(kenv, buy(kenv))
     run(kis_trade.refresh_fills())
-    kenv.b.prices["000660"] = 230_000
+    kenv.b.prices["000660"] = 180_000     # 제안 때보다 −10% → 급변 자동 취소
     approve(kenv, buy(kenv, sym="000660", ref=200_000))
-    assert pushed == [("체결 — 매수 종목005930", 3), ("주문 안 보냄 — 종목000660", 4)]
+    run(kis_trade.set_config(kenv.uid, {"max_order_krw": 100_000}, None))
+    approve(kenv, buy(kenv, sym="000660", ref=180_000))
+    assert pushed == [("체결 — 매수 종목005930", 3), ("매수 자동 취소 — 종목000660", 4), ("주문 안 보냄 — 종목000660", 4)]
 
 
 def test_notify_test_endpoint(kenv, monkeypatch):
@@ -720,7 +971,7 @@ def test_order_timeout_after_send_is_unknown_not_failed(kenv):
     """주문 요청을 보낸 뒤 응답을 못 받으면 '결과 모름' — KIS 거부로 기록하면 실제로 들어간 주문을 놓침. 같은 종목 다음 주문도 막음"""
     from app.services.kis_api import KISConnectionError
 
-    async def lost(side, symbol, qty):
+    async def lost(side, symbol, qty, price=None):
         raise KISConnectionError("KIS VTTC0012U 응답 시간 초과 (ReadTimeout)", maybe_sent=True)
     kenv_order = kis_order.order
     kis_order.order = lost
@@ -730,10 +981,75 @@ def test_order_timeout_after_send_is_unknown_not_failed(kenv):
         r2 = approve(kenv, buy(kenv)).json()["results"][0]
         assert r2["status"] == "blocked" and "결과를 모름" in r2["message"]
 
-        async def refused(side, symbol, qty):
+        async def refused(side, symbol, qty, price=None):
             raise KISConnectionError("KIS VTTC0012U 연결 실패 (ConnectError)", maybe_sent=False)
         kis_order.order = refused
         r3 = approve(kenv, buy(kenv, sym="000660", ref=200_000)).json()["results"][0]
         assert r3["status"] == "failed" and "안 들어감" in r3["message"]
     finally:
         kis_order.order = kenv_order
+
+
+def test_fetch_prices_realtime_first_then_rest(monkeypatch):
+    """실시간 체결가(웹소켓)가 있으면 그것, 없는 종목만 REST 멀티종목 시세 — REST 는 15초에 한 번, 실패한 종목은 빠짐"""
+    from app.services import kis_ws
+    from app.services.kis_api import kis_client
+    clock = {"t": 1_000.0}
+    monkeypatch.setattr(kis_trade, "time", SimpleNamespace(time=lambda: clock["t"]))
+    monkeypatch.setattr(kis_ws, "want", lambda syms: None)
+    monkeypatch.setattr(kis_ws, "get", lambda sym: {"price": 70_100} if sym == "005930" else None)
+    calls = []
+
+    async def multi(syms):
+        calls.append(list(syms))
+        if clock["t"] > 1_100:
+            raise KISError("KIS FHKST11300006 실패: 점검")
+        return {"000660": {"price": 201_000, "change_rate": 0.5, "volume": 1}}
+    monkeypatch.setattr(kis_client, "get_kr_multi_price", multi)
+    kis_trade._rest.update(at=0.0, data={}, error=None)
+    assert run(kis_trade._fetch_prices(["005930", "000660", "035720"])) == {"005930": (70_100.0, "ws"), "000660": (201_000.0, "rest")}
+    assert calls == [["000660", "035720"]]
+    clock["t"] += 5                        # 15초 안 — REST 다시 안 부르고 받아 둔 값
+    assert run(kis_trade._fetch_prices(["000660"]))["000660"] == (201_000.0, "rest") and len(calls) == 1
+    clock["t"] += 200                      # REST 실패 + 받아 둔 값이 오래됨 → 그 종목은 빠짐 (지어내지 않음)
+    assert run(kis_trade._fetch_prices(["000660"])) == {} and "점검" in kis_trade._rest["error"]
+
+
+def test_index_change_takes_worse_and_caches(monkeypatch):
+    from app.services.kis_api import kis_client
+    clock = {"t": 5_000.0}
+    monkeypatch.setattr(kis_trade, "time", SimpleNamespace(time=lambda: clock["t"]))
+    rates = {"0001": -0.8, "1001": -2.3}
+    n = {"calls": 0}
+
+    async def idx(code):
+        n["calls"] += 1
+        if rates is None:
+            raise KISError("x")
+        return {"price": 1.0, "change": 0.0, "change_rate": rates[code]}
+    monkeypatch.setattr(kis_client, "get_kr_index", idx)
+    kis_trade._index.update(at=0.0, change=None, error=None)
+    assert run(kis_trade._index_change()) == -2.3 and n["calls"] == 2
+    assert run(kis_trade._index_change()) == -2.3 and n["calls"] == 2    # 60초 캐시
+
+    async def boom(code):
+        raise KISError("KIS FHPUP02100000 실패")
+    monkeypatch.setattr(kis_client, "get_kr_index", boom)
+    clock["t"] += 61
+    assert run(kis_trade._index_change()) is None and "FHPUP02100000" in kis_trade._index["error"]
+
+
+def test_buy_wait_reason_boundaries():
+    from app.models.kis import KisOrder
+    lim = kis_trade.clean_limits({})
+    k = KisOrder(symbol="005930", ref_price=70_000)
+    at = dt.datetime(2026, 11, 24, 10, 0, tzinfo=KST)
+    assert kis_trade.buy_wait_reason(k, 72_100, lim, 0.0, at) is None            # +3.0% 는 허용 (넘어야 기다림)
+    assert kis_trade.buy_wait_reason(k, 72_200, lim, 0.0, at)[0] == "gap"
+    assert kis_trade.buy_wait_reason(k, 70_000, lim, -2.0, at)[0] == "index"     # −2.0% 이면 보류
+    assert kis_trade.buy_wait_reason(k, 70_000, lim, -1.99, at) is None
+    assert kis_trade.buy_wait_reason(k, 70_000, lim, 0.0, at.replace(hour=9, minute=4))[0] == "open"
+    assert kis_trade.buy_wait_reason(k, 70_000, lim, 0.0, at.replace(hour=9, minute=5)) is None
+    kis_trade._hist.clear()
+    assert kis_trade.shock_reason(k, 65_800, lim) is None                       # −6.0% 는 아직
+    assert "급락" in kis_trade.shock_reason(k, 65_700, lim)

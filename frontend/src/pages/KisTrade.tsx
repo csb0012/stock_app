@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot } from "lucide-react";
+import { Bell, Landmark, OctagonX, Play, RefreshCw, ShieldCheck, Wallet, ListChecks, History, Settings2, ScrollText, AlertTriangle, Bot, Radar } from "lucide-react";
 import { kisApi, errMsg } from "../api/client";
 import { th, td, when, codeInput } from "../components/common/AdminPanels";
 import { toast } from "../components/common/Toast";
@@ -13,13 +13,14 @@ const STATUS_CLS: Record<string, string> = {
   partial: "badge-up", unfilled: "badge-neutral", unknown: "badge-down", rejected: "badge-neutral", expired: "badge-neutral",
   cancelled: "badge-neutral", blocked: "badge-down", failed: "badge-down",
 };
-const WINDOW: Record<string, string> = { open: "장중 — 승인하면 바로 주문", closing: "마감 직전 — 새 주문 안 보냄", closed: "장 닫힘 — 승인하면 다음 개장 1분 뒤 주문" };
+const WINDOW: Record<string, string> = { open: "장중 — 실시간 감시 중", closing: "마감 직전 — 새 주문 안 보냄", closed: "장 닫힘 — 승인하면 다음 장중에 조건이 맞을 때 주문" };
+const SOURCE: Record<string, [string, string]> = { stop: ["자동 손절", "var(--red)"], exit: ["장중 목표가", "var(--yellow)"] };
 const PARAM_KEYS = ["max_positions", "buy_score", "sell_score", "stop_pct", "take_pct", "max_hold"] as const;
 const PARAM_LABEL: Record<string, string> = {
   max_positions: "최대 보유 종목 수", buy_score: "매수 기준 AI 점수", sell_score: "매도 기준 AI 점수", stop_pct: "손절 %", take_pct: "익절(목표) %", max_hold: "최대 보유 거래일",
 };
 const ACTION: Record<string, string> = {
-  propose: "제안", propose_exit: "손절·목표 매도 제안", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
+  propose: "제안", propose_exit: "목표가 매도 제안", auto_stop: "자동 손절", auto_cancel: "급변 자동 취소", wait: "조건 기다림", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
   submit_fail: "KIS 거부·연결 실패", submit_unknown: "응답 못 받음 — 결과 모름", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
   cancel_fail: "취소 실패", fill_unknown: "체결 확인 안 됨", halt: "정지", resume: "다시 시작", baseline: "기준 맞추기", config: "설정 변경",
   expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름", account_ok: "계좌 확인됨",
@@ -42,7 +43,24 @@ function Card({ icon: Icon, title, desc, children, testid, right }: { icon: any;
 
 const sideBadge = (s: string) => { const [l, c] = SIDE[s] || [s, "badge-neutral"]; return <span className={`badge ${c}`} style={{ fontSize: 10.5 }}>{l}</span>; };
 const statusBadge = (o: any) => <span className={`badge ${STATUS_CLS[o.status] || "badge-neutral"}`} style={{ fontSize: 10.5 }}>{o.status_label || o.status}</span>;
-const amount = (o: any) => (o.side === "sell" ? `${o.qty?.toLocaleString() ?? "-"}주` : o.qty ? `${o.qty.toLocaleString()}주` : `${won(o.budget)}어치`);
+const amount = (o: any) => (o.side === "sell" ? `${o.qty?.toLocaleString() ?? "-"}주` : o.qty ? `${o.qty.toLocaleString()}주` : `${won(o.budget)}어치`)
+  + (o.limit_price ? ` · 지정가 ${won(o.limit_price)}` : o.submitted_at && o.side === "sell" ? " · 시장가" : "");
+const srcTag = (o: any) => { const t = SOURCE[o.source]; return t ? <span style={{ fontSize: 10.5, color: t[1], fontWeight: 600 }}> {t[0]}</span> : null; };
+const pct = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(1)}%`;
+
+function Rules({ s }: { s: any }) {
+  const l = s.limits, w = s.watch || {};
+  return (
+    <div data-testid="kis-rules" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8, fontSize: 12, lineHeight: 1.6 }}>
+      <div><strong>승인한 매수</strong> — 개장 {w.buy_after_open ?? 5}분 뒤부터, 제안가 +{l.max_gap_pct}% 이하 · 지수 −{l.index_drop_pct}% 이내 · VI 아님일 때
+        <strong> 지정가</strong>(현재가 +{l.limit_slip_pct}%)로 주문. 안 맞으면 기다림 (15:20 까지)</div>
+      <div><strong>급변 → 매수 자동 취소</strong> — 제안가보다 −{(l.max_gap_pct * 2).toFixed(1).replace(/\.0$/, "")}% 넘게 하락 · 10분 안에 −{l.fast_drop_pct}% 넘게 급락.
+        승인 대기·조건 대기·접수된 매수 모두 (승인 없이)</div>
+      <div><strong>손절가 도달 → 자동 매도</strong> — 승인 없이 바로 시장가 매도 (긴급 정지 중엔 안 함, 하루 손실 한도 정지 중엔 함).
+        <strong> 목표가</strong>는 매도 제안만 (승인해야 팔림)</div>
+    </div>
+  );
+}
 
 function Setup() {
   return (
@@ -77,7 +95,7 @@ export default function KisTrade() {
       const r: any[] = d.results || [];
       const n = (s: string) => r.filter((x) => x.status === s).length;
       const bad = r.filter((x) => !["submitted", "approved"].includes(x.status));
-      toast(`승인 ${r.length}건 — 주문 접수 ${n("submitted")} · 개장 대기 ${n("approved")}` + (bad.length ? ` · 안 보냄 ${bad.length} (${bad[0].message})` : ""), bad.length ? undefined : "info");
+      toast(`승인 ${r.length}건 — 주문 접수 ${n("submitted")} · 조건 대기 ${n("approved")}` + (bad.length ? ` · 안 보냄·취소 ${bad.length} (${bad[0].message})` : ""), bad.length ? undefined : "info");
       setPicked([]); setCode(""); refresh();
     } });
   const reject = useMutation({ mutationFn: (ids: number[]) => kisApi.reject(ids).then((r) => r.data), onSuccess: (d) => { toast(d.message, "info"); setPicked([]); refresh(); } });
@@ -107,7 +125,8 @@ export default function KisTrade() {
           <Landmark size={18} style={{ color: "var(--accent)" }} /> KIS 모의투자 주문
           <span className="badge badge-accent" style={{ fontSize: 11 }}>{s.server}</span>
         </h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>AI 가 주문을 제안하고, <strong>내가 2단계 코드로 승인한 주문만</strong> 한국투자증권 모의투자 서버로 나갑니다. 승인하지 않으면 아무 주문도 하지 않습니다.</p>
+        <p style={{ color: "var(--text-muted)", fontSize: 13 }}>AI 가 주문을 제안하고, <strong>내가 2단계 코드로 승인한 매수만</strong> 장중에 조건이 맞을 때 한국투자증권 모의투자 서버로 나갑니다.
+          위험을 줄이는 일 — <strong>손절가 도달 매도 · 급변 때 매수 취소</strong> — 는 승인 없이 자동으로 하고 휴대폰으로 알립니다.</p>
       </div>
 
       {!s.configured && <Setup />}
@@ -117,7 +136,8 @@ export default function KisTrade() {
           borderColor: s.halted ? "var(--red)" : undefined, background: s.halted ? "color-mix(in srgb, var(--red) 6%, transparent)" : undefined }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <strong style={{ fontSize: 15, color: s.halted ? "var(--red)" : "var(--green)" }}>{s.halted ? "정지됨 — 주문 안 함" : "운영 중 — 승인한 주문만 보냄"}</strong>
+              <strong style={{ fontSize: 15, color: s.halted ? "var(--red)" : "var(--green)" }}>{s.halted ? (s.watch?.stops_ok ? "정지됨 — 새 주문 안 함 (손절 자동 매도는 계속)" : "정지됨 — 주문 안 함")
+                : "운영 중 — 승인한 매수는 조건 맞으면 주문 · 손절 자동"}</strong>
               {s.halted && <span style={{ fontSize: 12 }}>{s.halted_reason} ({when(s.halted_at)})</span>}
               <span style={{ fontSize: 12, color: "var(--text-muted)" }} data-testid="kis-account">계좌 {s.account}{s.account_source ? ` (.env ${s.account_source})` : ""} · {WINDOW[s.window] || s.window}</span>
               {s.account_source === "KIS_ACCOUNT_NO" && (
@@ -145,6 +165,7 @@ export default function KisTrade() {
             <div>1회 매수 한도 <strong>{won(s.limits.max_order_krw)}</strong></div>
             <div>마지막 자동 제안 <strong>{s.last_proposal_day || "-"}</strong></div>
           </div>
+          <WatchLine s={s} />
           {s.last_error && (
             <p data-testid="kis-last-error" style={{ color: "var(--red)", fontSize: 12, lineHeight: 1.6 }}>
               마지막 자동 제안 실패 — {s.last_error.replace("T", " ").replace(/\+09:00/, "")}
@@ -155,7 +176,7 @@ export default function KisTrade() {
             <Bell size={13} style={{ color: s.notify?.configured ? "var(--green)" : "var(--text-muted)" }} />
             {s.notify?.configured ? (
               <>
-                <span>휴대폰 알림(ntfy {s.notify.server}) 켜짐 — 제안·체결·막힘·정지를 보냅니다</span>
+                <span>휴대폰 알림(ntfy {s.notify.server}) 켜짐 — 제안·자동 손절·급변 자동 취소·조건 충족 주문·체결·막힘·정지를 보냅니다</span>
                 {s.notify.last?.ok === false && <span style={{ color: "var(--red)" }}>마지막 알림 실패: {s.notify.last.error}</span>}
                 <button className="btn btn-ghost" style={{ fontSize: 11.5, padding: "2px 8px" }} disabled={ntest.isPending} onClick={() => ntest.mutate()}>알림 시험 보내기</button>
               </>
@@ -220,9 +241,10 @@ export default function KisTrade() {
 
       {s.configured && (
         <Card icon={ListChecks} title="AI 주문 제안 · 진행 중 주문" testid="kis-proposals"
-          desc="장 마감 15분 뒤 자동으로 제안 (장중엔 손절·목표가에 닿으면 매도 제안). 제안은 다음 거래일 장 마감까지만 유효 · 매도부터 주문"
+          desc="장 마감 15분 뒤 자동으로 제안 (장중엔 목표가에 닿으면 매도 제안). 제안은 다음 거래일 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
           right={<button className="btn btn-ghost" style={{ fontSize: 12 }} disabled={propose.isPending || s.halted} onClick={() => propose.mutate()}>
             <Bot size={13} className={propose.isPending ? "spin" : undefined} /> {propose.isPending ? "판단 중 (몇 분)..." : "지금 제안 만들기"}</button>}>
+          <Rules s={s} />
           {open.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(open.error)}</p>}
           {orders.length === 0 ? <p style={{ fontSize: 12, color: "var(--text-muted)" }}>승인 대기·진행 중인 주문이 없습니다</p> : (
             <div style={{ overflowX: "auto" }}>
@@ -236,7 +258,7 @@ export default function KisTrade() {
                       <td style={td}>{o.status === "proposed" && (
                         <input type="checkbox" aria-label={`${o.name} 선택`} checked={picked.includes(o.id)} onChange={() => toggle(o.id)} />
                       )}</td>
-                      <td style={td}>{sideBadge(o.side)}{o.source === "exit" && <span style={{ fontSize: 10.5, color: "var(--yellow)" }}> 장중</span>}</td>
+                      <td style={td}>{sideBadge(o.side)}{srcTag(o)}</td>
                       <td style={td}>{o.name} <span style={{ color: "var(--text-muted)" }}>{o.symbol}</span></td>
                       <td style={td}>{amount(o)}</td>
                       <td style={td}>{won(o.ref_price)}</td>
@@ -261,10 +283,10 @@ export default function KisTrade() {
               <ShieldCheck size={14} style={{ color: "var(--accent)" }} />
               {codeInput(code, setCode, "승인 2단계 코드")}
               <button className="btn btn-primary" data-testid="kis-approve" disabled={!picked.length || !/^\d{6}$/.test(code) || approve.isPending || s.halted}
-                onClick={() => { if (window.confirm(`선택한 ${picked.length}건을 승인할까요? ${s.window === "open" ? "바로 모의투자 서버로 주문합니다." : "다음 개장 1분 뒤 주문합니다."}`)) approve.mutate(); }}>
+                onClick={() => { if (window.confirm(`선택한 ${picked.length}건을 승인할까요? ${s.window === "open" ? "조건이 맞으면 바로 모의투자 서버로 주문합니다 (매수는 지정가)." : "다음 장중에 조건이 맞을 때 주문합니다."} 급변이 오면 매수는 자동으로 취소됩니다.`)) approve.mutate(); }}>
                 선택한 {picked.length}건 승인</button>
               <button className="btn btn-ghost" disabled={!picked.length || reject.isPending} onClick={() => reject.mutate(picked)}>거절</button>
-              <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>주문 직전에 한도·손실·가격 변동·잔고 대조를 다시 확인하고, 걸리면 보내지 않습니다</span>
+              <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>주문 직전에 한도·손실·가격·VI·잔고 대조를 다시 확인하고, 걸리면 보내지 않거나 기다립니다</span>
             </div>
           )}
           {approve.error && <p style={{ color: "var(--red)", fontSize: 12 }}>{errMsg(approve.error)}</p>}
@@ -298,9 +320,9 @@ export default function KisTrade() {
                 <tbody>
                   {hist.data.items.map((o: any) => (
                     <tr key={o.id} style={{ borderTop: "1px solid var(--border)" }}>
-                      <td style={td}>{when(o.created_at)}</td><td style={td}>{sideBadge(o.side)}</td>
+                      <td style={td}>{when(o.created_at)}</td><td style={td}>{sideBadge(o.side)}{srcTag(o)}</td>
                       <td style={td}>{o.name} <span style={{ color: "var(--text-muted)" }}>{o.symbol}</span></td>
-                      <td style={td}>{o.submitted_at ? `${when(o.submitted_at)} · ${o.qty?.toLocaleString()}주` : "-"}</td>
+                      <td style={td}>{o.submitted_at ? `${when(o.submitted_at)} · ${o.qty?.toLocaleString()}주${o.limit_price ? ` · 지정가 ${won(o.limit_price)}` : " · 시장가"}` : "-"}</td>
                       <td style={td}>{o.filled_qty ? `${o.filled_qty.toLocaleString()}주 · ${won(o.filled_price)}` : "-"}</td>
                       <td style={td}>{statusBadge(o)}</td>
                       <td style={{ ...td, whiteSpace: "normal", minWidth: 200, color: "var(--text-muted)" }}>{o.message || ""}</td>
@@ -331,6 +353,25 @@ export default function KisTrade() {
           </div>
         ) : <p style={{ fontSize: 12, color: "var(--text-muted)" }}>기록 없음</p>}
       </Card>
+    </div>
+  );
+}
+
+function WatchLine({ s }: { s: any }) {
+  const w = s.watch;
+  if (!w) return null;
+  const t = w.last ? String(w.last).slice(11, 19) : null;
+  return (
+    <div data-testid="kis-watch" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+      <Radar size={13} style={{ color: s.window === "open" ? "var(--green)" : "var(--text-muted)" }} />
+      {s.window === "open" ? (
+        <>
+          <span>실시간 감시 {w.every}초마다{t ? ` · 마지막 ${t}` : ""} · {w.symbols}종목 (실시간 체결가 {w.realtime} · REST {w.rest}{w.missing ? ` · 가격 못 받음 ${w.missing}` : ""})</span>
+          {w.index_change != null && <span>지수 {pct(w.index_change)}</span>}
+          {w.index_error && <span style={{ color: "var(--yellow)" }}>지수 못 받음 — 매수 기다림</span>}
+          {w.error && <span style={{ color: "var(--red)" }}>{w.error}</span>}
+        </>
+      ) : <span style={{ color: "var(--text-muted)" }}>실시간 감시는 장중(09:01~15:20)에만 — {w.every}초마다 손절·급변·매수 조건 확인</span>}
     </div>
   );
 }

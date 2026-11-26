@@ -58,7 +58,8 @@ def config() -> dict:
                         "costs": {k: v for k, v in pe.COSTS[m].items() if k != "currency"}} for m in ("KR", "US")},
         "params": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
         "trailing": {"default": True, "label": pe.PARAM_LABELS["trailing"]},
-        "options": {k: {"default": True, "label": pe.PARAM_LABELS[k]} for k in ("adaptive", "trend_filter")},
+        "options": {**{k: {"default": True, "label": pe.PARAM_LABELS[k]} for k in ("adaptive", "trend_filter")},
+                    "entry_guard": {"default": True, "label": pe.PARAM_LABELS["entry_guard"], "sim_only": True}},   # 실시간 계좌는 개장 직후 현재가 체결이라 안 씀
         "months": list(MONTHS), "weights": pe.WEIGHTS, "regime_exposure": pe.REGIME_EXPOSURE,
         "min_prob": pe.MIN_PROB, "max_accounts": MAX_ACCOUNTS,
     }
@@ -233,9 +234,9 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
             feats = await asyncio.to_thread(pe.prepare, stocks, market, start, end_s, progress)
             result = await asyncio.to_thread(pe.simulate, stocks, index, macro, market, capital, start, end_s, params,
                                              progress, feats)
-            if params.get("adaptive") or params.get("trend_filter"):
+            if params.get("adaptive") or params.get("trend_filter") or params.get("entry_guard"):
                 # 같은 데이터·같은 설정에서 개선 옵션만 끈 '기본 방식' — 개선이 실제로 나은지 매번 비교해 보여줌
-                base_params = {**params, "adaptive": False, "trend_filter": False}
+                base_params = {**params, "adaptive": False, "trend_filter": False, "entry_guard": False}
 
                 def base_progress(phase, done, total):
                     progress(f"비교용 기본 방식 — {phase}", done, total)

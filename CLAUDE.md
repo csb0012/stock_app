@@ -91,7 +91,7 @@ models/
   prediction.py  — PredictionLog (실제 예측, 종목·대상일별 + 채점 결과·틀린 이유) / BacktestLog (prediction_backtest, 같은 컬럼)
   flow.py        — InvestorFlow (investor_flow: 종목·날짜별 외국인·기관·개인 순매수 수량)
   kis.py         — KIS 모의투자 주문: KisTrade (kis_trade 1행: 정지 여부·한도·매매 규칙·state JSON(expected 앱 기록 보유 수량·meta 손절/목표/보유일·log·day_start)) /
-                   KisOrder (kis_orders: 제안 1건 → 승인 → 주문 → 체결, 상태 proposed/approved/submitting/submitted/filled/partial/unfilled/unknown/rejected/expired/cancelled/blocked/failed) /
+                   KisOrder (kis_orders: 제안 1건 → 승인 → 주문 → 체결, source ai/exit(목표가 제안)/stop(자동 손절), limit_price(지정가)·cancel_req(취소 요청 시각), 상태 proposed/approved/submitting/submitted/filled/partial/unfilled/unknown/rejected/expired/cancelled/blocked/failed) /
                    KisLog (kis_log: 감사 로그 — 지우지 않음)
   paper.py       — AI 모의투자: PaperSim (paper_sim: 과거 시뮬레이션 결과 JSON) / PaperAccount (paper_account: 실시간 계좌, 보유·대기 주문·판단 기록은 state JSON) /
                    PaperTrade (체결) / PaperEquity (거래일 종가 기준 자산 + 지수 종가)
@@ -100,14 +100,22 @@ services/
                    연결 자체 실패면 False, 보낸 뒤 응답 시간 초과·끊김이면 True — 주문이면 '결과 모름' 처리)
                    국내 현재가·일봉(get_kr_chart, 오름차순)·월봉(get_kr_monthly, 장기 분석용)·거래량/등락률 순위(KOSPI+KOSDAQ 합산)
                    미국 주간거래 현재가 get_us_daytime_price (해외 현재가 HHDFS00000300, EXCD 를 NAS/NYS/AMS → BAQ/BAY/BAA 로)
-  kis_order.py   — KIS 모의투자 서버 주문 API (국내): order(시장가)·cancel·balance(잔고·D+2 예수금·전날 총자산)·executions(일별 체결).
+  kis_order.py   — KIS 모의투자 서버 주문 API (국내): order(price 있으면 지정가 ORD_DVSN 00, 없으면 시장가)·tick_size/tick_up(호가 단위)·cancel·balance(잔고·D+2 예수금·전날 총자산)·executions(일별 체결, cancel_qty).
                    **모의투자 서버 주소가 아니면 거부**(_guard). 키 = KIS_MOCK_*(없고 KIS_IS_REAL=false 면 시세용 키), 토큰 backend/.kis_mock_token.json.
                    TR 은 새 번호 → '없는 TR' 응답일 때만 예전 번호 (주문은 그 외 오류면 다시 안 보냄). KISClient 를 키·주소를 받아 따로 만듦
-  kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 주문): propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단,
-                   이전 제안 만료, 다음 거래일 15:30 까지 유효) · check_exits(장중 5분, 손절/목표 → 매도 제안) · approve(조건부 UPDATE 로 한 번만, 장중이면 바로 submit) ·
-                   submit(직전 확인: 정지·기한·장 시간(09:01~15:20)·하루 횟수·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·가격(+3%/−6%)·1회 한도 →
-                   'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) · refresh_fills(체결 내역 → expected/meta, _sync_fills — 화면 대조·매수 직전 대조 전에 먼저 반영, 기준 맞추기 땐 apply=False 로 '반영됨'만 표시해 두 번 안 더함) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
-                   loop(1분, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
+  kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 장중 조건 맞으면 주문, 위험 줄이는 일은 자동 — 사용자 결정 2026-11-26):
+                   propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단, 이전 제안 만료, 다음 거래일 15:30 까지 유효) ·
+                   watch(장중 5초, loop 안): _fetch_prices(kis_ws 실시간 체결가 → 없으면 REST 멀티종목 15초, 못 받은 종목은 판단 안 함)·_hist(10분 가격) →
+                     check_exits(prices) 손절가 이하 = 승인 없이 source='stop' 시장가 매도(긴급 정지 중엔 안 함, 손실 한도 정지 중엔 함 — _stops_ok, 2분 뒤 재시도·하루 3번) / 목표가 = 매도 제안 ·
+                     shock_reason(제안가 −허용×2% · 10분 안 −fast_drop%) → 승인 대기·조건 대기 _auto_cancel, 접수된 매수 cancel_sent(why) ·
+                     buy_wait_reason(개장 5분·제안가 +허용%·지수 _index_change −index_drop%) → 기다림(_set_wait, 메모) 아니면 submit(auto) ·
+                   approve(조건부 UPDATE 로 한 번만, 장중이면 바로 submit) ·
+                   submit(직전 확인: 정지·기한·장 시간(09:01~15:20, 매수 09:05~)·하루 횟수(손절 제외)·같은 종목 중복·하루 손실(넘으면 _halt)·잔고 대조(다르면 매수 안 함)·
+                   매수는 _quote(REST 현재가 + VI·거래 정지) → 급변이면 취소 / VI·비쌈·지수면 기다림(_wait, 30초 뒤 다시) → 지정가 tick_up(현재가×(1+limit_slip%))·1회 한도 →
+                   'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) ·
+                   cancel_sent(취소 전 체결 반영 → KIS 취소 → cancel_req, 체결 내역에 반영되면 cancelled/partial) ·
+                   refresh_fills(체결 내역 → expected/meta, _sync_fills — 화면 대조·매수 직전 대조 전에 먼저 반영, 기준 맞추기 땐 apply=False 로 '반영됨'만 표시해 두 번 안 더함) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
+                   _limits(row) = 저장된 한도 + 새 항목 기본값 · loop(5초 watch + 1분 tick, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
   us_daytime.py  — 미국 정규장 밖 가격 → 행의 daytime{label,price,base,change_rate,time} (label 주간거래/프리마켓/애프터마켓, 시간대는 겹치지 않음):
                    주간거래(한국 10:00~18:00, 서머타임 ~17:00 · 블루오션) = KIS, 종목별 30초 캐시 /
                    프리마켓(04:00~09:30 ET)·애프터마켓(16:00~20:00 ET, market_calendar.us_ext_session) = Yahoo 5분봉 prepost 의 오늘 그 시간대 마지막 체결,
@@ -186,7 +194,8 @@ services/
                    (요인 비중은 그날 결과가 확정된 과거로만, 20거래일마다) + 매집 20%(40점 초과분).
                    개선 옵션(기본 켬): adaptive = 세 신호 비중을 최근 120거래일 IC(10거래일 뒤 수익률, 확정일 ≤ 판단일만)로 20거래일마다 + 고정 비중과 반반(축소),
                    trend_filter = 50일선 아래는 안 삼. prepare() = 시작 180일 전부터 점수(학습형용, 비교 실행이 재사용). 시장 상태(market_regime)로 주식 비중 상한 100/60/30%,
-                   다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
+                   다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. entry_guard(급변 보호, 기본 켬, 시뮬레이션만) = guarded_entry:
+                   시가 +3% 넘게 출발 → 저가가 +3% 까지 오면 그 값에 삼 / −6% 넘게 출발 → 안 삼 (KIS 주문 장중 규칙의 일봉 근사). decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
                    intraday_exit(손절 먼저), after_close(보유일·추격 손절), simulate() = 하루씩 그날 종가까지로 판단 → 다음 날 시가 체결 → 장중 손절/목표 → 종가 평가
   papertrade.py  — AI 모의투자 실행 (analyze_live = 실시간 판단 점수 — 실시간 계좌와 KIS 모의투자 제안이 같이 씀): 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim,
                    개선 옵션이 켜져 있으면 같은 점수로 옵션 끈 '기본 방식'도 계산해 result.compare, 중단 = cancel_sim → 진행 표시 때 SimCancelled,
@@ -312,7 +321,8 @@ Vite가 `/api` → `localhost:8000` 프록시 (`vite.config.ts`, Docker 에선 `
 - Caddy 응답 헤더: CSP(`script-src 'self'` — 페이지 안 스크립트 금지라 테마 초기화는 `frontend/public/theme-init.js`), Permissions-Policy, COOP, HSTS, X-Frame-Options.
   CSP 를 바꾸면 화면 테스트(`smoke.mjs` 가 Caddyfile 의 CSP 를 그대로 걸고 화면을 엶)로 확인.
 - **관리자 페이지와 일반 화면 분리** (사용자 결정 2026-11-25): 관리 기능은 /admin · /kis (사이드바 '관리자 전용', AdminRoute + 서버 get_admin). 마이페이지엔 링크만.
-- **KIS 모의투자 주문은 'AI 제안 → 내가 승인할 때만 주문'** (사용자 결정 2026-11-25, 자동 주문 아님). 모의투자 서버 전용, 승인마다 2단계 코드 — `docs/kis-mock-trading.md`
+- **KIS 모의투자 주문은 'AI 제안 → 내가 승인할 때만 주문'** (사용자 결정 2026-11-25, 자동 매수 아님). 모의투자 서버 전용, 승인마다 2단계 코드 — `docs/kis-mock-trading.md`.
+  승인한 매수는 장중에 조건이 맞을 때 지정가로, **손절가 도달 매도·급변 때 매수 취소는 승인 없이 자동 + 휴대폰 알림** (사용자 결정 2026-11-26). 목표가 매도는 제안(승인 필요)
 - 회원가입은 **관리자가 준 초대 코드 + 이메일 또는 휴대폰 6자리 인증** (사용자 결정, 2026-11-25 — 믿는 사람만. 예전 '누구나'는 `INVITE_ONLY=false`).
   초대 코드가 틀리면 메일·문자를 안 보내고 IP 실패 횟수에 넣음(5번 → 15분 차단). 관리자 = 처음 만든 계정. `SIGNUP_OPEN=false` 로 초대 가입까지 막을 수 있음.
 - **2단계 인증 필수** (`REQUIRE_TOTP`, 사용자 결정 2026-11-25): `get_current_user` = `get_user_before_totp` + 2단계 확인. 등록 전 토큰으로는 /me·setup/enable-totp·비밀번호 변경·logout-all 만.

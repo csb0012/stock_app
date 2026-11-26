@@ -182,7 +182,7 @@ export const portfolioApi = {
 
 // AI 모의투자 — 과거 시뮬레이션 / 실시간 모의투자 계좌
 export type PaperParams = Partial<{ max_positions: number; buy_score: number; sell_score: number; stop_pct: number;
-  take_pct: number; max_hold: number; trailing: boolean; adaptive: boolean; trend_filter: boolean }>;
+  take_pct: number; max_hold: number; trailing: boolean; adaptive: boolean; trend_filter: boolean; entry_guard: boolean }>;
 export const paperApi = {
   config: () => api.get("/paper/config"),
   sims: () => api.get("/paper/simulations"),

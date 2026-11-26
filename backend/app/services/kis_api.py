@@ -279,6 +279,8 @@ class KISClient:
             "market_cap": _int(o.get("hts_avls")),
             "per": _float(o.get("per")),
             "pbr": _float(o.get("pbr")),
+            "vi": (o.get("vi_cls_code") or "").strip() not in ("", "N", "0"),     # 변동성 완화장치(VI) 발동 중
+            "halted": (o.get("temp_stop_yn") or "").strip() == "Y",                # 임시 거래 정지
             "timestamp": datetime.now().isoformat(),
         }
 

@@ -1,10 +1,12 @@
 """KIS 모의투자 서버 주문 API (국내 주식) — 가상 자금 계좌로 진짜 주문 API 를 씀.
 
 - **모의투자 서버(openapivts…:29443) 전용**. 주소가 다르면 주문 함수가 바로 거부 (실거래 계좌로 주문이 나가는 일이 없게)
+- 매수는 지정가(앱이 현재가 + 여유로 정함), 매도는 시장가 (손절은 빨리 팔아야 해서)
 - 키: .env 의 KIS_MOCK_APP_KEY / KIS_MOCK_APP_SECRET / KIS_MOCK_ACCOUNT_NO. 비어 있고 KIS_IS_REAL=false 면 시세용 키·계좌를 씀
 - 주문(POST)은 다시 보내지 않음 — KIS 가 받기 전에 거절한 경우(초당 제한·토큰 만료)만 kis_api._request 가 다시 보냄
 - TR(거래 ID)은 2024년에 새 번호가 생겨서 새 번호 → 안 되면 예전 번호 순서로 (조회만. 주문은 '없는 TR' 응답일 때만 예전 번호)
 """
+import math
 import re
 from datetime import date
 from pathlib import Path
@@ -128,17 +130,33 @@ async def _call(kind: str, method: str, path: str, payload: dict) -> dict:
     raise last
 
 
-async def order(side: str, symbol: str, qty: int) -> dict:
-    """시장가 주문 → {odno, orgno, time}. side: buy/sell"""
+def tick_size(price: float) -> int:
+    """국내 주식 호가 단위 (2023년부터 코스피·코스닥 같음). ETF(2천원↑ 5원)도 이 단위의 배수라 그대로 맞음"""
+    for limit, tick in ((2_000, 1), (5_000, 5), (20_000, 10), (50_000, 50), (200_000, 100), (500_000, 500)):
+        if price < limit:
+            return tick
+    return 1_000
+
+
+def tick_up(price: float) -> int:
+    """호가 단위로 올림 (매수 지정가 — 정한 가격보다 낮아지지 않게)"""
+    t = tick_size(price)
+    return int(math.ceil(price / t - 1e-9) * t)
+
+
+async def order(side: str, symbol: str, qty: int, price: float | None = None) -> dict:
+    """주문 → {odno, orgno, time}. side: buy/sell. price 가 있으면 지정가(호가 단위로 맞춘 값), 없으면 시장가"""
     if side not in ("buy", "sell"):
         raise ValueError("side 는 buy/sell")
     if not re.fullmatch(r"[0-9A-Z]{6}", symbol or "") or int(qty) < 1:
         raise ValueError("종목코드(6자리)·수량(1주 이상) 확인")
+    if price is not None and (price <= 0 or int(price) != price or int(price) % tick_size(price)):
+        raise ValueError(f"지정가 {price} 가 호가 단위({tick_size(price or 1)}원)에 안 맞음")
     cano, prdt = _account()
     data = await _call(side, "POST", "/uapi/domestic-stock/v1/trading/order-cash", {
         "CANO": cano, "ACNT_PRDT_CD": prdt, "PDNO": symbol,
-        "ORD_DVSN": "01",            # 01 = 시장가
-        "ORD_QTY": str(int(qty)), "ORD_UNPR": "0",
+        "ORD_DVSN": "00" if price else "01",            # 00 = 지정가, 01 = 시장가
+        "ORD_QTY": str(int(qty)), "ORD_UNPR": str(int(price)) if price else "0",
     })
     o = data.get("output") or {}
     odno = (o.get("ODNO") or o.get("odno") or "").strip()
@@ -196,7 +214,7 @@ async def balance() -> dict:
 
 
 async def executions(day: date | None = None) -> list:
-    """그날 주문·체결 (한 번에 오는 만큼 — 하루 주문 횟수 한도가 그보다 작음) → [{odno, side, symbol, name, qty, filled, avg_price, amount, remain, cancelled, time}]"""
+    """그날 주문·체결 (한 번에 오는 만큼 — 하루 주문 횟수 한도가 그보다 작음) → [{odno, side, symbol, name, qty, filled, avg_price, amount, remain, cancelled, cancel_qty, time}]"""
     cano, prdt = _account()
     d = (day or date.today()).strftime("%Y%m%d")
     data = await _call("ccld", "GET", "/uapi/domestic-stock/v1/trading/inquire-daily-ccld", {
@@ -214,5 +232,6 @@ async def executions(day: date | None = None) -> list:
                     "qty": _int(r.get("ord_qty")), "filled": _int(r.get("tot_ccld_qty")),
                     "avg_price": _float(r.get("avg_prvs")), "amount": _int(r.get("tot_ccld_amt")),
                     "remain": _int(r.get("rmn_qty")), "cancelled": (r.get("cncl_yn") or "").strip() == "Y",
+                    "cancel_qty": _int(r.get("cncl_cfrm_qty")),     # 원주문 줄의 취소 확인 수량
                     "time": (r.get("ord_tmd") or "").strip()})
     return out

@@ -68,7 +68,12 @@ PARAM_LABELS = {
     "max_positions": "최대 보유 종목 수", "buy_score": "매수 기준 AI 점수", "sell_score": "매도 기준 AI 점수",
     "stop_pct": "손절 %", "take_pct": "익절(목표) %", "max_hold": "최대 보유 거래일", "trailing": "추격 손절",
     "adaptive": "학습형 가중치", "trend_filter": "추세 필터 (50일선 아래는 안 삼)",
+    "entry_guard": "급변 보호 (비싸게 출발하면 기다림 · 급락 출발이면 안 삼)",
 }
+# 급변 보호 (KIS 모의투자 주문의 장중 규칙을 일봉으로 근사 — 장중 순서를 모르니 시가·저가로만):
+#   시가가 판단 종가보다 +GUARD_GAP% 넘게 높으면 → 그날 저가가 종가×(1+GUARD_GAP%) 까지 내려오면 그 값에 삼, 아니면 안 삼
+#   시가가 −2×GUARD_GAP% 넘게 낮으면(급락 출발) → 안 삼.  (10분 급락·VI·지수 보류는 일봉으로 알 수 없어 시뮬레이션에 없음)
+GUARD_GAP = 3.0
 
 
 def clean_params(raw: dict | None) -> dict:
@@ -91,6 +96,7 @@ def clean_params(raw: dict | None) -> dict:
     out["trailing"] = bool(raw.get("trailing", True))
     out["adaptive"] = bool(raw.get("adaptive", True))
     out["trend_filter"] = bool(raw.get("trend_filter", True))
+    out["entry_guard"] = bool(raw.get("entry_guard", True))
     return out
 
 
@@ -408,7 +414,7 @@ def decide(state: dict, rows: dict, regime, events_next: list, params: dict, mar
                 break
             continue
         orders.append({"side": "buy", "symbol": sym, "name": r["name"], "budget": round(budget, 2),
-                       "reason": _fmt_reason(r, regime, events_next), "score": r["score"]})
+                       "reason": _fmt_reason(r, regime, events_next), "score": r["score"], "ref": r["close"]})
         room -= budget
         slots -= 1
     if not cands:
@@ -452,6 +458,20 @@ def fill_sell(state: dict, sym: str, price: float, day: str, reason: str, market
     cost = p["qty"] * p["avg"] + p["buy_fee"]
     pnl = gross - fee - tax - cost
     return _trade(day, sym, p["name"], "sell", p["qty"], px, fee, tax, reason, pnl, pnl / cost * 100 if cost else 0)
+
+
+def guarded_entry(ref: float | None, o: float, l: float) -> tuple:
+    """급변 보호 매수가 → (체결가 또는 None, 메모). ref = 판단한 날 종가"""
+    if not ref:
+        return o, None
+    if o < ref * (1 - 2 * GUARD_GAP / 100):
+        return None, f"급락 출발 ({(o / ref - 1) * 100:.1f}%) — 매수 취소 (급변 보호)"
+    cap = ref * (1 + GUARD_GAP / 100)
+    if o > cap:
+        if l <= cap:
+            return cap, f"비싸게 출발 (+{(o / ref - 1) * 100:.1f}%) → +{GUARD_GAP:g}% 까지 내려와서 삼"
+        return None, f"비싸게 출발 (+{(o / ref - 1) * 100:.1f}%) 하고 안 내려옴 — 안 삼 (급변 보호)"
+    return o, None
 
 
 def intraday_exit(p: dict, o: float, h: float, l: float) -> tuple | None:
@@ -517,6 +537,7 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
     exposure_sum = 0.0
     labels = forward_labels(stocks) if params.get("adaptive") else {}
     aw, since = None, ADAPT_EVERY
+    guard_n = [0, 0]   # 급변 보호: 안 산 수, 기다렸다 산 수
     for k, d in enumerate(days):
         acts = []
         if k > 0:
@@ -529,8 +550,13 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
                 if o["side"] == "sell":
                     t = fill_sell(state, o["symbol"], float(bar["open"]), d, o["reason"], market)
                 else:
-                    t = fill_buy(state, o["symbol"], o["name"], o["budget"], float(bar["open"]), d, o["reason"], params, market)
-                    if t is None:
+                    px, memo = (guarded_entry(o.get("ref"), float(bar["open"]), float(bar["low"])) if params.get("entry_guard")
+                                else (float(bar["open"]), None))
+                    if memo:
+                        acts.append(f"{o['name']} {memo}")
+                        guard_n[0 if px is None else 1] += 1
+                    t = None if px is None else fill_buy(state, o["symbol"], o["name"], o["budget"], px, d, o["reason"], params, market)
+                    if t is None and px is not None:
                         acts.append(f"{o['name']} 매수 취소 — 시가 상승으로 1주도 못 삼")
                 if t:
                     trades.append(t)
@@ -577,7 +603,8 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
         if progress and k % 10 == 0:
             progress("매매 시뮬레이션 중", k + 1, len(days))
     return {"summary": summarize(curve, trades, capital, exposure_sum / len(days)), "equity": curve, "trades": trades,
-            "log": log, "positions": positions_view(state, market), "days": len(days), "weights": weight_log}
+            "log": log, "positions": positions_view(state, market), "days": len(days), "weights": weight_log,
+            "guard": {"skipped": guard_n[0], "waited": guard_n[1]} if params.get("entry_guard") else None}
 
 
 def _act_text(t: dict, market: str) -> str:

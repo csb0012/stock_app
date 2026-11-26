@@ -136,8 +136,8 @@ def test_event_labels():
 
 # ---------------- 시뮬레이션 ----------------
 
-def _sim(stocks, idx, start, end):
-    return pe.simulate(stocks, idx, [], "US", 100_000, start, end, pe.clean_params({"max_positions": 3}))
+def _sim(stocks, idx, start, end, **kw):
+    return pe.simulate(stocks, idx, [], "US", 100_000, start, end, pe.clean_params({"max_positions": 3, "entry_guard": False, **kw}))
 
 
 def test_simulate_accounting_and_shape():
@@ -588,11 +588,12 @@ def test_api_simulation_has_baseline_compare(api_client, monkeypatch):
     r = d["result"]
     assert d["status"] == "done" and r["params"]["adaptive"] and r["params"]["trend_filter"]
     c = r["compare"]
-    assert c["params"]["adaptive"] is False and c["params"]["trend_filter"] is False
+    assert c["params"]["adaptive"] is False and c["params"]["trend_filter"] is False and c["params"]["entry_guard"] is False
     assert len(c["equity"]) == len(r["equity"]) and "return_pct" in c["summary"]
+    assert r["params"]["entry_guard"] and set(r["guard"]) == {"skipped", "waited"}
     # 개선 옵션을 다 끄면 비교 계산 안 함
     sid2 = client.post("/api/paper/simulations", json={"market": "US", "months": 3,
-                                                        "params": {"adaptive": False, "trend_filter": False}}).json()["id"]
+                                                        "params": {"adaptive": False, "trend_filter": False, "entry_guard": False}}).json()["id"]
     d2 = _wait(client, f"/api/paper/simulations/{sid2}", lambda x: x["status"] != "running")
     assert d2["status"] == "done" and "compare" not in d2["result"]
 
@@ -615,3 +616,36 @@ def test_interrupted_running_sim_is_cleaned(api_client):
     run(papertrade.mark_interrupted())                                      # 서버 시작 때
     d = client.get(f"/api/paper/simulations/{b}").json()
     assert d["status"] == "failed" and "다시 시작" in d["error"]
+
+
+
+def test_guarded_entry_rules():
+    """급변 보호(일봉 근사): 시가 +3% 넘게 출발 → 저가가 +3% 까지 오면 그 값, 아니면 안 삼 / −6% 넘게 출발 → 안 삼"""
+    assert pe.guarded_entry(100, 102, 99) == (102, None)
+    assert pe.guarded_entry(100, 103, 101) == (103, None)                 # 딱 +3% 는 그대로 삼
+    px, memo = pe.guarded_entry(100, 105, 102.5)
+    assert px == pytest.approx(103) and "내려와서" in memo
+    px, memo = pe.guarded_entry(100, 105, 103.5)
+    assert px is None and "안 내려옴" in memo
+    assert pe.guarded_entry(100, 94, 90) == (94, None)                    # −6% 는 아직 삼
+    px, memo = pe.guarded_entry(100, 93.9, 90)
+    assert px is None and "급락 출발" in memo
+    assert pe.guarded_entry(None, 50, 40) == (50, None)
+
+
+def test_simulate_with_entry_guard_never_buys_outside_rules():
+    stocks, idx = universe(), series(360, 99, 0.0003)
+    dates = [c["date"] for c in stocks["S0"]["candles"]]
+    r = _sim(stocks, idx, dates[280], dates[-1], entry_guard=True)
+    bars = {(sym, c["date"][:10]): c for sym, st in stocks.items() for c in st["candles"]}
+    prev = {}
+    for sym, st in stocks.items():
+        cs = st["candles"]
+        for a, b in zip(cs, cs[1:]):
+            prev[(sym, b["date"][:10])] = float(a["close"])
+    slip = 1 + pe.COSTS["US"]["slip"]
+    for t in (t for t in r["trades"] if t["side"] == "buy"):
+        ref, o = prev[(t["symbol"], t["date"])], float(bars[(t["symbol"], t["date"])]["open"])
+        assert o >= ref * 0.94 - 1e-9                                       # 급락 출발엔 안 삼
+        assert t["price"] <= ref * 1.03 * slip + 1e-6                       # +3% 보다 비싸게 안 삼
+    assert r["guard"] is not None and _sim(stocks, idx, dates[280], dates[-1])["guard"] is None

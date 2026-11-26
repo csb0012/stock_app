@@ -72,13 +72,13 @@ function Stat({ label, value, color, sub }: { label: string; value: string; colo
 const statGrid: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 8, marginBottom: 12 };
 
 // ---------------- 설정 입력 ----------------
-function ParamsForm({ cfg, value, onChange }: { cfg: any; value: PaperParams; onChange: (v: PaperParams) => void }) {
+function ParamsForm({ cfg, value, onChange, sim }: { cfg: any; value: PaperParams; onChange: (v: PaperParams) => void; sim?: boolean }) {
   const [open, setOpen] = useState(false);
   if (!cfg) return null;
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 6 }} data-testid="improve-options">
-        {Object.entries((cfg.options || {}) as Record<string, any>).map(([k, o]) => (
+        {Object.entries((cfg.options || {}) as Record<string, any>).filter(([, o]) => sim || !o.sim_only).map(([k, o]) => (
           <label key={k} style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
             <input type="checkbox" data-testid={`opt-${k}`} checked={(value as any)[k] ?? o.default}
               onChange={(e) => onChange({ ...value, [k]: e.target.checked })} />
@@ -247,6 +247,12 @@ function SimDetail({ id }: { id: number }) {
         <EquityChart points={points} market={m} bench={r.benchmark} />
       </div>
       {cmp && <CompareCard main={s} base={cmp.summary} params={r.params} />}
+      {r.guard && (
+        <p data-testid="sim-guard" style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+          급변 보호: 비싸게 출발하거나 급락 출발해서 <strong>안 산 매수 {r.guard.skipped}건</strong> · 비싸게 출발했다가 내려와서 <strong>기다렸다 산 매수 {r.guard.waited}건</strong>
+          {" "}(10분 급락·VI·지수 보류는 일봉으로 알 수 없어 시뮬레이션에 없음)
+        </p>
+      )}
       {r.notes?.length > 0 && (
         <div style={{ fontSize: 12, color: "var(--yellow)", marginBottom: 12 }} data-testid="sim-notes">
           {r.notes.map((n: string, i: number) => <p key={i}>⚠ {n}</p>)}
@@ -284,7 +290,7 @@ function SimDetail({ id }: { id: number }) {
 }
 
 function CompareCard({ main, base, params }: { main: any; base: any; params: any }) {
-  const on = [params?.adaptive && "학습형 가중치", params?.trend_filter && "추세 필터"].filter(Boolean).join(" + ");
+  const on = [params?.adaptive && "학습형 가중치", params?.trend_filter && "추세 필터", params?.entry_guard && "급변 보호"].filter(Boolean).join(" + ");
   const rows: [string, string, number | null, number | null, boolean][] = [
     // 이름, 단위, 개선, 기본, 높을수록 좋음
     ["수익률", "%", main.return_pct, base.return_pct, true],
@@ -404,7 +410,7 @@ function SimTab({ cfg }: { cfg: any }) {
             <Play size={13} /> {list.data?.busy ? "다른 시뮬레이션 계산 중" : "시뮬레이션 시작"}
           </button>
         </div>
-        <ParamsForm cfg={cfg} value={params} onChange={setParams} />
+        <ParamsForm cfg={cfg} value={params} onChange={setParams} sim />
         {start.error && <p style={{ color: "var(--red)", fontSize: 12, marginTop: 8 }} data-testid="sim-start-error">{errMsg(start.error)}</p>}
       </div>
 

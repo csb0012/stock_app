@@ -26,12 +26,18 @@ const LIMIT_META = {
   max_orders_day: { default: 10, min: 1, max: 50, label: "하루 주문 횟수" },
   max_loss_krw: { default: 500000, min: 10000, max: 100000000, label: "하루 손실 한도 (원)" },
   max_gap_pct: { default: 3, min: 0.5, max: 15, label: "제안 뒤 가격 상승 허용 (%)" },
+  fast_drop_pct: { default: 3, min: 1, max: 15, label: "10분 급락 → 매수 취소 (%)" },
+  index_drop_pct: { default: 2, min: 0.5, max: 10, label: "지수 하락 → 매수 보류 (%)" },
+  limit_slip_pct: { default: 0.3, min: 0, max: 2, label: "매수 지정가 여유 (%)" },
 };
 
 export const KIS_STATUS = {
   configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", account_source: "KIS_MOCK_ACCOUNT_NO",
   notify: { configured: true, server: "ntfy.sh", token: false, last: { ok: true, error: null, at: 1795000000 } }, halted: false, halted_reason: null, halted_at: null,
-  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3 }, limit_meta: LIMIT_META,
+  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3 },
+  limit_meta: LIMIT_META,
+  watch: { last: "2026-11-24T10:00:05+09:00", error: null, symbols: 4, realtime: 3, rest: 1, missing: 0, every: 5, index_change: -0.42, index_error: null,
+           buy_after_open: 5, stops_ok: true },
   params: { max_positions: 5, buy_score: 60, sell_score: 45, stop_pct: 7, take_pct: 15, max_hold: 20, trailing: true, adaptive: true, trend_filter: true },
   orders_today: 1, window: "open", last_proposal_day: "2026-11-23", last_error: null, loop: { last_tick: "2026-11-24T10:00:00", last_error: null },
   baseline: true, day_loss: -120000,
@@ -52,11 +58,24 @@ export const KIS_OPEN = { items: [
     expires_at: 1795060000, decided_at: null, submitted_at: null, order_price: null, odno: null, filled_qty: 0, filled_price: null, message: null },
   { id: 9, created_at: 1794900000, base_date: "2026-11-20", source: "ai", side: "buy", symbol: "035420", name: "NAVER", qty: 10, budget: 2000000,
     ref_price: 190000, reason: "AI 점수 66", score: 66, status: "submitted", status_label: "주문 접수",
-    expires_at: 1795060000, decided_at: 1794950000, submitted_at: 1794960000, order_price: 191000, odno: "0000000007", filled_qty: 0, filled_price: null, message: "주문번호 0000000007" },
+    expires_at: 1795060000, decided_at: 1794950000, submitted_at: 1794960000, order_price: 191000, limit_price: 191600, cancel_req: null, odno: "0000000007",
+    filled_qty: 0, filled_price: null, message: "주문번호 0000000007 · 지정가 191,600원" },
+  { id: 10, created_at: 1794900000, base_date: "2026-11-20", source: "ai", side: "buy", symbol: "005380", name: "현대차", qty: null, budget: 1500000,
+    ref_price: 250000, reason: "AI 점수 63", score: 63, status: "approved", status_label: "승인 — 조건 맞으면 주문",
+    expires_at: 1795060000, decided_at: 1794950000, submitted_at: null, order_price: null, limit_price: null, cancel_req: null, odno: null, filled_qty: 0, filled_price: null,
+    message: "제안 때 250,000원 → 지금 260,000원 (+4.0%, 허용 +3%) — 비싸서 기다림 (쫓아가서 안 삼)" },
 ], status_labels: {} };
 
 export const KIS_ALL = { items: [
   { ...KIS_OPEN.items[2] },
+  { id: 13, created_at: 1794990000, base_date: "2026-11-24", source: "stop", side: "sell", symbol: "000270", name: "기아", qty: 5, budget: null,
+    ref_price: 92000, reason: "손절가 도달 — 자동 매도 (장중 92,000원 · 손절 93,000원)", score: null, status: "filled", status_label: "체결",
+    expires_at: 1795060000, decided_at: 1794990000, submitted_at: 1794990001, order_price: 92000, limit_price: null, cancel_req: null, odno: "0000000010",
+    filled_qty: 5, filled_price: 91900, message: "주문번호 0000000010 · 시장가" },
+  { id: 14, created_at: 1794980000, base_date: "2026-11-23", source: "ai", side: "buy", symbol: "068270", name: "셀트리온", qty: null, budget: 2000000,
+    ref_price: 180000, reason: "AI 점수 68", score: 68, status: "cancelled", status_label: "취소", expires_at: 1795060000,
+    decided_at: 1794950000, submitted_at: null, order_price: null, limit_price: null, cancel_req: null, odno: null, filled_qty: 0, filled_price: null,
+    message: "급변으로 자동 취소 — 10분 안에 -3.4% 급락 (182,000 → 175,800원, 기준 −3%)" },
   { id: 8, created_at: 1794800000, base_date: "2026-11-19", source: "ai", side: "buy", symbol: "051910", name: "LG화학", qty: null, budget: 2000000,
     ref_price: 300000, reason: "AI 점수 64", score: 64, status: "blocked", status_label: "안전장치로 안 보냄", expires_at: 1794900000,
     decided_at: 1794850000, submitted_at: null, order_price: null, odno: null, filled_qty: 0, filled_price: null,
@@ -64,6 +83,8 @@ export const KIS_ALL = { items: [
 ], status_labels: {} };
 
 export const KIS_LOG = { items: [
+  { id: 5, at: 1794990000, action: "auto_stop", order_id: 13, ok: true, detail: "기아 5주 손절가 도달 — 자동 매도", by: "자동" },
+  { id: 4, at: 1794980000, action: "auto_cancel", order_id: 14, ok: false, detail: "셀트리온: 10분 안에 -3.4% 급락", by: "자동" },
   { id: 3, at: 1794960000, action: "submitted", order_id: 9, ok: true, detail: "주문번호 0000000007 — 모의투자 매수주문이 완료되었습니다", by: "자동" },
   { id: 2, at: 1794950000, action: "approve", order_id: 9, ok: true, detail: "매수 NAVER", by: "boss" },
   { id: 1, at: 1794850000, action: "blocked", order_id: 8, ok: false, detail: "LG화학: 비싸져서 안 삼", by: "자동" },

@@ -634,7 +634,14 @@ async function run() {
     expect(st.includes("운영 중") && st.includes("****3456-01") && st.includes("1 / 10건") && st.includes("+120,000원"), `상태: ${st}`);
     const bal = await page.getByTestId("kis-balance").innerText();
     expect(bal.includes("SK하이닉스") && bal.includes("8,150,000원") && bal.includes("176,700원"), `잔고: ${bal}`);
+    const wl = await page.getByTestId("kis-watch").innerText();
+    expect(wl.includes("5초마다") && wl.includes("4종목") && wl.includes("실시간 체결가 3") && wl.includes("지수 -0.4%"), `실시간 감시: ${wl}`);
+    const rules = await page.getByTestId("kis-rules").innerText();
+    expect(rules.includes("+3% 이하") && rules.includes("−6%") && rules.includes("−3%") && rules.includes("지정가") && rules.includes("자동 매도") && rules.includes("승인 없이"),
+      `자동 규칙: ${rules}`);
     const pr = page.getByTestId("kis-proposals");
+    const prt = await pr.innerText();
+    expect(prt.includes("비싸서 기다림") && prt.includes("조건 맞으면 주문") && prt.includes("지정가 191,600원"), `조건 대기·지정가: ${prt}`);
     const approve = pr.getByTestId("kis-approve");
     expect(await approve.isDisabled(), "아무것도 안 골랐는데 승인이 눌림");
     await pr.getByRole("button", { name: "모두 선택" }).click();
@@ -652,13 +659,15 @@ async function run() {
     await page.getByText(/취소 요청/).waitFor();
     const h = await page.getByTestId("kis-history").innerText();
     expect(h.includes("LG화학") && h.includes("안전장치로 안 보냄") && h.includes("비싸져서"), `주문 기록: ${h}`);
+    expect(h.includes("자동 손절") && h.includes("시장가") && h.includes("급변으로 자동 취소"), `자동 손절·자동 취소 기록: ${h}`);
     const au = await page.getByTestId("kis-audit").innerText();
-    expect(au.includes("승인") && au.includes("boss") && au.includes("안전장치로 막음"), `감사 로그: ${au}`);
+    expect(au.includes("승인") && au.includes("boss") && au.includes("안전장치로 막음") && au.includes("자동 손절") && au.includes("급변 자동 취소"), `감사 로그: ${au}`);
     await shot(page, "kis-trade");
   });
 
   await test("KIS 모의투자: 긴급 정지(코드 없이) · 정지 중 승인 불가 · 다시 시작은 2단계 코드 · 잔고 대조 경고", { api: adminApi({
     "GET /api/kis/status": (req) => ({ ...KF.KIS_STATUS, halted: true, halted_reason: "긴급 정지 버튼", halted_at: 1795000000,
+      watch: { ...KF.KIS_STATUS.watch, stops_ok: false },
       last_error: "2026-11-25T17:24:51+09:00 제안 실패: 일봉을 받은 종목이 없음",
       mismatches: [{ symbol: "000660", name: "SK하이닉스", app: 0, kis: 3, pending: false }] }),
     "POST /api/kis/halt": { message: "주문을 멈췄습니다" },
@@ -666,7 +675,7 @@ async function run() {
     "POST /api/kis/baseline": { message: "KIS 잔고를 앱 기록 기준으로 맞췄습니다" } }) }, async (page, api) => {
     await page.goto(`${BASE}/kis`);
     const st = await page.getByTestId("kis-status").innerText();
-    expect(st.includes("정지됨") && st.includes("긴급 정지 버튼"), `정지 상태: ${st}`);
+    expect(st.includes("정지됨") && st.includes("긴급 정지 버튼") && !st.includes("손절 자동 매도는 계속"), `정지 상태: ${st}`);
     expect(await page.getByTestId("kis-halt").count() === 0, "정지 중인데 긴급 정지 버튼이 보임");
     const le = await page.getByTestId("kis-last-error").innerText();
     expect(le.includes("마지막 자동 제안 실패 — 2026-11-25 17:24:51") && le.includes("지금 제안 만들기"), `제안 실패 표시: ${le}`);
@@ -1075,6 +1084,7 @@ async function run() {
     "POST /api/paper/accounts": { __status: 422, detail: "시작 자금은 1,000,000~10,000,000,000원 사이여야 함" } }) }, async (page, api) => {
     await page.goto(`${BASE}/paper`);
     await page.getByTestId("account-form").waitFor();
+    expect(await page.getByTestId("opt-entry_guard").count() === 0, "실시간 계좌 만들기에 시뮬레이션 전용 옵션(급변 보호)이 보임");
     await page.getByTestId("account-capital").fill("100");
     await page.getByTestId("account-create").click();
     await page.getByTestId("account-create-error").getByText("시작 자금은").waitFor();
@@ -1090,7 +1100,9 @@ async function run() {
     for (const s of ["최종 자산", "AI 수익률", "+1.00%", "최대 낙폭", "승률", "지수 대비"]) expect(t.includes(s), `결과에 '${s}' 없음`);
     // 개선 옵션 vs 기본 방식 비교 (같은 데이터)
     const cmp = await page.getByTestId("sim-compare").innerText();
-    for (const s of ["학습형 가중치 + 추세 필터", "+1%", "-7.06%", "개선 옵션이 더 나았습니다"]) expect(cmp.includes(s), `비교 표에 '${s}' 없음: ${cmp}`);
+    for (const s of ["학습형 가중치 + 추세 필터 + 급변 보호", "+1%", "-7.06%", "개선 옵션이 더 나았습니다"]) expect(cmp.includes(s), `비교 표에 '${s}' 없음: ${cmp}`);
+    const gd = await page.getByTestId("sim-guard").innerText();
+    expect(gd.includes("안 산 매수 3건") && gd.includes("기다렸다 산 매수 2건"), `급변 보호 결과: ${gd}`);
     expect((await page.getByTestId("sim-trades").innerText()).includes("매도"), "거래 내역 없음");
     expect((await page.getByTestId("sim-log").innerText()).length > 20, "판단 기록 없음");
     expect((await page.getByTestId("sim-notes").innerText()).includes("FRED"), "데이터 경고 없음");
@@ -1101,7 +1113,8 @@ async function run() {
     await page.getByRole("button", { name: "6개월" }).click();
     await page.getByRole("button", { name: /매매 규칙/ }).click();
     await page.getByTestId("param-max_positions").fill("3");
-    expect(await page.getByTestId("opt-adaptive").isChecked() && await page.getByTestId("opt-trend_filter").isChecked(), "개선 옵션 기본 켬이 아님");
+    expect(await page.getByTestId("opt-adaptive").isChecked() && await page.getByTestId("opt-trend_filter").isChecked()
+      && await page.getByTestId("opt-entry_guard").isChecked(), "개선 옵션 기본 켬이 아님");
     await page.getByTestId("opt-trend_filter").uncheck();
     await page.getByTestId("sim-start").click();
     await page.waitForTimeout(300);
