@@ -1021,6 +1021,15 @@ pull 후 패키지 목록이 바뀌었을 때:
   예측 방식 카드 / 종목탐색 이름 한 줄·표가 카드 안 / 빅테크 이름 안 잘림 · 각 화면 가로 스크롤 없음, 기존 '모든 화면 — 모바일' 을 12개 화면으로 늘리고 스크린샷), pytest 281개, `bash scripts/check.sh` 통과.
   고친 뒤 12개 화면 390px 스크린샷을 다시 보고 확인 (API·백엔드 변경 없음 — 화면 배치만)
 
+### 2026-11-26 — Oracle VM 자동 재시도: '응답 시간 초과'에서 멈추던 것 (commit `HASH`)
+- 사용자 제보: `deploy/oci-launch-retry.sh` 340번째 시도 뒤 `다른 오류 — 중단: "The request timed out. The request may have reached the service and the operation may have completed."`
+  → 예전엔 '자리 없음'·429·한도 초과 말고는 전부 중단. 이 오류는 VM 이 실제로 만들어졌을 수도 있는 경우
+- 고침: 매 시도 전에 이름(`stock-app`)으로 지워지지 않은 VM 이 있는지 먼저 확인(`find_existing`, TERMINATING 제외) → 있으면 그 VM 으로 공인 IP 단계 (두 번 만들지 않음 — A1 은 무료 한도 안에서 여러 개 만들어질 수 있어서).
+  시간 초과·연결 끊김·5xx·InternalError(자리 없음 문구가 아닌 것)는 60초 쉬고 다시, 연속 10번이면 중단. 자리 없음이 오면 연속 횟수 초기화. 그 밖의 모르는 오류는 예전처럼 바로 중단
+- 문서: setup-cloud.md (PC 자동 재시도 — 이 오류가 나와도 그대로 두면 됨, 예전 스크립트로 멈췄으면 pull → docker rm → 다시 실행)
+- 검증: `bash -n` + 가짜 `oci`·`sleep` 명령(PATH 앞에 둠, 실제 OCI 응답 문구)으로 4가지: ① 자리 없음 → 시간 초과(실제로는 생성됨) → 다시 안 만들고 그 VM·IP (launch 2번) ② 시간 초과 2번(안 만들어짐) → 3번째 성공
+  ③ 시간 초과 10번 연속 → 중단(exit 1) ④ 권한 오류 → 바로 중단. `bash scripts/check.sh` 통과 (앱 코드 변경 없음). **실서버 미검증**: 실제 OCI 에서 시간 초과 뒤 instance list 에 바로 보이는지 (안 보이면 다음 시도가 'LimitExceeded' 또는 두 번째 생성 — 1 OCPU/2GB 라 무료 한도 안)
+
 ## 알려진 이슈 / 확인 필요
 - [ ] **KIS 실시간 웹소켓 실서버 미검증** — 장중에 관심종목 카드에 '● 실시간' 이 뜨는지 확인. 안 뜨면 로그인 후 `/api/market/scheduler-status` 의 `kis_ws.last_error` (접속키·주소·방화벽 21000/31000 포트). 안 돼도 화면은 예전처럼 REST 가격
 - [ ] **KIS 모의투자 주문 실서버 미검증** — 가짜 KIS 서버로만 확인. 처음 연결 후 화면 잔고가 KIS 앱과 같은지, 1주 주문 하나로 승인 → 접수 → 체결 확인 (TR: 주문 VTTC0012U/0011U(예전 0802U/0801U)·잔고 VTTC8434R·체결 VTTC0081R(8001R)·취소 VTTC0013U). 보유 20종목 이상이면 잔고 대조를 멈춤 · 국내만 (미국 모의 주문은 아직)

@@ -12,6 +12,9 @@
 #   2) 서브넷에 80/443 허용 규칙(보안 목록 stock-web) 추가 — setup-cloud.md 의 "80·443 열기" 를 대신함
 #   3) SSH 키가 없으면 생성
 #   4) VM.Standard.A1.Flex 1 OCPU / 2GB, Ubuntu 24.04 생성을 성공할 때까지 반복 (기본 90초 간격)
+#      매번 만들기 전에 '이미 만들어졌는지' 먼저 확인 — 응답 시간 초과로 결과를 못 받았는데 실제로는 만들어진 경우
+#      (OCI: "The request timed out ... may have completed") 두 번 만들지 않고 그 VM 으로 이어감.
+#      시간 초과·연결 끊김·서버 오류(5xx)는 잠깐 쉬고 다시 (연속 10번이면 중단)
 #
 # 사용: bash oci-launch-retry.sh
 #   간격 바꾸기: INTERVAL=120 bash oci-launch-retry.sh
@@ -51,10 +54,18 @@ if [ -z "$AD" ] || [ "$AD" = "null" ]; then
 fi
 say "가용 도메인: $AD · 모양: $SHAPE"
 
+# 이 이름의 (지워지지 않은) VM — 없으면 빈 값. 조회 자체가 실패해도 빈 값 (다음 시도에서 다시 확인)
+find_existing() {
+  local id
+  id=$(q compute instance list --compartment-id "$T" --display-name "$NAME" \
+    --query 'data[?"lifecycle-state"!=`TERMINATED` && "lifecycle-state"!=`TERMINATING`] | [0].id')
+  [ "$id" = "null" ] && id=""
+  echo "$id"
+}
+
 # 이미 만들어진 VM 이 있으면 끝
-existing=$(q compute instance list --compartment-id "$T" --display-name "$NAME" \
-  --query 'data[?"lifecycle-state"!=`TERMINATED`] | [0].id')
-if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+existing=$(find_existing)
+if [ -n "$existing" ]; then
   say "이미 $NAME VM 이 있음: $existing"
   INSTANCE=$existing
 else
@@ -129,8 +140,16 @@ PY
 
   # --- 5) 자리가 날 때까지 반복 ---
   n=0
+  errs=0           # 연속 '일시 오류' 횟수
   while true; do
     n=$((n + 1))
+    # 앞 시도가 응답 시간 초과였어도 실제로는 만들어졌을 수 있음 → 만들기 전에 먼저 확인 (두 번 만들지 않게)
+    ex=$(find_existing)
+    if [ -n "$ex" ]; then
+      INSTANCE=$ex
+      say "$NAME VM 이 이미 만들어져 있음 (앞 시도가 응답만 못 받은 것) — $INSTANCE"
+      break
+    fi
     out=$(oci compute instance launch --availability-domain "$AD" --compartment-id "$T" \
       --shape "$SHAPE" "${SHAPE_CONFIG[@]}" \
       --image-id "$IMG" --subnet-id "$SUBNET" --assign-public-ip true \
@@ -142,8 +161,16 @@ PY
       say "성공! ($n 번째 시도) $INSTANCE"
       break
     elif echo "$out" | grep -qi "capacity"; then
+      errs=0
       say "$n 번째: 자리 없음 ${msg} — ${INTERVAL}초 후 다시"
       sleep "$INTERVAL"
+    elif echo "$out" | grep -qiE 'timed out|may have completed|RequestException|ConnectionError|Connection (reset|aborted)|Max retries|"status": *5[0-9][0-9]|InternalError|ServiceUnavailable'; then
+      errs=$((errs + 1))
+      if [ "$errs" -ge 10 ]; then
+        say "일시 오류가 연속 $errs 번 — 중단 (인터넷 연결·Oracle 상태 확인 후 다시 실행):"; echo "$out" | tail -8; exit 1
+      fi
+      say "$n 번째: 일시 오류 (${msg:-응답 없음}) — 만들어졌을 수도 있어 60초 뒤 확인하고 다시 ($errs/10)"
+      sleep 60
     elif echo "$out" | grep -qi 'TooManyRequests\|"status": *429'; then
       say "$n 번째: 요청이 너무 잦음 ${msg} — 5분 쉼"
       sleep 300

@@ -277,6 +277,9 @@ PC 가 켜져 있는 동안 계속 재시도한다. Docker Desktop 만 있으면
    - AMD 1GB(E2.1.Micro)로 만들려면 `-e KEY=...` 앞에 `-e MICRO=1` 을 넣는다.
    - 진행 보기: `docker logs -f oci-retry` (Ctrl+C 는 보기만 멈춤, 재시도는 계속). 처음 1~2분은 OCI CLI 설치.
    - "Oracle 로그인(API 키) 실패" 가 나오면 2번의 config 내용(특히 `key_file`·`region`)과 `.pem` 파일 위치를 확인하고, `docker rm oci-retry` 후 다시 실행.
+   - `일시 오류 ("The request timed out ... may have completed")` 가 나오면 그대로 두면 된다 — Oracle 이 응답을 늦게 줘서 결과를 못 받은 것이라,
+     스크립트가 60초 뒤 **이미 만들어졌는지 먼저 확인**하고(만들어졌으면 그 VM 으로 공인 IP 까지 진행, 두 번 만들지 않음) 아니면 계속 재시도한다. 연속 10번이면 멈춘다.
+     (예전 스크립트는 여기서 `다른 오류 — 중단` 으로 멈췄음 → `git pull` 후 `docker rm oci-retry` 하고 3번 명령을 다시 실행. 이미 만들어졌으면 바로 IP 가 나옴)
 4. **PC 가 절전 모드로 들어가면 멈춘다** → 재시도하는 동안 절전 끄기 (전원 연결 시 '절전 안 함'):
    ```powershell
    powercfg /change standby-timeout-ac 0
