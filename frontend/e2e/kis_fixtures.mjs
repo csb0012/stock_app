@@ -29,15 +29,16 @@ const LIMIT_META = {
   fast_drop_pct: { default: 3, min: 1, max: 15, label: "10분 급락 → 매수 취소 (%)" },
   index_drop_pct: { default: 2, min: 0.5, max: 10, label: "지수 하락 → 매수 보류 (%)" },
   limit_slip_pct: { default: 0.3, min: 0, max: 2, label: "매수 지정가 여유 (%)" },
-  intraday_runs: { default: 3, min: 0, max: 5, label: "장중 AI 제안 횟수 (0 = 끔)" },
+  intraday_every_min: { default: 5, min: 0, max: 60, label: "장중 AI 판단 간격 (분, 0 = 끔)" },
 };
 
 export const KIS_STATUS = {
   configured: true, server: "모의투자 (가상 자금)", account: "****3456-01", account_source: "KIS_MOCK_ACCOUNT_NO",
   notify: { configured: true, server: "ntfy.sh", token: false, link: "https://mystock.duckdns.org/kis", last: { ok: true, error: null, at: 1795000000 } }, halted: false, halted_reason: null, halted_at: null,
-  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3, intraday_runs: 3 },
+  limits: { max_order_krw: 2000000, max_orders_day: 10, max_loss_krw: 500000, max_gap_pct: 3, fast_drop_pct: 3, index_drop_pct: 2, limit_slip_pct: 0.3, intraday_every_min: 5 },
   limit_meta: LIMIT_META,
-  intraday: { slots: ["10:00", "12:00", "14:00"], done: ["10:00"], running: false, last: "2026-11-24T10:01:40+09:00", result: "10:00 새 매수 제안 1건", error: null },
+  intraday: { every: 5, from: "09:30", to: "15:00", runs: 7, next: "10:05", running: false, last: "2026-11-24T10:00:12+09:00",
+    result: "10:00 새 매수 제안 1건 · 확인 대기 1", error: null, notes: [], waiting: ["카카오"], took: 6.2 },
   param_meta: { max_positions: { default: 5, min: 1, max: 15, label: "최대 보유 종목 수" }, buy_score: { default: 60, min: 50, max: 90, label: "매수 기준 AI 점수" },
     sell_score: { default: 45, min: 20, max: 60, label: "매도 기준 AI 점수" }, stop_pct: { default: 7, min: 2, max: 30, label: "손절 %" },
     take_pct: { default: 15, min: 3, max: 100, label: "익절(목표) %" }, max_hold: { default: 20, min: 2, max: 120, label: "최대 보유 거래일" } },

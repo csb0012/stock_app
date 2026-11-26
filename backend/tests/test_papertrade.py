@@ -649,3 +649,59 @@ def test_simulate_with_entry_guard_never_buys_outside_rules():
         assert o >= ref * 0.94 - 1e-9                                       # 급락 출발엔 안 삼
         assert t["price"] <= ref * 1.03 * slip + 1e-6                       # +3% 보다 비싸게 안 삼
     assert r["guard"] is not None and _sim(stocks, idx, dates[280], dates[-1])["guard"] is None
+
+
+def test_intraday_analyze_caches_daily_candles(api_client, monkeypatch):
+    """장중 판단(몇 분마다)은 지난 일봉을 하루 한 번만 받고, 판단마다 현재가로 오늘 봉만 고침 (KIS 호출 줄이기).
+    현재가를 못 받은 종목은 빼고, 일봉을 못 받은 종목은 30분 뒤 다시. 학습형 비중·지수도 하루 한 번"""
+    from app.services import papertrade, quote, paper_engine as pe
+    client, Session, user = api_client
+    today = papertrade.market_today("KR").isoformat()
+    base = _recent_universe(6, 300)
+    for s in base.values():   # 마지막 봉 = 오늘(장중 미완성 봉)
+        s["candles"][-1]["date"] = today
+    calls = {"fetch": [], "index": 0, "aw": 0}
+
+    async def fetch_stocks(market, items, kr_count, us_period, progress=None):
+        calls["fetch"].append([i["symbol"] for i in items])
+        return {i["symbol"]: {"name": base[i["symbol"]]["name"], "candles": [dict(c) for c in base[i["symbol"]]["candles"]]}
+                for i in items if i["symbol"] != "S5"}, ["종목5(S5): 일봉 0개"]
+
+    async def fetch_index(market, period):
+        calls["index"] += 1
+        return series(300, 99, 0.0003, start=dt.date.today() - dt.timedelta(days=430))
+    price = {f"S{i}": base[f"S{i}"]["candles"][-1]["close"] for i in range(6)}
+
+    async def live_prices(items):
+        return {(i["market"], i["symbol"]): {"price": price[i["symbol"]], "volume": 3_000_000} for i in items if i["symbol"] != "S4"}
+    real_aw = pe.adaptive_weights
+
+    def aw(*a):
+        calls["aw"] += 1
+        return real_aw(*a)
+    monkeypatch.setattr(papertrade, "fetch_stocks", fetch_stocks)
+    monkeypatch.setattr(papertrade, "fetch_index", fetch_index)
+    monkeypatch.setattr(quote, "live_prices", live_prices)
+    monkeypatch.setattr(pe, "adaptive_weights", aw)
+    monkeypatch.setattr(quote, "analyze_candles", lambda market, candles, *a: {"prediction": {"probability": 60}})
+    monkeypatch.setattr(papertrade, "base_universe", lambda m: [{"symbol": f"S{i}", "name": f"종목{i}"} for i in range(6)])
+    from app.services import accumulation
+    monkeypatch.setattr(accumulation, "result", lambda: None)   # 전 종목 매집·퀀트 상위는 대상에 안 넣음
+    papertrade._intra.update(day=None)
+    params = pe.clean_params({})
+    a = run(papertrade.analyze_live("KR", user.id, {}, params, intraday=True))
+    assert a["last"] == today and set(a["rows"]) == {"S0", "S1", "S2", "S3"}            # S4 현재가 없음 · S5 일봉 없음
+    assert any("현재가 못 받음 1종목" in e for e in a["errors"]) and any("S5" in e for e in a["errors"])
+    assert a["prev_close"]["S0"] == base["S0"]["candles"][-2]["close"]
+    price["S0"] = price["S0"] * 1.02
+    b = run(papertrade.analyze_live("KR", user.id, {}, params, intraday=True))
+    assert len(calls["fetch"]) == 1 and calls["index"] == 1 and calls["aw"] == 1         # 일봉·지수·비중은 다시 안 받음
+    assert b["rows"]["S0"]["close"] == pytest.approx(price["S0"])                         # 오늘 봉 = 지금 가격
+    assert papertrade._intra["bar"]["S0"]["high"] >= price["S0"]
+    papertrade._intra["failed"]["S5"] -= papertrade.INTRA_RETRY + 1                       # 30분 지남 → S5 만 다시
+    run(papertrade.analyze_live("KR", user.id, {}, params, intraday=True))
+    assert calls["fetch"][-1] == ["S5"]
+    papertrade._intra["day"] = "2000-01-01"                                               # 날짜 바뀜 → 처음부터
+    run(papertrade.analyze_live("KR", user.id, {}, params, intraday=True))
+    assert len(calls["fetch"]) == 3 and len(calls["fetch"][-1]) == 6 and calls["index"] == 2
+    papertrade._intra.update(day=None)

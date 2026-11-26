@@ -644,7 +644,7 @@ async function run() {
     const cfg = page.getByTestId("kis-config");
     expect(await cfg.getByTestId("kis-config-group").count() === 4, "설정 묶음이 4개가 아님");
     const cfgText = await cfg.innerText();
-    expect(cfgText.includes("주문 한도") && cfgText.includes("장중 감시 규칙") && cfgText.includes("장중 AI 제안 횟수") && cfgText.includes("AI 매매 규칙") && cfgText.includes("1 ~ 15"), `설정: ${cfgText}`);
+    expect(cfgText.includes("주문 한도") && cfgText.includes("장중 감시 규칙") && cfgText.includes("장중 AI 판단 간격") && cfgText.includes("AI 매매 규칙") && cfgText.includes("1 ~ 15"), `설정: ${cfgText}`);
     for (const g of await cfg.getByTestId("kis-config-group").all()) {
       const tops = await g.locator("input").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
       const firstRowTop = Math.min(...tops);
@@ -657,9 +657,10 @@ async function run() {
     const pr = page.getByTestId("kis-proposals");
     const prt = await pr.innerText();
     expect(prt.includes("비싸서 기다림") && prt.includes("조건 맞으면 주문") && prt.includes("지정가 191,600원"), `조건 대기·지정가: ${prt}`);
-    // 장중 AI 제안: 오늘 시각(지난 시각은 줄 긋기) · 장중이면 버튼이 '지금 장중 판단' → intraday=true
+    // 장중 AI 판단: 간격·오늘 횟수·마지막 결과·다음 시각·확인 대기 · 장중이면 버튼이 '지금 장중 판단' → intraday=true
     const it = await pr.getByTestId("kis-intraday").innerText();
-    expect(it.includes("10:00 · 12:00 · 14:00") && it.includes("마지막: 10:00 새 매수 제안 1건") && it.includes("+3%"), `장중 제안: ${it}`);
+    expect(it.includes("09:30~15:00") && it.includes("5분마다") && it.includes("두 번 연속") && it.includes("오늘 7번") && it.includes("마지막 10:00 새 매수 제안 1건")
+      && it.includes("(6.2초)") && it.includes("다음 10:05") && it.includes("확인 대기: 카카오") && it.includes("+3%"), `장중 제안: ${it}`);
     await pr.getByTestId("kis-propose").click();
     await page.getByText(/장중 판단 — 새 매수 제안 1건/).waitFor();
     expect(api.calls.find((c) => c.key === "POST /api/kis/propose").query === "?intraday=true", "장중인데 장중 판단으로 안 부름");

@@ -127,7 +127,7 @@ def kenv(monkeypatch):
     kis_trade._balance_cache.update(at=0.0, data=None, error=None)
     for d in (kis_trade._hist, kis_trade._next_try, kis_trade._wait_kind):
         d.clear()
-    kis_trade._intraday.update(running=False, last=None, result=None, error=None, task=None)
+    kis_trade._intraday.update(running=False, last=None, result=None, error=None, task=None, notes=[], waiting=[], took=None)
 
     async def _db():
         async with Session() as s:
@@ -1094,24 +1094,26 @@ def test_overview_shows_ws_status_and_param_ranges(kenv, monkeypatch):
 
 # ---------------- 장중 AI 제안 (사용자 결정 2026-11-26) ----------------
 
-def test_intraday_slots_and_due():
-    assert kis_trade.intraday_slots(0) == []
-    assert kis_trade.intraday_slots(1) == [720]
-    assert kis_trade.intraday_slots(3) == [600, 720, 840]
-    assert kis_trade.intraday_slots(5) == [600, 660, 720, 780, 840]
+def test_intraday_due_every_minutes():
     lim = kis_trade.clean_limits({})
-    assert lim["intraday_runs"] == 3
+    assert lim["intraday_every_min"] == 5
     at = lambda h, m, d=24: dt.datetime(2026, 11, d, h, m, tzinfo=KST)   # noqa: E731
-    assert kis_trade.intraday_due({}, lim, at(9, 59)) == []
-    assert kis_trade.intraday_due({}, lim, at(10, 0)) == [600]
-    assert kis_trade.intraday_due({}, lim, at(13, 0)) == [600, 720]       # 놓친 시각은 같이 (한 번으로 합침)
-    done = {"intraday": {"date": "2026-11-24", "done": [600]}}
-    assert kis_trade.intraday_due(done, lim, at(11, 0)) == []
-    assert kis_trade.intraday_due(done, lim, at(12, 0)) == [720]
-    assert kis_trade.intraday_due({"intraday": {"date": "2026-11-23", "done": [600, 720, 840]}}, lim, at(10, 0)) == [600]   # 어제 기록은 무시
-    assert kis_trade.intraday_due({}, lim, at(15, 25)) == []               # 마감 직전·장 후
-    assert kis_trade.intraday_due({}, lim, at(10, 0, d=28)) == []          # 토요일
-    assert kis_trade.intraday_due({}, {**lim, "intraday_runs": 0}, at(14, 0)) == []
+    assert not kis_trade.intraday_due({}, lim, at(9, 29))                 # 09:30 부터
+    assert kis_trade.intraday_due({}, lim, at(9, 30))
+    assert kis_trade.intraday_due({}, lim, at(15, 0)) and not kis_trade.intraday_due({}, lim, at(15, 1))   # 15:00 까지
+    st = lambda ts, d="2026-11-24": {"intraday": {"date": d, "last_start": ts}}   # noqa: E731
+    t0 = at(10, 0).timestamp()
+    assert not kis_trade.intraday_due(st(t0), lim, at(10, 4))
+    assert kis_trade.intraday_due(st(t0), lim, at(10, 5))                 # 5분 지남
+    assert kis_trade.intraday_due(st(t0, "2026-11-23"), lim, at(10, 1))   # 어제 기록은 무시
+    assert not kis_trade.intraday_due({}, lim, at(10, 0, d=28))           # 토요일
+    assert not kis_trade.intraday_due({}, {**lim, "intraday_every_min": 0}, at(11, 0))   # 0 = 끔
+    assert kis_trade.intraday_due(st(t0), {**lim, "intraday_every_min": 3}, at(10, 3))
+    assert kis_trade.clean_limits({"intraday_every_min": 0})["intraday_every_min"] == 0
+    for bad in (1, 2, 61):
+        with pytest.raises(ValueError):
+            kis_trade.clean_limits({"intraday_every_min": bad})
+    assert kis_trade.clean_limits({}, base={"intraday_runs": 3})["intraday_every_min"] == 5   # 예전 설정 이름은 무시
 
 
 def test_intraday_chase_bounds():
@@ -1169,6 +1171,11 @@ def test_propose_intraday_new_buys_only(kenv, monkeypatch):
     e = _intraday_env(kenv, monkeypatch)
     alerts = []
     monkeypatch.setattr(kis_trade, "_alert_admins", lambda *a, **k: alerts.append(a[0]))
+    r = run(kis_trade.propose_intraday())                                # 자동 판단 첫 통과 → 확인 대기 (제안 안 함)
+    assert r["proposed"] == 0 and r["waiting"] == ["네이버"] and any("확인 대기: 네이버" in n for n in r["notes"])
+    assert run(kis_trade.list_log())[:1] == [] or run(kis_trade.list_log())[0]["action"] != "propose_intraday"   # 제안 없으면 감사 로그 안 쌓음
+    assert not any(l.get("intraday") for l in run(kis_trade.overview(with_balance=False))["log"])
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 5, tzinfo=KST)        # 5분 뒤 다시 통과 → 제안
     r = run(kis_trade.propose_intraday())
     assert r["intraday"] and r["proposed"] == 1
     assert e.seen["intraday"] is True
@@ -1177,7 +1184,7 @@ def test_propose_intraday_new_buys_only(kenv, monkeypatch):
     new = [i for i in items if i["source"] == "intraday"]
     assert [i["symbol"] for i in new] == ["035420"]                      # 보유·제안 중·거절·+5%·점수 낮음은 제외
     k = new[0]
-    assert k["side"] == "buy" and k["status"] == "proposed" and k["ref_price"] == 101_000 and k["reason"].startswith("장중 판단 10:00")
+    assert k["side"] == "buy" and k["status"] == "proposed" and k["ref_price"] == 101_000 and k["reason"].startswith("장중 판단 10:05")
     assert k["expires_at"] == dt.datetime(2026, 11, 24, 15, 30, tzinfo=KST).timestamp()   # 오늘 장 마감까지
     assert order(kenv, e.pend).status == "proposed"                      # 장 마감 후 제안은 그대로 (만료 안 함)
     assert kenv.b.orders == [] and alerts and "장중" in alerts[0]       # 제안만 — 주문 없음
@@ -1185,15 +1192,42 @@ def test_propose_intraday_new_buys_only(kenv, monkeypatch):
     lg = st["log"][0]
     assert lg["intraday"] and any("LG화학" in n and "쫓아가서" in n for n in lg["notes"])
     assert any("승인 대기·진행 중 매수 1건" in n for n in lg["notes"])
-    assert st["intraday"]["slots"] == ["10:00", "12:00", "14:00"] and "새 매수 제안 1건" in st["intraday"]["result"]
+    assert st["intraday"]["every"] == 5 and st["intraday"]["from"] == "09:30" and "새 매수 제안 1건" in st["intraday"]["result"]
     assert any(l["action"] == "propose_intraday" for l in run(kis_trade.list_log()))
     # 다음 장중 판단 — 방금 제안한 종목은 다시 안 묻음
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 12, 0, tzinfo=KST)
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 10, tzinfo=KST)
     assert run(kis_trade.propose_intraday())["proposed"] == 0
     # 승인 → 장중 조건이 맞으면 지정가 매수 (기존 매수와 같은 흐름)
     kenv.b.prices["035420"] = 101_000
     res = approve(kenv, k["id"]).json()["results"][0]
     assert res["status"] == "submitted" and kenv.b.orders[-1]["symbol"] == "035420" and kenv.b.orders[-1]["limit"]
+
+
+def test_intraday_confirm_needs_consecutive_pass(kenv, monkeypatch):
+    """두 번 '연속' 이어야 함 — 사이에 한 번 통과 못 하거나 오래 비면 처음부터. 손으로 누른 판단은 바로 제안"""
+    from app.services import papertrade
+    _intraday_env(kenv, monkeypatch)
+    orig = papertrade.analyze_live
+    flags = {"low": False}
+
+    async def maybe_low(*a, **k):
+        r = await orig(*a, **k)
+        if flags["low"]:
+            r["rows"]["035420"] = {**r["rows"]["035420"], "score": 50}
+        return r
+    monkeypatch.setattr(papertrade, "analyze_live", maybe_low)
+    at = lambda m: dt.datetime(2026, 11, 24, 10, m, tzinfo=KST)   # noqa: E731
+    kenv.clock["t"] = at(0)
+    assert run(kis_trade.propose_intraday())["waiting"] == ["네이버"]
+    flags["low"] = True
+    kenv.clock["t"] = at(5)
+    assert run(kis_trade.propose_intraday())["waiting"] == []            # 이번엔 통과 못 함 → 끊김
+    flags["low"] = False
+    kenv.clock["t"] = at(10)
+    assert run(kis_trade.propose_intraday())["proposed"] == 0            # 다시 첫 통과
+    kenv.clock["t"] = at(30)                                               # 20분 비었음 (간격 5분 × 2.5 넘음)
+    assert run(kis_trade.propose_intraday())["proposed"] == 0
+    assert kenv.c.post("/api/kis/propose?intraday=true").json()["proposed"] == 1   # 손으로 = 바로
 
 
 def test_propose_intraday_reserves_cash(kenv, monkeypatch):
@@ -1218,12 +1252,13 @@ def test_propose_intraday_refuses_outside_market_and_halted(kenv, monkeypatch):
 
 def test_propose_route_intraday(kenv, monkeypatch):
     _intraday_env(kenv, monkeypatch)
-    r = kenv.c.post("/api/kis/propose?intraday=true")
+    r = kenv.c.post("/api/kis/propose?intraday=true")          # 손으로 누른 판단은 확인 대기 없이 바로
     assert r.status_code == 200, r.text
     assert r.json()["intraday"] is True and r.json()["proposed"] == 1
+    assert run(kis_trade.list_log())[0]["action"] == "propose_intraday"
 
 
-def test_schedule_intraday_runs_once_per_slot(kenv, monkeypatch):
+def test_schedule_intraday_every_interval(kenv, monkeypatch):
     calls = []
 
     async def fake(user_id=None):
@@ -1233,16 +1268,22 @@ def test_schedule_intraday_runs_once_per_slot(kenv, monkeypatch):
 
     async def go():
         a = await kis_trade.schedule_intraday()
-        await kis_trade._intraday["task"]
-        b = await kis_trade.schedule_intraday()     # 같은 시각은 한 번만
-        return a, b
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 9, 30, tzinfo=KST)
-    assert run(kis_trade.schedule_intraday()) is False
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 12, 1, tzinfo=KST)        # 10:00 을 놓침 → 10:00·12:00 을 한 번으로
-    assert run(go()) == (True, False) and len(calls) == 1
-    assert run(kis_trade.overview(with_balance=False))["intraday"]["done"] == ["10:00", "12:00"]
-    kenv.clock["t"] = dt.datetime(2026, 11, 24, 14, 0, tzinfo=KST)
-    assert run(go())[0] is True and len(calls) == 2
-    kenv.c.put("/api/kis/config", json={"limits": {"intraday_runs": 0}, "totp_code": kenv.code()})
-    kenv.clock["t"] = dt.datetime(2026, 11, 25, 14, 0, tzinfo=KST)
-    assert run(kis_trade.schedule_intraday()) is False                   # 0 = 끔
+        if a:
+            await kis_trade._intraday["task"]
+        return a
+    at = lambda h, m, s=0: dt.datetime(2026, 11, 24, h, m, s, tzinfo=KST)   # noqa: E731
+    kenv.clock["t"] = at(9, 20)
+    assert run(go()) is False                                              # 09:30 전
+    kenv.clock["t"] = at(9, 31)
+    assert run(go()) is True and run(go()) is False                       # 한 번 시작하면 5분 뒤까지 안 함
+    kenv.clock["t"] = at(9, 35, 58)                                        # (몇 초 일찍은 됨 — 5초 감시 주기)
+    assert run(go()) is True and len(calls) == 2
+    v = run(kis_trade.overview(with_balance=False))["intraday"]
+    assert v["runs"] == 2 and v["every"] == 5 and v["next"] == "09:40"
+    kis_trade._intraday["running"] = True                                  # 앞 판단이 아직 진행 중이면 안 겹침
+    kenv.clock["t"] = at(9, 45)
+    assert run(go()) is False
+    kis_trade._intraday["running"] = False
+    kenv.c.put("/api/kis/config", json={"limits": {"intraday_every_min": 0}, "totp_code": kenv.code()})
+    kenv.clock["t"] = at(10, 0)
+    assert run(go()) is False                                              # 0 = 끔

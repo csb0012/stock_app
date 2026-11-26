@@ -105,8 +105,9 @@ services/
                    TR 은 새 번호 → '없는 TR' 응답일 때만 예전 번호 (주문은 그 외 오류면 다시 안 보냄). KISClient 를 키·주소를 받아 따로 만듦
   kis_trade.py   — KIS 모의투자 주문 운영 (AI 제안 → 관리자 2단계 승인 → 장중 조건 맞으면 주문, 위험 줄이는 일은 자동 — 사용자 결정 2026-11-26):
                    propose(장 마감 15분 뒤, papertrade.analyze_live 로 KIS 실제 잔고를 놓고 판단, 이전 제안 만료, 다음 거래일 15:30 까지 유효) ·
-                   propose_intraday(장중 AI 제안 — 사용자 결정 2026-11-26: 10:00~14:00 하루 intraday_runs(기본 3)번 schedule_intraday 가 뒤에서(감시 안 멈춤),
-                     analyze_live(intraday=True) = 오늘 미완성 봉을 지금 가격 종가로·거래량 하루치 환산(project_today) → 새 매수만 source='intraday',
+                   propose_intraday(장중 AI 제안 — 사용자 결정 2026-11-26: 09:30~15:00 intraday_every_min(기본 5)분마다 schedule_intraday 가 뒤에서(감시 안 멈춤),
+                     analyze_live(intraday=True) = 지난 일봉·학습형 비중·지수는 하루 한 번(papertrade._intra), 판단마다 현재가로 오늘 봉만 고침·거래량 하루치 환산(project_today)
+                     → 새 매수만 source='intraday', 자동 판단은 두 번 연속 통과(state intraday.seen, 간격×2.5 안)한 종목만 · 손으로 누르면 바로 · 제안 없으면 기록·감사 로그 안 남김,
                      보유·직전 장 마감 뒤 제안·주문 종목·오늘 +허용%↑/−허용×2%↓(intraday_chase) 제외, 승인 대기 매수는 산 것으로(현금·자리), 오늘 15:30 까지. 판단은 잠금 밖) ·
                    watch(장중 5초, loop 안): _fetch_prices(kis_ws 실시간 체결가 → 없으면 REST 멀티종목 15초, 못 받은 종목은 판단 안 함)·_hist(10분 가격) →
                      check_exits(prices) 손절가 이하 = 승인 없이 source='stop' 시장가 매도(긴급 정지 중엔 안 함, 손실 한도 정지 중엔 함 — _stops_ok, 2분 뒤 재시도·하루 3번) / 목표가 = 매도 제안 ·

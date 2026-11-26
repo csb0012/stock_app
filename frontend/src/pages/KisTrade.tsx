@@ -273,7 +273,7 @@ export default function KisTrade() {
 
       {s.configured && (
         <Card icon={ListChecks} title="AI 주문 제안 · 진행 중 주문" testid="kis-proposals"
-          desc="장 마감 15분 뒤 자동으로 제안 + 장중에도 정해진 시각에 AI 가 다시 판단해 좋은 종목이 보이면 매수 제안 (목표가에 닿으면 매도 제안). 장 마감 후 제안은 다음 거래일, 장중 제안은 오늘 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
+          desc="장 마감 15분 뒤 자동으로 제안 + 장중에도 몇 분마다 AI 가 다시 판단해 좋은 종목이 보이면 매수 제안 (목표가에 닿으면 매도 제안). 장 마감 후 제안은 다음 거래일, 장중 제안은 오늘 장 마감까지만 유효 · 매도부터 주문. 조건 대기 중인 매수는 이유가 아래에 보입니다"
           right={<button className="btn btn-ghost" style={{ fontSize: 12 }} data-testid="kis-propose" disabled={propose.isPending || s.halted || s.intraday?.running}
             onClick={() => propose.mutate(s.window === "open")}>
             <Bot size={13} className={propose.isPending || s.intraday?.running ? "spin" : undefined} />
@@ -452,20 +452,26 @@ export default function KisTrade() {
 function IntradayLine({ s }: { s: any }) {
   const d = s.intraday;
   if (!d) return null;
-  const done = new Set<string>(d.done || []);
+  const hm = (v?: string | null) => (v ? String(v).slice(11, 16) : null);
   return (
-    <div data-testid="kis-intraday" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
-      <Bot size={13} style={{ color: d.slots?.length ? "var(--accent)" : "var(--text-muted)" }} />
-      {d.slots?.length ? (
-        <span><strong>장중 AI 제안</strong> 오늘{" "}
-          {d.slots.map((t: string, i: number) => (
-            <span key={t} style={{ color: done.has(t) ? "var(--text-muted)" : undefined, textDecoration: done.has(t) ? "line-through" : undefined }}>{i ? " · " : ""}{t}</span>
-          ))}
-          {" "}— 지금 가격으로 다시 판단해 새 매수만 제안 (보유·이미 제안한 종목·오늘 +{s.limits.max_gap_pct}% 넘게 오른 종목은 뺌)</span>
-      ) : <span style={{ color: "var(--text-muted)" }}>장중 AI 제안 꺼짐 (설정 '장중 AI 제안 횟수' 0) — 장 마감 후에만 제안</span>}
-      {d.running && <span style={{ color: "var(--accent)" }}>판단 중...</span>}
-      {!d.running && d.result && <span style={{ color: "var(--text-muted)" }}>마지막: {d.result}</span>}
-      {!d.running && d.error && <span style={{ color: "var(--red)" }}>장중 판단 실패: {d.error}</span>}
+    <div data-testid="kis-intraday" style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <Bot size={13} style={{ color: d.every ? "var(--accent)" : "var(--text-muted)" }} />
+        {d.every ? (
+          <span><strong>장중 AI 판단</strong> {d.from}~{d.to} <strong>{d.every}분마다</strong> — 지금 가격으로 다시 판단해 <strong>두 번 연속</strong> 통과한 종목만 새 매수 제안
+            (보유·이미 제안한 종목·오늘 +{s.limits.max_gap_pct}% 넘게 오른 종목은 뺌)</span>
+        ) : <span style={{ color: "var(--text-muted)" }}>장중 AI 판단 꺼짐 (설정 '장중 AI 판단 간격' 0) — 장 마감 후에만 제안</span>}
+      </div>
+      {(d.runs > 0 || d.running || d.result || d.error) && (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingLeft: 21, color: "var(--text-muted)" }}>
+          <span>오늘 {d.runs}번</span>
+          {d.running && <span style={{ color: "var(--accent)" }}>판단 중...</span>}
+          {!d.running && d.result && <span>마지막 {d.result}{d.took != null ? ` (${d.took}초)` : ""}</span>}
+          {d.next && !d.running && <span>다음 {d.next}</span>}
+          {d.waiting?.length > 0 && <span data-testid="kis-intraday-waiting" style={{ color: "var(--yellow)" }}>확인 대기: {d.waiting.join(", ")}</span>}
+          {!d.running && d.error && <span style={{ color: "var(--red)" }}>판단 실패 ({hm(d.last)}): {d.error}</span>}
+        </div>
+      )}
     </div>
   );
 }
@@ -498,7 +504,7 @@ function WatchLine({ s }: { s: any }) {
 const LIMIT_GROUPS: [string, string, string[]][] = [
   ["주문 한도", "넘으면 주문을 안 보내거나 멈춤", ["max_order_krw", "max_orders_day", "max_loss_krw"]],
   ["장중 감시 규칙", "승인한 매수를 언제 보내고, 언제 자동 취소할지", ["max_gap_pct", "fast_drop_pct", "index_drop_pct", "limit_slip_pct"]],
-  ["장중 AI 제안", "10:00~14:00 사이 고르게 나눈 시각에 다시 판단 (예: 3번 = 10:00 · 12:00 · 14:00)", ["intraday_runs"]],
+  ["장중 AI 제안", "09:30~15:00 몇 분마다 다시 판단할지 (0 = 끔, 3~60분). 두 번 연속 통과한 종목만 제안", ["intraday_every_min"]],
 ];
 
 function Field({ label, range, value, onChange }: { label: string; range?: string; value: number; onChange: (n: number) => void }) {

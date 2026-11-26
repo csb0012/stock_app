@@ -44,6 +44,9 @@ _last_exit_check: dict = {}
 _decide_failed: dict = {}   # 계좌 → 장 마감 후 자동 판단 실패 시각 (30분 뒤 다시 — 매분 KIS 호출 반복 방지)
 DECIDE_RETRY = 1800
 _loop_status: dict = {"last_tick": None, "last_error": None}
+# 장중 판단용 하루 캐시 (KIS 모의투자 장중 제안이 몇 분마다 부름): 지난 일봉은 하루 한 번만 받고, 판단할 때마다 현재가만 새로 받음
+_intra: dict = {"day": None, "hist": {}, "bar": {}, "failed": {}, "aw": None, "aw_done": False, "index": None, "fetches": 0}
+INTRA_RETRY = 1800        # 일봉을 못 받은 종목은 이만큼(초) 뒤 다시 시도
 
 
 def _lock(acc_id: int) -> asyncio.Lock:
@@ -406,17 +409,88 @@ def project_today(market: str, candles: list, now: datetime | None = None) -> li
     return candles[:-1] + [last]
 
 
+async def _intraday_stocks(market: str, items: list) -> tuple:
+    """장중 판단용 일봉: 지난 일봉은 하루 한 번만 KIS 로 받아 두고(_intra), 오늘 봉은 판단할 때마다 현재가로 고침
+    (종가 = 현재가 · 고가/저가 넓힘 · 거래량 = 누적 거래량) → project_today 로 거래량을 하루치로.
+    → ({종목: {name, candles}}, 오류 목록). 현재가를 못 받은 종목은 이번 판단에서 뺌 (예전 가격으로 판단하지 않음)"""
+    from app.services.quote import live_prices
+    c, today, now = _intra, market_today(market).isoformat(), time.time()
+    if c["day"] != today:
+        c.update(day=today, hist={}, bar={}, failed={}, aw=None, aw_done=False, index=None)
+    need = [i for i in items if i["symbol"] not in c["hist"] and now - c["failed"].get(i["symbol"], 0) >= INTRA_RETRY]
+    errors = []
+    if need:
+        c["fetches"] += 1
+        got, errs = await fetch_stocks(market, need, 320, "2y")
+        errors += errs
+        for i in need:
+            s = got.get(i["symbol"])
+            if not s:
+                c["failed"][i["symbol"]] = now
+                continue
+            cs = list(s["candles"])
+            if cs and cs[-1]["date"][:10] >= today:
+                if cs[-1]["date"][:10] == today:
+                    c["bar"][i["symbol"]] = dict(cs[-1])
+                cs = cs[:-1]
+            c["hist"][i["symbol"]] = {"name": s["name"], "candles": cs}
+            c["failed"].pop(i["symbol"], None)
+    syms = [i["symbol"] for i in items if i["symbol"] in c["hist"]]
+    live = await live_prices([{"market": market, "symbol": s} for s in syms]) if syms else {}
+    out, miss = {}, []
+    for sym in syms:
+        h, lp = c["hist"][sym], live.get((market, sym)) or {}
+        px = lp.get("price")
+        if not px:
+            miss.append(h["name"])
+            continue
+        bar = c["bar"].get(sym)
+        if bar is None:
+            bar = c["bar"][sym] = {"date": today, "open": px, "high": px, "low": px, "close": px, "volume": 0}
+        bar.update(close=px, high=max(float(bar.get("high") or px), px), low=min(float(bar.get("low") or px), px))
+        if lp.get("volume"):
+            bar["volume"] = max(int(bar.get("volume") or 0), int(lp["volume"]))
+        out[sym] = {"name": h["name"], "candles": project_today(market, h["candles"] + [dict(bar)])}
+    if miss:
+        errors.append(f"현재가 못 받음 {len(miss)}종목 ({', '.join(miss[:3])}) — 이번 판단에서 뺌")
+    return out, errors
+
+
+async def _intraday_aw(market: str, stocks: dict, day: str) -> dict | None:
+    """장중 판단의 학습형 비중 — 확정된 일봉(오늘 봉 뺌)으로 하루 한 번 계산해 둠"""
+    c = _intra
+    if not c["aw_done"]:
+        hist = {k: {"name": v["name"], "candles": v["candles"][:-1]} for k, v in stocks.items()}
+        last_closed = max(v["candles"][-1]["date"][:10] for v in hist.values())
+        ff = (date.fromisoformat(last_closed) - timedelta(days=200)).isoformat()
+        feats = await asyncio.to_thread(pe.build_features, hist, market, ff)
+        c["aw"] = await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(hist), day)
+        c["aw_done"] = True
+    return c["aw"]
+
+
+async def _intraday_index(market: str) -> list:
+    c = _intra
+    if not c["index"]:
+        c["index"] = _closed_only(market, await fetch_index(market, "2y"))
+    return c["index"]
+
+
 async def analyze_live(market: str, user_id: int, positions: dict, params: dict, intraday: bool = False) -> dict:
     """실시간 판단에 쓰는 오늘 점수 — 확정된 마지막 종가 기준 (실시간 모의투자 계좌와 KIS 모의투자 주문 제안이 같이 씀).
-    intraday = 장중 판단 (KIS 모의투자 장중 제안): 오늘 미완성 봉을 '지금 가격으로 마감한다면'으로 넣어 판단 (거래량은 하루치로 환산).
+    intraday = 장중 판단 (KIS 모의투자 장중 제안, 몇 분마다): 오늘 미완성 봉을 '지금 가격으로 마감한다면'으로 넣어 판단 (거래량은 하루치로 환산).
+    지난 일봉·학습형 비중·지수는 하루 한 번만 받고(_intra), 판단할 때마다 현재가만 새로 받음 (KIS 호출 = 멀티종목 시세 1~2번).
     AI 는 확정된 종가로 만들어지고 검증됐으므로 장중 판단은 그만큼 덜 검증된 근사 — 시장 상태(지수)는 확정된 종가로.
     → {rows: {종목: 그날 행}, regime, events(다음 거래일), aw(학습형 비중), last(기준일), errors, index, prev_close: {종목: 전날 종가}}"""
     from app.services.quote import analyze_candles
     from app.services import events
     items, overrides = await _live_universe(market, user_id, positions)
-    stocks, errors = await fetch_stocks(market, items, 320, "2y")
-    for s in stocks.values():
-        s["candles"] = project_today(market, s["candles"]) if intraday else _closed_only(market, s["candles"])
+    if intraday:
+        stocks, errors = await _intraday_stocks(market, items)
+    else:
+        stocks, errors = await fetch_stocks(market, items, 320, "2y")
+        for s in stocks.values():
+            s["candles"] = _closed_only(market, s["candles"])
     stocks = {k: v for k, v in stocks.items() if len(v["candles"]) >= 60}
     if not stocks:
         raise RuntimeError("일봉을 받은 종목이 없음 — " + " / ".join(errors[:3]))
@@ -430,13 +504,18 @@ async def analyze_live(market: str, user_id: int, positions: dict, params: dict,
         except Exception as e:   # 학습 모델 포함 확률 실패 → 규칙 점수 확률 (build_features 가 계산)
             print(f"[paper] {sym} AI 추천 확률 실패: {e}")
     adaptive = bool(params.get("adaptive"))
-    # 학습형 비중: 최근 약 140거래일 점수와 그 뒤 결과로 (오늘 판단엔 오늘까지 확정된 결과만)
-    feat_from = (date.fromisoformat(last) - timedelta(days=200)).isoformat() if adaptive else last
-    feats = await asyncio.to_thread(pe.build_features, stocks, market, feat_from, probs, overrides)
+    if intraday:   # 오늘 행만 계산 (지난 날짜 점수는 안 바뀜) · 학습형 비중·지수는 확정된 종가로 하루 한 번
+        feats = await asyncio.to_thread(pe.build_features, stocks, market, last, probs, overrides)
+        aw = await _intraday_aw(market, stocks, last) if adaptive else None
+        index = await _intraday_index(market)
+    else:
+        # 학습형 비중: 최근 약 140거래일 점수와 그 뒤 결과로 (오늘 판단엔 오늘까지 확정된 결과만)
+        feat_from = (date.fromisoformat(last) - timedelta(days=200)).isoformat() if adaptive else last
+        feats = await asyncio.to_thread(pe.build_features, stocks, market, feat_from, probs, overrides)
+        aw = (await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(stocks), last)) if adaptive else None
+        index = _closed_only(market, await fetch_index(market, "2y"))
     rows = feats.get(last) or {}
-    aw = (await asyncio.to_thread(pe.adaptive_weights, feats, pe.forward_labels(stocks), last)) if adaptive else None
     pe.rescore(rows, aw["weights"] if aw else pe.WEIGHTS)
-    index = _closed_only(market, await fetch_index(market, "2y"))
     regime = pe.regime_on(pe.regime_map(index), last)
     nxt = next_trading_day(market, date.fromisoformat(last)).isoformat()
     ev = pe.event_labels(market, nxt, events._cache["events"])
