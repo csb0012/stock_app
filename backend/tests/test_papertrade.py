@@ -705,3 +705,53 @@ def test_intraday_analyze_caches_daily_candles(api_client, monkeypatch):
     run(papertrade.analyze_live("KR", user.id, {}, params, intraday=True))
     assert len(calls["fetch"]) == 3 and len(calls["fetch"][-1]) == 6 and calls["index"] == 2
     papertrade._intra.update(day=None)
+
+
+def test_api_ai_exit_option_and_compare(api_client, monkeypatch):
+    """AI 매도 판단 — 설정 항목(기본 꺼짐) · 켜면 '기본 방식' 비교가 그것도 끈 결과 · 결과에 보류 건수"""
+    client, Session, user = api_client
+    _fake_data(monkeypatch)
+    from app.services import papertrade
+    monkeypatch.setattr(papertrade, "base_universe", lambda m: [{"symbol": f"S{i}", "name": f"종목{i}"} for i in range(6)])
+    opts = client.get("/api/paper/config").json()["options"]
+    assert opts["ai_exit"]["default"] is False and opts["avg_down"]["default"] is False and "물타기" in opts["avg_down"]["label"]
+    sid = client.post("/api/paper/simulations", json={"market": "US", "months": 3, "params": {
+        "adaptive": False, "trend_filter": False, "entry_guard": False, "ai_exit": True, "avg_down": True}}).json()["id"]
+    d = _wait(client, f"/api/paper/simulations/{sid}", lambda x: x["status"] != "running")
+    r = d["result"]
+    assert d["status"] == "done" and r["params"]["ai_exit"] and set(r["ai_exit"]) == {"stop_held", "rides", "adds"}
+    assert r["compare"]["params"]["ai_exit"] is False and r["compare"]["params"]["avg_down"] is False
+
+
+def test_live_account_check_exits_ai_hold(api_client, monkeypatch):
+    """실시간 계좌: AI 강세면 손절가에서 보류 · 강제 손절선 아래면 팜"""
+    import json as _json
+    from app.models.paper import PaperAccount
+    from app.services import papertrade, quote
+    client, Session, user = api_client
+    params = pe.clean_params({"ai_exit": True})
+    st = pe.new_state(100_000)
+    pe.fill_buy(st, "S1", "종목1", 10_000, 100, "2026-01-02", "r", params, "US")
+    st["positions"]["S1"]["ai_hold"] = True
+    st.update(pending=[], log=[])
+
+    async def mk():
+        async with Session() as s:
+            a = PaperAccount(user_id=user.id, market="US", name="t", capital=100_000, params=_json.dumps(params),
+                             state=_json.dumps(st), active=True)
+            s.add(a)
+            await s.commit()
+            return a.id
+    aid = run(mk())
+    price = {"v": 92.0}
+
+    async def lp(items):
+        return {(i["market"], i["symbol"]): {"price": price["v"]} for i in items}
+    monkeypatch.setattr(quote, "live_prices", lp)
+    run(papertrade.check_exits(aid))
+    d = client.get(f"/api/paper/accounts/{aid}").json()
+    assert [p["symbol"] for p in d["positions"]] == ["S1"] and any("보류" in f for x in d["log"] for f in x.get("fills", []))
+    price["v"] = 85.0                                  # 강제 손절 −14% 아래
+    run(papertrade.check_exits(aid))
+    d = client.get(f"/api/paper/accounts/{aid}").json()
+    assert d["positions"] == [] and any("강제 손절" in t["reason"] for t in d["trades"] if t["side"] == "sell")

@@ -1487,3 +1487,111 @@ def test_us_guard_refuses_real_server(monkeypatch):
     monkeypatch.setattr(ko, "client", lambda: cl)
     with pytest.raises(KISError, match="실거래"):
         run(ko.us_order("buy", "AAPL", 1, 100.0))
+
+
+# ---------------- AI 매도 판단 (사용자 요청 2026-11-27) ----------------
+
+def _ai_exit_env(kenv, monkeypatch, score=75, prob=62, close=70_000, avg_down=False):
+    """005930 10주(평균 70,000) 보유 + AI 매도 판단 켬 + 장 마감 판단(가짜 분석)으로 'AI 강세' 기록"""
+    from app.services import papertrade
+    kenv.b.holdings["005930"] = [10, 70_000]
+    run(kis_trade.rebaseline(kenv.uid))
+    run(kis_trade.set_config(kenv.uid, None, {"ai_exit": True, "avg_down": avg_down}))
+    rows = {"value": {"005930": {"name": "삼성", "score": score, "prob": prob, "close": close, "quant": 80, "grade": "A",
+                                 "accum": 30, "accum_ok": False, "ma50": close * 0.9}}}
+
+    async def fake(market, user_id, positions, params, intraday=False):
+        return {"rows": rows["value"], "regime": "상승 추세", "events": [], "aw": None, "last": "2026-11-23", "errors": [], "index": []}
+    monkeypatch.setattr(papertrade, "analyze_live", fake)
+    pushed = []
+    monkeypatch.setattr(kis_trade, "_push", lambda title, body, priority=3, tags=None, **kw: pushed.append(title))
+    return rows, pushed
+
+
+def test_ai_exit_holds_stop_then_hard_stop_sells(kenv, monkeypatch):
+    _, pushed = _ai_exit_env(kenv, monkeypatch)
+    run(kis_trade.propose(kenv.uid))
+    h = run(kis_trade.overview())["balance"]["holdings"][0]
+    assert h["ai_hold"] is True and h["hard_stop"] == pytest.approx(70_000 * 0.86)
+    kenv.b.prices["005930"] = 64_000           # 손절가 65,100 아래 · 강제 손절 60,200 위
+    assert run(kis_trade.watch()).get("stops", 0) == 0 and kenv.b.orders == []
+    assert any(t.startswith("손절 보류") for t in pushed)
+    assert "stop_hold" in [l["action"] for l in run(kis_trade.list_log())]
+    kenv.clock["t"] += dt.timedelta(seconds=30)
+    run(kis_trade.watch())
+    assert sum(t.startswith("손절 보류") for t in pushed) == 1   # 한 번만 알림
+    kenv.b.prices["005930"] = 60_000           # 강제 손절선 아래 → AI 판단 상관없이 자동 매도
+    kenv.clock["t"] += dt.timedelta(seconds=30)
+    assert run(kis_trade.watch())["stops"] == 1
+    items = kenv.c.get("/api/kis/orders?kind=all").json()["items"]
+    assert items[0]["source"] == "stop" and "강제 손절" in items[0]["reason"]
+
+
+def test_ai_exit_weak_ai_still_auto_stops(kenv, monkeypatch):
+    _ai_exit_env(kenv, monkeypatch, score=50, prob=50)
+    run(kis_trade.propose(kenv.uid))
+    kenv.b.prices["005930"] = 64_000
+    assert run(kis_trade.watch())["stops"] == 1
+
+
+def test_ai_exit_ride_target_raises_stop(kenv, monkeypatch):
+    _, pushed = _ai_exit_env(kenv, monkeypatch)
+    run(kis_trade.propose(kenv.uid))
+    kenv.b.prices["005930"] = 81_000           # 목표 80,500 위 — AI 강세라 제안 안 하고 손절가를 올림
+    run(kis_trade.watch())
+    assert kenv.c.get("/api/kis/orders").json()["items"] == [] and kenv.b.orders == []
+    h = run(kis_trade.overview())["balance"]["holdings"][0]
+    assert h["stop"] == pytest.approx(80_500 * 0.93) and h["target"] == pytest.approx(80_500 * 1.075)
+    assert any(t.startswith("익절 보류") for t in pushed) and "ride" in [l["action"] for l in run(kis_trade.list_log())]
+    kenv.b.prices["005930"] = 74_000           # 올린 손절가(이익 쪽) 아래 → 보류 없이 자동 매도
+    kenv.clock["t"] += dt.timedelta(seconds=30)
+    assert run(kis_trade.watch())["stops"] == 1
+
+
+def test_ai_exit_off_keeps_old_target_proposal(kenv, monkeypatch):
+    _ai_exit_env(kenv, monkeypatch)
+    run(kis_trade.set_config(kenv.uid, None, {"ai_exit": False}))
+    run(kis_trade.propose(kenv.uid))
+    kenv.b.prices["005930"] = 81_000
+    run(kis_trade.watch())
+    items = kenv.c.get("/api/kis/orders").json()["items"]
+    assert len(items) == 1 and items[0]["source"] == "exit"
+
+
+def test_avg_down_proposal_fill_updates_average(kenv, monkeypatch):
+    rows, _ = _ai_exit_env(kenv, monkeypatch, close=64_000, avg_down=True)
+    kenv.b.prices["005930"] = 64_000
+    r = run(kis_trade.propose(kenv.uid))
+    items = kenv.c.get("/api/kis/orders").json()["items"]
+    add = [i for i in items if i["source"] == "add"]
+    assert r["proposed"] == 1 and len(add) == 1 and add[0]["side"] == "buy" and add[0]["budget"] == pytest.approx(350_000, abs=1)
+    approve(kenv, add[0]["id"])
+    run(kis_trade.refresh_fills())
+    h = run(kis_trade.overview())["balance"]["holdings"][0]
+    assert h["added"] == 1 and h["hard_stop"] == pytest.approx(70_000 * 0.86)   # 강제 손절선은 첫 매입가 기준
+    s = json.loads(run(_trade_row(kenv)).state)
+    m = s["meta"]["005930"]
+    q = kenv.b.orders[-1]["qty"]
+    assert m["avg"] == pytest.approx((10 * 70_000 + q * 64_000) / (10 + q)) and m["stop"] == pytest.approx(m["avg"] * 0.93)
+    assert s["expected"]["005930"] == 10 + q
+    # 물탄 뒤 손절가 아래 → 보류 없이 자동 손절
+    kenv.b.prices["005930"] = int(m["stop"]) - 100
+    kenv.clock["t"] += dt.timedelta(seconds=30)
+    assert run(kis_trade.watch())["stops"] == 1
+
+
+def _trade_row(kenv):
+    from app.models.kis import KisTrade
+
+    async def go():
+        async with kenv.Session() as s:
+            return await s.get(KisTrade, 1)
+    return go()
+
+
+def test_intraday_proposal_never_averages_down(kenv, monkeypatch):
+    _ai_exit_env(kenv, monkeypatch, close=64_000, avg_down=True)
+    kenv.b.prices["005930"] = 64_000
+    kenv.clock["t"] = dt.datetime(2026, 11, 24, 10, 0, tzinfo=KST)
+    run(kis_trade.propose_intraday(kenv.uid))
+    assert not [i for i in kenv.c.get("/api/kis/orders").json()["items"] if i["source"] == "add"]

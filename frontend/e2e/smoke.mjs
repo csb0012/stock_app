@@ -867,6 +867,37 @@ async function run() {
     expect(b.limits.max_orders_day === 5 && b.params.stop_pct === 7 && b.totp_code === "998877", `설정 요청: ${JSON.stringify(b)}`);
   });
 
+  await test("KIS 모의투자: AI 매도 판단 켜기·물타기(2단계 저장) · 켜져 있으면 규칙 안내·보유 종목 'AI 강세'·강제 손절선", { api: adminApi({
+    "PUT /api/kis/config": { limits: KF.KIS_STATUS.limits, params: KF.KIS_STATUS.params, message: "설정을 저장했습니다" } }) }, async (page, api) => {
+    await page.goto(`${BASE}/kis`);
+    expect(await page.getByTestId("kis-rule-ai-exit").count() === 0, "꺼져 있는데 AI 매도 판단 안내가 보임");
+    const cfg = page.getByTestId("kis-config");
+    const ai = cfg.getByTestId("kis-opt-ai_exit"), add = cfg.getByTestId("kis-opt-avg_down");
+    expect(!(await ai.isChecked()) && (await add.isDisabled()), "처음 상태: AI 매도 판단 꺼짐 · 물타기 잠김");
+    await ai.check();
+    await add.check();
+    expect((await cfg.getByTestId("kis-ai-exit").innerText()).includes("강제 손절선 = 첫 매입가 −14%"), "강제 손절선 안내");
+    await cfg.getByLabel("설정 2단계 코드").fill("998877");
+    await cfg.getByRole("button", { name: "저장" }).click();
+    await page.getByText("설정을 저장했습니다").waitFor();
+    const b = JSON.parse(api.calls.find((c) => c.key === "PUT /api/kis/config").body);
+    expect(b.params.ai_exit === true && b.params.avg_down === true && b.params.stop_pct === 7, `설정 요청: ${JSON.stringify(b.params)}`);
+  });
+
+  await test("KIS 모의투자: AI 매도 판단 켜진 계좌 — 규칙 안내·'AI 강세'/'물타기' 표시·물타기 주문 표시", { api: adminApi({
+    "GET /api/kis/status": { ...KF.KIS_STATUS, params: { ...KF.KIS_STATUS.params, ai_exit: true, avg_down: true },
+      balance: { ...KF.KIS_STATUS.balance, holdings: [{ ...KF.KIS_STATUS.balance.holdings[0], ai_hold: true, added: 1, hard_stop: 163400 }] } },
+    "GET /api/kis/orders": { ...KF.KIS_OPEN, items: [{ ...KF.KIS_OPEN.items[0], source: "add", reason: "물타기 — 손절선 아래(-8.0%)지만 AI 강세" }] },
+  }) }, async (page) => {
+    await page.goto(`${BASE}/kis`);
+    const r = await page.getByTestId("kis-rules").innerText();
+    expect(r.includes("AI 매도 판단 켜짐") && r.includes("−14%") && r.includes("물타기 제안"), `규칙: ${r}`);
+    const tag = await page.getByTestId("kis-ai-tag").first().innerText();
+    expect(tag.includes("AI 강세") && tag.includes("물타기 1번"), `보유 표시: ${tag}`);
+    expect((await page.getByText("물타기 — 손절선 아래").count()) > 0, "물타기 주문 사유 없음");
+    expect((await page.getByTestId("kis-config").getByTestId("kis-opt-avg_down").isChecked()), "물타기 체크 안 됨");
+  });
+
   await test("KIS 모의투자: 국내/미국 탭 — 미국은 market=US 로 따로 · 처음엔 꺼짐 안내 · 달러 표시 · 주소 기억", { api: adminApi({
     "GET /api/kis/status": (req) => (new URL(req.url()).searchParams.get("market") === "US" ? {
       ...KF.KIS_STATUS, market: "US", currency: "USD", us_off: true, halted: true, halted_reason: "미국 주문은 아직 꺼져 있음", window: "closed",

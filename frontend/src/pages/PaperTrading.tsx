@@ -333,7 +333,7 @@ function SimDetail({ id }: { id: number }) {
 }
 
 function CompareCard({ main, base, params }: { main: any; base: any; params: any }) {
-  const on = [params?.adaptive && "학습형 가중치", params?.trend_filter && "추세 필터", params?.entry_guard && "급변 보호"].filter(Boolean).join(" + ");
+  const on = [params?.adaptive && "학습형 가중치", params?.trend_filter && "추세 필터", params?.entry_guard && "급변 보호", params?.ai_exit && "AI 매도 판단", params?.avg_down && "물타기"].filter(Boolean).join(" + ");
   const rows: [string, string, number | null, number | null, boolean][] = [
     // 이름, 단위, 개선, 기본, 높을수록 좋음
     ["수익률", "%", main.return_pct, base.return_pct, true],

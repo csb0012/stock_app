@@ -45,13 +45,13 @@ export const KIS_STATUS = {
   watch: { last: "2026-11-24T10:00:05+09:00", error: null, symbols: 4, realtime: 0, rest: 4, missing: 0, every: 5, index_change: -0.42, index_error: null,
            buy_after_open: 5, stops_ok: true,
            ws: { connected: false, subscribed: 0, last_error: "2026-11-24T09:58:00 ConnectionRefusedError: 연결 거부", last_message: null, reconnects: 3 } },
-  params: { max_positions: 5, buy_score: 60, sell_score: 45, stop_pct: 7, take_pct: 15, max_hold: 20, trailing: true, adaptive: true, trend_filter: true },
+  params: { max_positions: 5, buy_score: 60, sell_score: 45, stop_pct: 7, take_pct: 15, max_hold: 20, trailing: true, adaptive: true, trend_filter: true, entry_guard: true, ai_exit: false, avg_down: false },
   orders_today: 1, window: "open", last_proposal_day: "2026-11-23", last_error: null, loop: { last_tick: "2026-11-24T10:00:00", last_error: null },
   baseline: true, day_loss: -120000,
   log: [{ ts: "2026-11-23T15:45:10+09:00", base_date: "2026-11-23", regime: "상승 추세", events: [], manual: false, universe: 42,
           orders: ["매수 삼성전자 — AI 점수 72 — 상승확률 61%", "매도 SK하이닉스 — AI 점수 40 (매도 기준 45 미만)"], notes: ["학습형 비중: 상승확률 50% · 퀀트 35% · 매집 15%"] }],
   balance: { cash: 8200000, d2_cash: 8150000, total: 10120000, stock_value: 1970000, prev_total: 10000000, pnl: 70000, holdings: [
-    { symbol: "000660", name: "SK하이닉스", qty: 3, sellable: 3, avg: 190000, price: 200000, value: 600000, pnl: 30000, pnl_pct: 5.26, stop: 176700, target: 218500, hold_days: 4 },
+    { symbol: "000660", name: "SK하이닉스", qty: 3, sellable: 3, avg: 190000, price: 200000, value: 600000, pnl: 30000, pnl_pct: 5.26, stop: 176700, target: 218500, hold_days: 4, ai_hold: null, added: 0, hard_stop: null },
   ] },
   balance_error: null, mismatches: [],
 };

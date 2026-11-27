@@ -25,13 +25,18 @@ const STATUS_CLS: Record<string, string> = {
   cancelled: "badge-neutral", blocked: "badge-down", failed: "badge-down",
 };
 const WINDOW: Record<string, string> = { open: "장중 — 실시간 감시 중", closing: "마감 직전 — 새 주문 안 보냄", closed: "장 닫힘 — 승인하면 다음 장중에 조건이 맞을 때 주문" };
-const SOURCE: Record<string, [string, string]> = { stop: ["자동 손절", "var(--red)"], exit: ["장중 목표가", "var(--yellow)"], intraday: ["장중 AI", "var(--accent)"] };
+const SOURCE: Record<string, [string, string]> = { stop: ["자동 손절", "var(--red)"], exit: ["장중 목표가", "var(--yellow)"], intraday: ["장중 AI", "var(--accent)"], add: ["물타기", "var(--yellow)"] };
 const PARAM_KEYS = ["max_positions", "buy_score", "sell_score", "stop_pct", "take_pct", "max_hold"] as const;
 const PARAM_LABEL: Record<string, string> = {
   max_positions: "최대 보유 종목 수", buy_score: "매수 기준 AI 점수", sell_score: "매도 기준 AI 점수", stop_pct: "손절 %", take_pct: "익절(목표) %", max_hold: "최대 보유 거래일",
 };
+// AI 매도 판단 (켜고 끄는 항목) — 서버 paper_engine.ai_exit / avg_down
+const PARAM_TOGGLES: [string, string, string][] = [
+  ["ai_exit", "AI 매도 판단", "목표가에 닿아도 AI 가 더 오른다고 보면 안 팔고(손절가를 올려 이익 지킴) · 이익 중이라도 떨어질 것 같으면 팔고 · 손절가에 닿아도 회복을 기대하면 종가까지 보류(강제 손절선 아래면 무조건 매도) · 최대 보유일이 돼도 AI 강세면 최대 2배까지 연장"],
+  ["avg_down", "물타기", "손절선 아래인데 AI 강세 + 시장이 하락 추세가 아니면 처음 산 금액의 절반만큼 한 번만 더 사자고 제안 (승인해야 삼 · AI 매도 판단이 켜져 있어야 동작)"],
+];
 const ACTION: Record<string, string> = {
-  propose: "제안", propose_intraday: "장중 제안", propose_intraday_fail: "장중 제안 실패", propose_exit: "목표가 매도 제안", auto_stop: "자동 손절", auto_cancel: "급변 자동 취소", wait: "조건 기다림", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
+  propose: "제안", stop_hold: "손절 보류 (AI)", ride: "익절 보류 (AI)", propose_intraday: "장중 제안", propose_intraday_fail: "장중 제안 실패", propose_exit: "목표가 매도 제안", auto_stop: "자동 손절", auto_cancel: "급변 자동 취소", wait: "조건 기다림", propose_fail: "제안 실패", approve: "승인", reject: "거절", submit: "주문 보냄", submitted: "주문 접수",
   submit_fail: "KIS 거부·연결 실패", submit_unknown: "응답 못 받음 — 결과 모름", blocked: "안전장치로 막음", filled: "체결", partial: "일부 체결", unfilled: "안 체결", cancelled: "취소됨", cancel: "주문 취소",
   cancel_fail: "취소 실패", fill_unknown: "체결 확인 안 됨", halt: "정지", resume: "다시 시작", baseline: "기준 맞추기", config: "설정 변경",
   expire: "기한 지남", interrupted: "서버 재시작 — 결과 모름", account_ok: "계좌 확인됨",
@@ -56,6 +61,11 @@ const sideBadge = (s: string) => { const [l, c] = SIDE[s] || [s, "badge-neutral"
 const statusBadge = (o: any) => <span className={`badge ${STATUS_CLS[o.status] || "badge-neutral"}`} style={{ fontSize: 10.5 }}>{o.status_label || o.status}</span>;
 const amount = (o: any) => (o.side === "sell" ? `${o.qty?.toLocaleString() ?? "-"}주` : o.qty ? `${o.qty.toLocaleString()}주` : `${won(o.budget)}어치`)
   + (o.limit_price ? ` · 지정가 ${won(o.limit_price)}` : o.submitted_at && o.side === "sell" ? " · 시장가" : "");
+const aiTags = (h: any) => (h.ai_hold || h.added) ? (
+  <span data-testid="kis-ai-tag" style={{ fontSize: 10.5, fontWeight: 600, marginLeft: 6 }}>
+    {h.ai_hold && <span style={{ color: "var(--green)" }}>AI 강세 — 보류 가능 </span>}
+    {h.added ? <span style={{ color: "var(--yellow)" }}>물타기 {h.added}번</span> : null}
+  </span>) : null;
 const srcTag = (o: any) => { const t = SOURCE[o.source]; return t ? <span style={{ fontSize: 10.5, color: t[1], fontWeight: 600 }}> {t[0]}</span> : null; };
 const mCard: React.CSSProperties = { border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 5, minWidth: 0 };
 const mRow: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, minWidth: 0 };
@@ -72,6 +82,11 @@ function Rules({ s }: { s: any }) {
         승인 대기·조건 대기·접수된 매수 모두 (승인 없이)</div>
       <div><strong>손절가 도달 → 자동 매도</strong> — 승인 없이 바로 {MK === "US" ? "현재가 −1% 지정가로 매도 (모의투자 해외는 시장가가 없음)" : "시장가 매도"} (긴급 정지 중엔 안 함, 하루 손실 한도 정지 중엔 함).
         <strong> 목표가</strong>는 매도 제안만 (승인해야 팔림)</div>
+      {s.params?.ai_exit && (
+        <div data-testid="kis-rule-ai-exit"><strong>AI 매도 판단 켜짐</strong> — 목표가에 닿아도 전날 종가 판단이 'AI 강세'면 팔지 않고 손절가를 올림(익절 보류) ·
+          매입가 아래 손절가에 닿아도 AI 강세면 그날은 보류(손절 보류), 강제 손절선(첫 매입가 −{Math.min(s.params.stop_pct * 2, s.params.stop_pct + 10)}%)은 무조건 자동 매도 ·
+          이익 중인데 떨어질 것 같으면 매도 제안 · 최대 보유일 연장{s.params.avg_down ? " · 물타기 제안(1번)" : ""}. 보류할 때마다 휴대폰 알림</div>
+      )}
     </div>
   );
 }
@@ -277,7 +292,8 @@ export default function KisTrade() {
                         <strong className={h.pnl_pct >= 0 ? "up" : "down"}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct.toFixed(2)}%</strong>
                       </div>
                       <div style={mSub}>{h.qty.toLocaleString()}주 · 평균 {won(h.avg)} → 현재 {won(h.price)}</div>
-                      <div style={mSub}>손절 {won(h.stop)} · 목표 {won(h.target)} · 보유 {h.hold_days ?? "-"}일</div>
+                      <div style={mSub}>손절 {won(h.stop)} · 목표 {won(h.target)} · 보유 {h.hold_days ?? "-"}일{h.hard_stop ? ` · 강제 손절 ${won(h.hard_stop)}` : ""}</div>
+                      {aiTags(h)}
                     </div>
                   ))}
                 </div>
@@ -288,10 +304,10 @@ export default function KisTrade() {
                     <tbody>
                       {bal.holdings.map((h: any) => (
                         <tr key={h.symbol}>
-                          <td>{h.name} <span style={{ color: "var(--text-muted)" }}>{h.symbol}</span></td>
+                          <td>{h.name} <span style={{ color: "var(--text-muted)" }}>{h.symbol}</span>{aiTags(h)}</td>
                           <td className="num">{h.qty.toLocaleString()}</td><td className="num">{won(h.avg)}</td><td className="num">{won(h.price)}</td>
                           <td className={`num ${h.pnl_pct >= 0 ? "up" : "down"}`}>{h.pnl_pct >= 0 ? "+" : ""}{h.pnl_pct.toFixed(2)}%</td>
-                          <td className="num">{won(h.stop)}</td><td className="num">{won(h.target)}</td><td className="num">{h.hold_days ?? "-"}</td>
+                          <td className="num" title={h.hard_stop ? `강제 손절선 ${won(h.hard_stop)}` : undefined}>{won(h.stop)}</td><td className="num">{won(h.target)}</td><td className="num">{h.hold_days ?? "-"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -567,7 +583,7 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
   const [par, setPar] = useState<Record<string, any>>(s.params);
   const [code, setCode] = useState("");
   useEffect(() => { setLim(s.limits); setPar(s.params); }, [JSON.stringify(s.limits), JSON.stringify(s.params)]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const save = useMutation({ mutationFn: () => kisApiFor(MK).config(lim, Object.fromEntries(PARAM_KEYS.map((k) => [k, par[k]])), code).then((r) => r.data),
+  const save = useMutation({ mutationFn: () => kisApiFor(MK).config(lim, Object.fromEntries([...PARAM_KEYS, ...PARAM_TOGGLES.map((t) => t[0])].map((k) => [k, par[k]])), code).then((r) => r.data),
     meta: { inlineError: true }, onSuccess: (d) => { toast(d.message, "info"); setCode(""); onSaved(); } });
   const meta = s.limit_meta as Record<string, any>;
   const LIMIT_GROUPS = limitGroups();
@@ -583,7 +599,7 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
       <Card icon={Settings2} title="안전장치 · 매매 규칙" testid="kis-config" desc="바꾸려면 2단계 코드가 필요합니다"
         right={<button className="btn btn-ghost" style={{ fontSize: 12 }} onClick={() => setShow(true)}>설정 보기·바꾸기</button>}>
         <span style={{ fontSize: 12, color: "var(--text-muted)" }}>1회 {won(s.limits.max_order_krw)} · 하루 {s.limits.max_orders_day}건 · 손실 한도 {won(s.limits.max_loss_krw)} ·
-          손절 {s.params.stop_pct}% · 목표 {s.params.take_pct}%</span>
+          손절 {s.params.stop_pct}% · 목표 {s.params.take_pct}%{s.params.ai_exit ? " · AI 매도 판단" : ""}{s.params.avg_down ? " · 물타기" : ""}</span>
       </Card>
     );
   }
@@ -593,6 +609,18 @@ function ConfigCard({ s, onSaved }: { s: any; onSaved: () => void }) {
       <Group title="AI 매매 규칙" desc="무엇을 살지·언제 팔지 (AI 모의투자와 같은 항목)" testid="kis-config-group">
         {PARAM_KEYS.map((k) => <Field key={k} label={PARAM_LABEL[k]} range={s.param_meta?.[k] ? `${s.param_meta[k].min.toLocaleString()} ~ ${s.param_meta[k].max.toLocaleString()}` : undefined} value={par[k]} onChange={(n) => setPar({ ...par, [k]: n })} />)}
       </Group>
+      <div data-testid="kis-ai-exit" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {PARAM_TOGGLES.map(([k, label, desc]) => (
+          <label key={k} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, lineHeight: 1.5 }}>
+            <input type="checkbox" data-testid={`kis-opt-${k}`} checked={!!par[k]} disabled={k === "avg_down" && !par.ai_exit}
+              onChange={(e) => setPar({ ...par, [k]: e.target.checked, ...(k === "ai_exit" && !e.target.checked ? { avg_down: false } : {}) })} style={{ marginTop: 3 }} />
+            <span><strong>{label}</strong> <span style={{ color: "var(--text-muted)" }}>— {desc}</span></span>
+          </label>
+        ))}
+        {s.params.stop_pct != null && par.ai_exit && (
+          <span style={{ fontSize: 11.5, color: "var(--text-muted)" }}>강제 손절선 = 첫 매입가 −{Math.min(par.stop_pct * 2, par.stop_pct + 10)}% (손절 % 로 정해짐)</span>
+        )}
+      </div>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
         {codeInput(code, setCode, "설정 2단계 코드")}
         <button className="btn btn-primary" disabled={!/^\d{6}$/.test(code) || save.isPending} onClick={() => save.mutate()}>저장</button>

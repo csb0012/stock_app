@@ -21,6 +21,15 @@
                '점수가 높을수록 실제로 더 올랐는지'(날짜별 순위 상관 IC)만큼 20거래일마다 다시 정함. 셋 다 안 맞으면 고정 비중.
                학습한 비중은 고정 비중과 반반 섞음(축소 추정) — 짧은 기간 결과에 과하게 맞추지 않게
   추세 필터     종가가 50일 이동평균 아래인 종목은 새로 사지 않음 (떨어지는 칼날 피하기 — 추세 추종)
+AI 매도 판단 (ai_exit, 사용자 요청 2026-11-27 — 익절·손절·보유일을 고정 숫자 대신 AI 가 상황 보고 정함)
+  'AI 강세' = 그날 종가 판단에서 매수 조건(AI 점수 ≥ 매수 기준 + 상승확률 ≥ 55%) 그대로 통과 — 새로 살 만한 종목이면 계속 들고 감
+  익절 보류     목표가에 닿아도 AI 강세면 안 팔고, 손절가를 '닿은 목표가 −손절%' 로 올려 이익을 지키며 목표를 더 위로
+  이익 지키기   이익 중(+3%↑)인데 상승확률 ≤ 45%(하락 쪽 확신)면 목표 전이라도 다음 날 판다
+  손절 보류     매입가 아래 손절가에 닿아도 AI 강세면 바로 안 팔고 종가에 다시 판단 — 회복 기대 낮으면 판다
+  강제 손절     첫 매입가 −min(손절%×2, 손절%+10)% (기본 −14%) 아래면 AI 판단과 상관없이 판다 (끝없이 버티지 않게)
+  보유일 연장   최대 보유일이 돼도 AI 강세면 최대 2배까지 더 들고 감
+  물타기 (avg_down, 따로 켬) 종가가 손절선 아래인데 AI 강세 + 시장이 하락 추세가 아니면 처음 산 금액의 절반만큼 한 번만 더 삼.
+               물탄 뒤엔 손절 보류 없음 (새 평균가 기준 손절가를 그대로 지킴)
 """
 import math
 
@@ -69,11 +78,18 @@ PARAM_LABELS = {
     "stop_pct": "손절 %", "take_pct": "익절(목표) %", "max_hold": "최대 보유 거래일", "trailing": "추격 손절",
     "adaptive": "학습형 가중치", "trend_filter": "추세 필터 (50일선 아래는 안 삼)",
     "entry_guard": "급변 보호 (비싸게 출발하면 기다림 · 급락 출발이면 안 삼)",
+    "ai_exit": "AI 매도 판단 (익절 보류·이익 지키기·손절 보류·보유일 연장, 강제 손절선은 지킴)",
+    "avg_down": "물타기 (손절선 아래 + AI 강세면 처음 금액의 절반 1번)",
 }
 # 급변 보호 (KIS 모의투자 주문의 장중 규칙을 일봉으로 근사 — 장중 순서를 모르니 시가·저가로만):
 #   시가가 판단 종가보다 +GUARD_GAP% 넘게 높으면 → 그날 저가가 종가×(1+GUARD_GAP%) 까지 내려오면 그 값에 삼, 아니면 안 삼
 #   시가가 −2×GUARD_GAP% 넘게 낮으면(급락 출발) → 안 삼.  (10분 급락·VI·지수 보류는 일봉으로 알 수 없어 시뮬레이션에 없음)
 GUARD_GAP = 3.0
+# AI 매도 판단 (ai_exit / avg_down)
+LOCK_PROFIT = 3.0            # 이익 지키기: 이만큼(%) 이익 중일 때
+LOCK_PROB = 45               #   상승확률 이 값 이하(하락 쪽 확신 — 예측 검증의 '확신 예측' 기준)면 판다
+HOLD_EXT = 2.0               # 보유일 연장: 최대 보유일의 몇 배까지
+AVG_DOWN_RATIO = 0.5         # 물타기 금액 = 처음 산 금액 × 이 값 (한 번만)
 
 
 def clean_params(raw: dict | None) -> dict:
@@ -97,7 +113,64 @@ def clean_params(raw: dict | None) -> dict:
     out["adaptive"] = bool(raw.get("adaptive", True))
     out["trend_filter"] = bool(raw.get("trend_filter", True))
     out["entry_guard"] = bool(raw.get("entry_guard", True))
+    out["ai_exit"] = bool(raw.get("ai_exit", False))
+    out["avg_down"] = bool(raw.get("avg_down", False))
     return out
+
+
+# ---------------- AI 매도 판단 ----------------
+
+def hard_pct(params: dict) -> float:
+    """강제 손절 % (첫 매입가 대비) — AI 가 버티자고 해도 여기 아래면 판다"""
+    return min(params["stop_pct"] * 2, params["stop_pct"] + 10)
+
+
+def hard_stop(p: dict, params: dict) -> float:
+    return float(p.get("entry_px") or p["avg"]) * (1 - hard_pct(params) / 100)
+
+
+def ai_strong(r: dict | None, params: dict) -> bool:
+    """AI 강세 = 지금 새로 사도 될 만큼 (매수 조건 그대로)"""
+    return bool(r) and r["score"] >= params["buy_score"] and r["prob"] >= MIN_PROB
+
+
+def loss_stop(p: dict) -> bool:
+    """손절가가 매입가 아래(손실 쪽) — 추격 손절·익절 보류로 올라간 손절가(이익 지키기)는 AI 가 보류하지 않음"""
+    return p["stop"] < p["avg"] * 0.9995
+
+
+def can_hold_stop(p: dict, params: dict) -> bool:
+    return bool(params.get("ai_exit")) and bool(p.get("ai_hold")) and loss_stop(p) and not p.get("added")
+
+
+def ride(p: dict, params: dict) -> str:
+    """익절 보류: 목표가에 닿았는데 AI 강세 → 손절가를 목표가 −손절% 로 올리고 목표를 더 위로 (p 를 바꿈) → 메모"""
+    old = p["target"]
+    p["stop"] = max(p["stop"], old * (1 - params["stop_pct"] / 100))
+    p["target"] = old * (1 + params["take_pct"] / 200)
+    p["rides"] = int(p.get("rides") or 0) + 1
+    return (f"목표가 도달했지만 AI 가 더 오른다고 봐서 안 팖 — 손절가를 {(p['stop'] / p['avg'] - 1) * 100:+.1f}% 로 올려 이익 지킴 · "
+            f"다음 검토 {(p['target'] / p['avg'] - 1) * 100:+.1f}%")
+
+
+def live_exit(p: dict, px: float, params: dict) -> tuple | None:
+    """장중 현재가 px 로 보유 종목 확인 → None 또는 (종류, 메모).
+    종류: 'hard' 강제 손절 · 'stop' 손절 · 'target' 목표가 매도 · 'ride' 익절 보류(p 의 손절·목표를 바꿈) · 'hold' 손절 보류"""
+    if params.get("ai_exit") and px <= hard_stop(p, params):
+        return "hard", f"강제 손절선(첫 매입가 −{hard_pct(params):g}%) 도달 — AI 판단과 상관없이 매도"
+    if px <= p["stop"]:
+        if can_hold_stop(p, params):
+            if p.get("stop_held"):
+                return None
+            p["stop_held"] = True
+            return "hold", (f"손절가 도달했지만 AI 가 회복을 기대해 보류 — 종가에 다시 판단 · "
+                            f"강제 손절선 {(hard_stop(p, params) / p['avg'] - 1) * 100:+.1f}%")
+        return "stop", ("손절가 도달 (" + ("추격 손절" if not loss_stop(p) else "매입가 대비") + ")")
+    if px >= p["target"]:
+        if params.get("ai_exit") and p.get("ai_hold"):
+            return "ride", ride(p, params)
+        return "target", "목표가 도달"
+    return None
 
 
 def check_capital(market: str, capital) -> float:
@@ -375,17 +448,40 @@ def decide(state: dict, rows: dict, regime, events_next: list, params: dict, mar
     prices = {s: r["close"] for s, r in rows.items()}
     equity = equity_of(state, prices)
     selling = set()
+    ai_exit = bool(params.get("ai_exit"))
+    adds = []
     for sym, p in state["positions"].items():
         r = rows.get(sym)
         if r is None:
             continue
+        strong = ai_strong(r, params)
+        if ai_exit:
+            p["ai_hold"] = strong   # 다음 장중 손절·목표 판단에 씀 (live_exit · intraday_exit)
+            if r["close"] > p["stop"]:
+                p["stop_held"] = False   # 손절선 위로 돌아옴 → 다음에 닿으면 다시 알림
+        ret = (r["close"] / p["avg"] - 1) * 100 if p.get("avg") else 0.0
+        hd = p.get("hold_days", 0)
         why = None
         if r["score"] < params["sell_score"]:
             why = f"AI 점수 {r['score']} (매도 기준 {params['sell_score']} 미만)"
         elif r["prob"] <= SELL_PROB:
             why = f"상승확률 {r['prob']}% (40% 이하 — 하락 예상)"
-        elif p.get("hold_days", 0) >= params["max_hold"]:
-            why = f"보유 {p['hold_days']}거래일 — 최대 보유일 도달"
+        elif ai_exit and ret >= LOCK_PROFIT and r["prob"] <= LOCK_PROB:
+            why = f"이익 {ret:+.1f}% 중인데 상승확률 {r['prob']}% — 떨어질 것 같아 이익 지키기 (AI 매도 판단)"
+        elif ai_exit and r["close"] <= p["stop"] and loss_stop(p):
+            if not strong or p.get("added"):
+                why = (f"손절선 아래({ret:+.1f}%)" + (" — 물타기 뒤라 손절" if p.get("added")
+                                                    else f" + AI 회복 기대 낮음 (점수 {r['score']}·확률 {r['prob']}%)"))
+            elif (params.get("avg_down") and regime != "하락 추세"):
+                adds.append((sym, p, r, ret))
+            else:
+                notes.append(f"{p['name']} 손절선 아래({ret:+.1f}%)지만 AI 가 회복 기대 (점수 {r['score']}·확률 {r['prob']}%) — 보류")
+        if why is None and hd >= params["max_hold"]:
+            if ai_exit and strong and hd < params["max_hold"] * HOLD_EXT:
+                notes.append(f"{p['name']} 보유 {hd}거래일 — 최대 보유일이지만 AI 강세라 더 들고 감 "
+                             f"(최대 {int(params['max_hold'] * HOLD_EXT)}일)")
+            else:
+                why = f"보유 {hd}거래일 — " + ("최대 보유일 도달" if not ai_exit or not strong else "연장 한도 도달")
         if why:
             orders.append({"side": "sell", "symbol": sym, "name": p["name"], "qty": p["qty"], "reason": why})
             selling.add(sym)
@@ -402,6 +498,15 @@ def decide(state: dict, rows: dict, regime, events_next: list, params: dict, mar
         notes.append(f"시장 {regime} → 주식 비중 최대 {int(exposure * 100)}%")
     if events_next:
         notes.append(f"다음 거래일 {', '.join(events_next)} → 새 매수 금액 절반")
+    for sym, p, r, ret in adds:   # 물타기 — 처음 산 금액의 절반, 한 번만 (현금·비중 한도 안에서)
+        budget = min(float(p.get("entry_cost") or p["qty"] * p["avg"]) * AVG_DOWN_RATIO, room)
+        if budget < r["close"] * (1 + c["fee"] + c["slip"]) * 1.02:
+            notes.append(f"{p['name']} 물타기 조건이지만 현금·비중 한도로 못 삼")
+            continue
+        orders.append({"side": "buy", "symbol": sym, "name": p["name"], "budget": round(budget, 2), "add": True,
+                       "reason": f"물타기 — 손절선 아래({ret:+.1f}%)지만 AI 강세 · {_fmt_reason(r, regime, [])}",
+                       "score": r["score"], "ref": r["close"]})
+        room -= budget
     cands = sorted(((s, r) for s, r in rows.items()
                     if s not in state["positions"] and r["score"] >= params["buy_score"] and r["prob"] >= MIN_PROB),
                    key=lambda kv: (-kv[1]["score"], -kv[1]["prob"], kv[0]))
@@ -444,10 +549,23 @@ def fill_buy(state: dict, sym: str, name: str, budget: float, price: float, day:
     cost = qty * px
     fee = cost * c["fee"]
     state["cash"] -= cost + fee
+    old = state["positions"].get(sym)
+    if old:   # 물타기 — 평균가·손절·목표를 새 평균가로 (강제 손절선은 첫 매입가 기준 그대로)
+        n = old["qty"] + qty
+        old["avg"] = (old["qty"] * old["avg"] + cost) / n
+        old["qty"], old["buy_fee"] = n, old.get("buy_fee", 0.0) + fee
+        old.setdefault("entry_px", px)
+        old["added"] = int(old.get("added") or 0) + 1
+        old["stop"] = old["avg"] * (1 - params["stop_pct"] / 100)
+        old["target"] = old["avg"] * (1 + params["take_pct"] / 100)
+        old["peak"] = px   # 추격 손절을 물탄 가격부터 다시 (예전 최고가 기준이면 바로 손절선 위라 팔림)
+        old["stop_held"] = False
+        return _trade(day, sym, name, "buy", qty, px, fee, 0.0, reason)
     state["positions"][sym] = {
         "name": name, "qty": qty, "avg": px, "buy_fee": fee, "entry_date": day, "hold_days": 0,
         "peak": px, "last": px, "stop": px * (1 - params["stop_pct"] / 100),
         "target": px * (1 + params["take_pct"] / 100), "reason": reason,
+        "entry_px": px, "entry_cost": cost,
     }
     return _trade(day, sym, name, "buy", qty, px, fee, 0.0, reason)
 
@@ -480,8 +598,23 @@ def guarded_entry(ref: float | None, o: float, l: float) -> tuple:
     return o, None
 
 
-def intraday_exit(p: dict, o: float, h: float, l: float) -> tuple | None:
-    """그날 시가·고가·저가로 손절/목표 도달 확인 → (체결가, 사유). 둘 다 닿았으면 손절 먼저 (보수적으로)"""
+def intraday_exit(p: dict, o: float, h: float, l: float, params: dict | None = None) -> tuple | None:
+    """그날 시가·고가·저가로 손절/목표 도달 확인 → (체결가, 사유). 둘 다 닿았으면 손절 먼저 (보수적으로).
+    AI 매도 판단(params.ai_exit)이면 강제 손절 먼저 · 손절 보류/익절 보류는 (None, 메모) — 바뀐 손절·목표는 다음 날부터 (장중 순서를 모름)"""
+    params = params or {}
+    if params.get("ai_exit"):
+        hs = hard_stop(p, params)
+        if o <= hs:
+            return o, "강제 손절 — 시가가 강제 손절선 아래로 출발"
+        if l <= hs:
+            return hs, f"강제 손절선(첫 매입가 −{hard_pct(params):g}%) 도달"
+        if l <= p["stop"] and can_hold_stop(p, params):
+            if p.get("stop_held"):
+                return None
+            p["stop_held"] = True
+            return None, "손절가 도달했지만 AI 회복 기대로 보류 (종가에 다시 판단)"
+        if h >= p["target"] and p.get("ai_hold") and not (l <= p["stop"]):
+            return None, ride(p, params)
     if o <= p["stop"]:
         return o, "손절 — 시가가 손절가 아래로 출발"
     if l <= p["stop"]:
@@ -544,6 +677,7 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
     labels = forward_labels(stocks) if params.get("adaptive") else {}
     aw, since = None, ADAPT_EVERY
     guard_n = [0, 0]   # 급변 보호: 안 산 수, 기다렸다 산 수
+    ai_n = [0, 0]      # AI 매도 판단: 손절 보류 수, 익절 보류 수
     for k, d in enumerate(days):
         acts = []
         if k > 0:
@@ -573,8 +707,11 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
                 bar = bars.get(sym, {}).get(d)
                 if bar is None:
                     continue
-                hit = intraday_exit(state["positions"][sym], float(bar["open"]), float(bar["high"]), float(bar["low"]))
-                if hit:
+                hit = intraday_exit(state["positions"][sym], float(bar["open"]), float(bar["high"]), float(bar["low"]), params)
+                if hit and hit[0] is None:
+                    acts.append(f"{state['positions'][sym]['name']} {hit[1]}")
+                    ai_n[0 if hit[1].startswith("손절") else 1] += 1
+                elif hit:
                     t = fill_sell(state, sym, hit[0], d, hit[1], market)
                     trades.append(t)
                     acts.append(_act_text(t, market))
@@ -610,7 +747,10 @@ def simulate(stocks: dict, index_candles: list, macro: list, market: str, capita
             progress("매매 시뮬레이션 중", k + 1, len(days))
     return {"summary": summarize(curve, trades, capital, exposure_sum / len(days)), "equity": curve, "trades": trades,
             "log": log, "positions": positions_view(state, market), "days": len(days), "weights": weight_log,
-            "guard": {"skipped": guard_n[0], "waited": guard_n[1]} if params.get("entry_guard") else None}
+            "guard": {"skipped": guard_n[0], "waited": guard_n[1]} if params.get("entry_guard") else None,
+            "ai_exit": ({"stop_held": ai_n[0], "rides": ai_n[1],
+                         "adds": len([t for t in trades if t["side"] == "buy" and t["reason"].startswith("물타기")])}
+                        if params.get("ai_exit") else None)}
 
 
 def _act_text(t: dict, market: str) -> str:
@@ -626,7 +766,8 @@ def positions_view(state: dict, market: str) -> list:
         out.append({"symbol": sym, "name": p["name"], "qty": p["qty"], "avg_price": round(p["avg"], 4),
                     "last": round(p["last"], 4), "ret_pct": round((p["last"] / p["avg"] - 1) * 100, 2),
                     "value": round(p["qty"] * p["last"], 2), "entry_date": p["entry_date"], "hold_days": p.get("hold_days", 0),
-                    "stop": round(p["stop"], 4), "target": round(p["target"], 4), "reason": p.get("reason")})
+                    "stop": round(p["stop"], 4), "target": round(p["target"], 4), "reason": p.get("reason"),
+                    "ai_hold": p.get("ai_hold"), "added": int(p.get("added") or 0)})
     return sorted(out, key=lambda x: -x["value"])
 
 

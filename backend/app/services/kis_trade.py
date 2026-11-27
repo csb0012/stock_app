@@ -358,7 +358,8 @@ def mismatches(s: dict, bal: dict) -> list:
 
 def _meta_for(h: dict, params: dict, day: str) -> dict:
     avg = float(h.get("avg") or h.get("price") or 0)
-    return {"name": h["name"], "entry_date": day, "hold_days": 0, "peak": avg, "avg": avg,
+    return {"name": h["name"], "entry_date": day, "hold_days": 0, "peak": avg, "avg": avg, "entry_px": avg,
+            "entry_cost": avg * int(h.get("qty") or 0),
             "stop": avg * (1 - params["stop_pct"] / 100), "target": avg * (1 + params["take_pct"] / 100)}
 
 
@@ -450,6 +451,9 @@ async def propose(user_id: int | None = None) -> dict:
                     s["last_close"] = last
                 state = {"cash": float(max(0, bal["d2_cash"])), "positions": positions}
                 orders, notes = pe.decide(state, rows, a["regime"], a["events"], params, mk())
+                for sym, p in positions.items():   # AI 매도 판단: 다음 장중 손절·목표가 판단에 쓸 'AI 강세' (종가 판단)
+                    if sym in s["meta"] and "ai_hold" in p:
+                        s["meta"][sym].update(ai_hold=p["ai_hold"], stop_held=bool(p.get("stop_held")))
             except Exception as e:
                 why = str(e)[:300] or type(e).__name__
                 row.last_error = f"{_local().isoformat(timespec='seconds')} 제안 실패: {why}"
@@ -463,7 +467,8 @@ async def propose(user_id: int | None = None) -> dict:
             made = []
             for o in orders:
                 r = rows.get(o["symbol"]) or {}
-                k = KisOrder(market=mk(), created_at=now, base_date=last, source="ai", side=o["side"], symbol=o["symbol"], name=o["name"],
+                k = KisOrder(market=mk(), created_at=now, base_date=last, source="add" if o.get("add") else "ai", side=o["side"],
+                             symbol=o["symbol"], name=o["name"],
                              qty=int(o["qty"]) if o["side"] == "sell" else None, budget=o.get("budget"),
                              ref_price=r.get("close"), reason=o["reason"], score=o.get("score") or r.get("score"),
                              status="proposed", expires_at=exp)
@@ -608,7 +613,7 @@ async def propose_intraday(user_id: int | None = None) -> dict:
             out[sym] = r
         state = {"cash": float(max(0.0, bal["d2_cash"] - reserved)), "positions": positions}
         orders, n2 = pe.decide(state, out, a["regime"], a["events"], params, mk())
-        orders = [o for o in orders if o["side"] == "buy"]
+        orders = [o for o in orders if o["side"] == "buy" and not o.get("add")]   # 물타기는 종가 판단에서만
         notes += n2
         if reserved:
             notes.insert(0, f"승인 대기·진행 중 매수 {len(pending)}건({_m(reserved)})은 이미 산 것으로 계산")
@@ -861,11 +866,11 @@ async def _auto_cancel(db, k: KisOrder, why: str) -> dict:
 async def check_exits(prices: dict | None = None) -> int:
     """보유 종목 손절·목표 확인. 손절가 이하 → 승인 없이 바로 시장가 매도(자동 손절, 사용자 결정 2026-11-26),
     목표가 이상 → 매도 제안(승인해야 팔림). prices = 실시간 감시 가격 {종목: 가격} (없으면 KIS 잔고의 현재가 + 하루 손실 확인)"""
-    stops, made = [], []
+    stops, made, notes = [], [], []
     async with _lock:
         async with AsyncSessionLocal() as db:
             row = await _row(db)
-            s, limits = _state(row), _limits(row)
+            s, limits, params = _state(row), _limits(row), json.loads(row.params)
             if prices is None:
                 bal = await fetch_balance()
                 await check_loss(db, row, s, bal, limits)
@@ -882,7 +887,14 @@ async def check_exits(prices: dict | None = None) -> int:
                 if not m:
                     continue
                 mine = [o for o in sells if o.symbol == sym]
-                if px <= m["stop"]:
+                if "avg" not in m:
+                    m["avg"] = m.get("peak") or px
+                ex = pe.live_exit(m, px, params)   # 손절·목표 + AI 매도 판단(켜져 있으면 손절 보류·익절 보류·강제 손절)
+                kind = ex[0] if ex else None
+                if kind in ("hold", "ride"):
+                    notes.append((sym, name, kind, ex[1]))
+                    continue
+                if kind in ("hard", "stop"):
                     if not _stops_ok(row):
                         continue
                     if any(o.status in ACTIVE or (o.status == "unknown" and o.created_at >= today0)
@@ -893,10 +905,11 @@ async def check_exits(prices: dict | None = None) -> int:
                         continue
                     k = KisOrder(market=mk(), created_at=now, base_date=_local().date().isoformat(), source="stop", side="sell", symbol=sym,
                                  name=name, qty=qty, ref_price=px, status="approved", decided_at=now, expires_at=close_today,
-                                 reason=f"손절가 도달 — 자동 매도 (장중 {_m(px)} · 손절 {_m(m['stop'])})")
+                                 reason=(f"{ex[1]} — 자동 매도 (장중 {_m(px)})" if kind == "hard"
+                                         else f"손절가 도달 — 자동 매도 (장중 {_m(px)} · 손절 {_m(m['stop'])})"))
                     db.add(k)
                     stops.append(k)
-                elif px >= m["target"] and not row.halted:
+                elif kind == "target" and not row.halted:
                     if any(o.status in ("proposed", "approved") + ACTIVE or (o.source == "exit" and o.created_at >= today0) for o in mine):
                         continue   # 제안 중이거나 오늘 이미 제안함 (거절했으면 오늘은 다시 안 물음)
                     k = KisOrder(market=mk(), created_at=now, base_date=_local().date().isoformat(), source="exit", side="sell", symbol=sym,
@@ -904,6 +917,8 @@ async def check_exits(prices: dict | None = None) -> int:
                                  reason=f"목표가 도달 (장중 {_m(px)} · 목표 {_m(m['target'])}) — 승인하면 매도")
                     db.add(k)
                     made.append(k)
+            for sym, name, kind, memo in notes:
+                await audit(db, "stop_hold" if kind == "hold" else "ride", f"{name}: {memo}")
             if made or stops:
                 await db.flush()
                 for k in made:
@@ -912,6 +927,9 @@ async def check_exits(prices: dict | None = None) -> int:
                     await audit(db, "auto_stop", f"{k.name} {k.qty}주 {k.reason}", order_id=k.id)
             _save(row, s)
             await db.commit()
+    for sym, name, kind, memo in notes:
+        _push(f"{'손절 보류' if kind == 'hold' else '익절 보류'} — {name}", f"{name}({sym}): {memo}", 4 if kind == "hold" else 3,
+              ["hourglass" if kind == "hold" else "rocket"])
     if made:
         _alert_admins(f"[StockApp] 목표가 매도 제안 {len(made)}건",
                       "\n".join(f"- {k.name}: {k.reason}" for k in made) + "\n\n승인해야 매도합니다.", priority=4, tags=["dart"])
@@ -1204,8 +1222,23 @@ def _apply_fill(s: dict, k: KisOrder, delta: int, price: float, params: dict):
         m = s["meta"].get(k.symbol)
         if not m or cur == 0:
             s["meta"][k.symbol] = {"name": k.name, "entry_date": _local().date().isoformat(), "hold_days": 0, "peak": price,
-                                   "avg": price, "stop": price * (1 - params["stop_pct"] / 100),
+                                   "avg": price, "entry_px": price, "entry_cost": price * delta,
+                                   "stop": price * (1 - params["stop_pct"] / 100),
                                    "target": price * (1 + params["take_pct"] / 100)}
+        else:   # 같은 종목 더 삼 — 첫 주문의 나머지 체결 또는 물타기(source='add')
+            avg = float(m.get("avg") or price)
+            m["avg"] = (cur * avg + delta * price) / (cur + delta)
+            m.setdefault("entry_px", avg)
+            if k.source == "add":   # 물타기: 손절·목표를 새 평균가로 (강제 손절선은 첫 매입가 기준 그대로), 추격 손절은 물탄 값부터
+                m["added"] = 1
+                m["stop"] = m["avg"] * (1 - params["stop_pct"] / 100)
+                m["target"] = m["avg"] * (1 + params["take_pct"] / 100)
+                m["peak"], m["stop_held"] = price, False
+            else:
+                m["entry_px"] = m["avg"]
+                m["entry_cost"] = float(m.get("entry_cost") or 0) + price * delta
+                m["stop"] = m["avg"] * (1 - params["stop_pct"] / 100)
+                m["target"] = m["avg"] * (1 + params["take_pct"] / 100)
     else:
         left = max(0, cur - delta)
         if left:
@@ -1420,6 +1453,9 @@ async def overview(with_balance: bool = True) -> dict:
                 for h in bal["holdings"]:
                     m = meta.get(h["symbol"]) or {}
                     h["stop"], h["target"], h["hold_days"] = m.get("stop"), m.get("target"), m.get("hold_days")
+                    h["ai_hold"], h["added"] = m.get("ai_hold"), int(m.get("added") or 0)
+                    h["hard_stop"] = (pe.hard_stop({"avg": h.get("avg") or m.get("avg") or 0, **m}, out["params"])
+                                      if out["params"].get("ai_exit") and m else None)
             except Exception as e:
                 out["balance_error"] = str(e)[:700]
         return out

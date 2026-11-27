@@ -126,6 +126,8 @@ services/
                    매수는 _quote(REST 현재가 + VI·거래 정지) → 급변이면 취소 / VI·비쌈·지수면 기다림(_wait, 30초 뒤 다시) → 지정가 tick_up(현재가×(1+limit_slip%))·1회 한도 →
                    'submitting' 먼저 저장 후 KIS 주문, 보낸 뒤 응답을 못 받으면 unknown(같은 종목 그날 다시 안 보냄)) ·
                    cancel_sent(취소 전 체결 반영 → KIS 취소 → cancel_req, 체결 내역에 반영되면 cancelled/partial) ·
+                   AI 매도 판단(params.ai_exit)이면 check_exits 가 pe.live_exit 로 손절 보류(stop_hold)·익절 보류(ride, meta 손절·목표 올림) — 감사 로그·푸시, 강제 손절은 자동 매도 ·
+                   propose 가 decide 의 ai_hold 를 meta 에 저장 · 물타기 제안 source='add'(장중 AI 제안은 물타기 안 함) ·
                    refresh_fills(체결 내역 → expected/meta, _sync_fills — 화면 대조·매수 직전 대조 전에 먼저 반영, 기준 맞추기 땐 apply=False 로 '반영됨'만 표시해 두 번 안 더함) · halt(긴급 정지, 코드 없이)·resume·rebaseline·set_config ·
                    _limits(row) = 저장된 한도 + 새 항목 기본값 · loop(5초 watch + 1분 tick, 재시작 때 submitting → unknown). 모든 일은 audit() 로 kis_log. 새 제안·정지는 관리자 이메일로 알림
   us_daytime.py  — 미국 정규장 밖 가격 → 행의 daytime{label,price,base,change_rate,time} (label 주간거래/프리마켓/애프터마켓, 시간대는 겹치지 않음):
@@ -242,6 +244,11 @@ services/
                    다음 거래일 이벤트(event_labels: FOMC·주요 발표·옵션 만기)면 새 매수 절반. entry_guard(급변 보호, 기본 켬, 시뮬레이션만) = guarded_entry:
                    시가 +3% 넘게 출발 → 저가가 +3% 까지 오면 그 값에 삼 / −6% 넘게 출발 → 안 삼 (KIS 주문 장중 규칙의 일봉 근사). decide() = 장 마감 후 판단 → 주문, fill_buy/fill_sell(수수료·거래세·슬리피지),
                    intraday_exit(손절 먼저), after_close(보유일·추격 손절), simulate() = 하루씩 그날 종가까지로 판단 → 다음 날 시가 체결 → 장중 손절/목표 → 종가 평가
+                   AI 매도 판단(ai_exit, 기본 꺼짐 — 사용자 요청 2026-11-27, 검증 미달이라 켜는 건 사용자): decide 가 보유 종목마다 ai_hold(= ai_strong, 매수 조건 그대로) 기록 →
+                   live_exit(장중 현재가: hard 강제 손절(hard_stop = 첫 매입가 −min(손절×2, 손절+10)%) / stop / hold 손절 보류(매입가 아래 손절가 + ai_hold, 물타기 전만, 한 번 알림) /
+                   ride 익절 보류(손절가 = 목표가 −손절%, 목표 ×(1+익절/2%)) / target) — KIS check_exits·실시간 계좌 check_exits 가 씀, intraday_exit 도 같은 규칙(바뀐 손절·목표는 다음 날부터).
+                   decide: 이익 +3%↑·확률 ≤45% 매도, 손절선 아래 종가 + 약함 → 매도, 최대 보유일 AI 강세면 2배까지 연장. 물타기(avg_down): 손절선 아래 + 강세 + 하락 추세 아님 →
+                   처음 금액(entry_cost)×0.5 'add' 매수 1번 → fill_buy 가 평균가·손절·목표 다시(peak = 물탄 값), KIS 는 source='add' · _apply_fill 이 평균가 갱신
   papertrade.py  — AI 모의투자 실행 (analyze_live = 실시간 판단 점수 — 실시간 계좌와 KIS 모의투자 제안이 같이 씀): 과거 시뮬레이션(1~24개월, AI 추천 후보 고정 목록, 한 번에 하나, 결과 paper_sim,
                    개선 옵션이 켜져 있으면 같은 점수로 옵션 끈 '기본 방식'도 계산해 result.compare, 중단 = cancel_sim → 진행 표시 때 SimCancelled,
                    결과 저장은 DB 잠금이면 재시도, 서버 시작 때 '계산 중'으로 남은 기록은 실패로 정리) /

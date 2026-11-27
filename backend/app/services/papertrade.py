@@ -62,6 +62,7 @@ def config() -> dict:
         "params": {k: {"default": d, "min": lo, "max": hi, "label": pe.PARAM_LABELS[k]} for k, (d, lo, hi) in pe.PARAMS.items()},
         "trailing": {"default": True, "label": pe.PARAM_LABELS["trailing"]},
         "options": {**{k: {"default": True, "label": pe.PARAM_LABELS[k]} for k in ("adaptive", "trend_filter")},
+                    **{k: {"default": False, "label": pe.PARAM_LABELS[k]} for k in ("ai_exit", "avg_down")},
                     "entry_guard": {"default": True, "label": pe.PARAM_LABELS["entry_guard"], "sim_only": True}},   # 실시간 계좌는 개장 직후 현재가 체결이라 안 씀
         "months": list(MONTHS), "weights": pe.WEIGHTS, "regime_exposure": pe.REGIME_EXPOSURE,
         "min_prob": pe.MIN_PROB, "max_accounts": MAX_ACCOUNTS,
@@ -244,9 +245,10 @@ async def _run_sim(sim_id: int, market: str, capital: float, months: int, params
             feats = await asyncio.to_thread(pe.prepare, stocks, market, start, end_s, progress)
             result = await asyncio.to_thread(pe.simulate, stocks, index, macro, market, capital, start, end_s, params,
                                              progress, feats)
-            if params.get("adaptive") or params.get("trend_filter") or params.get("entry_guard"):
+            if any(params.get(k) for k in ("adaptive", "trend_filter", "entry_guard", "ai_exit", "avg_down")):
                 # 같은 데이터·같은 설정에서 개선 옵션만 끈 '기본 방식' — 개선이 실제로 나은지 매번 비교해 보여줌
-                base_params = {**params, "adaptive": False, "trend_filter": False, "entry_guard": False}
+                base_params = {**params, "adaptive": False, "trend_filter": False, "entry_guard": False,
+                               "ai_exit": False, "avg_down": False}
 
                 def base_progress(phase, done, total):
                     progress(f"비교용 기본 방식 — {phase}", done, total)
@@ -656,7 +658,7 @@ async def check_exits(acc_id: int) -> int:
             acc = await db.get(PaperAccount, acc_id)
             if acc is None:
                 return 0
-            state, market = _state(acc), acc.market
+            state, market, params = _state(acc), acc.market, json.loads(acc.params)
             if not state["positions"]:
                 return 0
             live = await live_prices([{"market": market, "symbol": s} for s in state["positions"]])
@@ -666,7 +668,11 @@ async def check_exits(acc_id: int) -> int:
                 if not px:
                     continue
                 p = state["positions"][sym]
-                why = ("손절가 도달 (장중)" if px <= p["stop"] else "목표가 도달 (장중)" if px >= p["target"] else None)
+                ex = pe.live_exit(p, float(px), params)   # 손절·목표 + AI 매도 판단(손절 보류·익절 보류·강제 손절)
+                if ex and ex[0] in ("hold", "ride"):
+                    acts.append(f"{p['name']} {ex[1]}")
+                    continue
+                why = f"{ex[1]} (장중)" if ex else None
                 if why:
                     t = pe.fill_sell(state, sym, float(px), day, why, market)
                     await _record_trade(db, acc_id, t, ts)
